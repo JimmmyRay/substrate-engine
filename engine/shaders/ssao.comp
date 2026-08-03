@@ -1,0 +1,150 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "frame.glsl"
+
+/**
+ * Screen-space ambient occlusion.
+ *
+ * Reads depth and nothing else. The obvious alternative is to read the G-buffer
+ * normal, and it is rejected on purpose: that target is multisampled, and a
+ * multisampled image cannot bind to the same descriptor as a single-sampled one --
+ * which is what forced lighting.frag and lighting1x.frag to exist as two shaders.
+ * Reconstructing the normal from depth derivatives keeps this pass to one variant,
+ * and the reconstruction is exact on flat surfaces, which is where ambient occlusion
+ * is doing its work anyway.
+ *
+ * The kernel is generated rather than sampled from a noise texture, so there is no
+ * asset and no descriptor for one.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 1, binding = 0) uniform sampler2D depthMap;
+layout(set = 1, binding = 1, rgba8) uniform writeonly image2DArray outAo;
+
+layout(push_constant) uniform Push {
+    vec2 texel;      // 1 / target size
+    float radius;    // world units
+    float bias;      // world units, pushes the comparison off the surface
+    float intensity; // exponent on the final term
+    uint sampleCount;
+} pc;
+
+// Reverse-Z: the far plane is 0.
+
+/// Hash to a rotation angle. Per-pixel, so neighbouring pixels use different kernel
+/// orientations and the blur that follows turns that variation into smooth coverage.
+float hash(vec2 p) {
+    vec3 v = fract(vec3(p.xyx) * 0.1031);
+    v += dot(v, v.yzx + 33.33);
+    return fract((v.x + v.y) * v.z);
+}
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(outAo).xy;
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec2 uv = (vec2(coord) + 0.5) * pc.texel;
+    float depth = textureLod(depthMap, uv, 0.0).r;
+
+    // Sky: unoccluded. Writing 1.0 rather than skipping matters, because the blur
+    // downstream reads this texel either way.
+    if (depth == FAR_DEPTH) {
+        imageStore(outAo, ivec3(coord, 0), vec4(1.0));
+        return;
+    }
+
+    vec3 P = worldFromDepth(uv, depth);
+
+    // Normal from the screen-space gradient of reconstructed position. Taking the
+    // shorter of the forward and backward difference on each axis keeps a depth
+    // discontinuity from tilting the normal across the silhouette.
+    vec3 px = worldFromDepth(uv + vec2(pc.texel.x, 0.0), textureLod(depthMap, uv + vec2(pc.texel.x, 0.0), 0.0).r);
+    vec3 mx = worldFromDepth(uv - vec2(pc.texel.x, 0.0), textureLod(depthMap, uv - vec2(pc.texel.x, 0.0), 0.0).r);
+    vec3 py = worldFromDepth(uv + vec2(0.0, pc.texel.y), textureLod(depthMap, uv + vec2(0.0, pc.texel.y), 0.0).r);
+    vec3 my = worldFromDepth(uv - vec2(0.0, pc.texel.y), textureLod(depthMap, uv - vec2(0.0, pc.texel.y), 0.0).r);
+
+    vec3 ddx = (dot(px - P, px - P) < dot(P - mx, P - mx)) ? (px - P) : (P - mx);
+    vec3 ddy = (dot(py - P, py - P) < dot(P - my, P - my)) ? (py - P) : (P - my);
+
+    vec3 N = cross(ddx, ddy);
+    float nlen = length(N);
+    if (nlen < 1e-8) {
+        imageStore(outAo, ivec3(coord, 0), vec4(1.0));
+        return;
+    }
+    N /= nlen;
+    // The cross product's sign depends on winding and handedness; force it to face
+    // the camera rather than reasoning about which way it came out.
+    vec3 toEye = normalize(frame.cameraPos.xyz - P);
+    if (dot(N, toEye) < 0.0) N = -N;
+
+    // Tangent frame, rotated per pixel.
+    float angle = hash(vec2(coord)) * 6.2831853;
+    vec3 up = abs(N.z) < 0.999 ? vec3(0.0, 0.0, 1.0) : vec3(1.0, 0.0, 0.0);
+    vec3 T = normalize(cross(up, N));
+    vec3 B = cross(N, T);
+    T = T * cos(angle) + B * sin(angle);
+    B = cross(N, T);
+
+    float occlusion = 0.0;
+    uint count = max(pc.sampleCount, 1u);
+
+    for (uint i = 0u; i < count; ++i) {
+        // Cosine-ish hemisphere point, pushed toward the origin so samples cluster
+        // near the surface where contact occlusion actually lives.
+        float fi = (float(i) + 0.5) / float(count);
+        float phi = float(i) * 2.3999632; // golden angle, keeps successive samples apart
+        float r = sqrt(fi);
+        float z = sqrt(1.0 - r * r);
+        vec3 dir = T * (r * cos(phi)) + B * (r * sin(phi)) + N * z;
+
+        float scale = mix(0.1, 1.0, fi * fi);
+        vec3 samplePos = P + dir * pc.radius * scale;
+
+        // Project it and read what the depth buffer actually holds there.
+        vec4 clip = frame.viewProj * vec4(samplePos, 1.0);
+        if (clip.w <= 0.0) continue;
+        vec3 sampleNdc = clip.xyz / clip.w;
+        vec2 sampleUv = sampleNdc.xy * 0.5 + 0.5;
+        if (any(lessThan(sampleUv, vec2(0.0))) || any(greaterThan(sampleUv, vec2(1.0)))) continue;
+
+        float sceneDepth = textureLod(depthMap, sampleUv, 0.0).r;
+        if (sceneDepth == FAR_DEPTH) continue;
+
+        vec3 scenePos = worldFromDepth(sampleUv, sceneDepth);
+
+        // Occluded when the surface visible at this sample's screen position is nearer
+        // the camera than the sample point is: something is between the probe and the
+        // eye, so the probe is buried in geometry.
+        //
+        // `toEye` points from P toward the camera, so dot(P - X, toEye) is how far X sits
+        // *behind* P along the eye axis -- positive is further from the camera, negative
+        // is nearer it. Nearer the camera is therefore the **smaller** number, which is
+        // why this is `<` and why the bias is subtracted rather than added.
+        //
+        // It was `>` with `+ pc.bias`, which is the same comparison inverted, and the
+        // result was an edge detector rather than an occlusion term: on an open floor the
+        // probe sits above the surface and so is nearer the camera than the floor texel it
+        // projects onto, which satisfied the reversed test and drove the whole floor to
+        // zero, while at a genuine silhouette the range falloff below suppressed the
+        // contribution and left a bright outline. `--debug-view ssao` showed a black frame
+        // with white edges. That is also the whole explanation for "SSAO over-occludes by
+        // construction, returning 0.3 where a real hemisphere trace returns 1.0" -- it was
+        // not over-occluding, it was reversed.
+        float sampleDist = dot(P - samplePos, toEye);
+        float sceneDist = dot(P - scenePos, toEye);
+        if (sceneDist < sampleDist - pc.bias) {
+            // Range check: a wall metres closer must not occlude this pixel just for
+            // being in front of it. Without this every silhouette grows a dark halo.
+            float rangeFalloff = clamp(pc.radius / max(abs(sceneDist - sampleDist), 1e-4), 0.0, 1.0);
+            occlusion += rangeFalloff;
+        }
+    }
+
+    float ao = 1.0 - occlusion / float(count);
+    ao = pow(clamp(ao, 0.0, 1.0), pc.intensity);
+    imageStore(outAo, ivec3(coord, 0), vec4(ao));
+}

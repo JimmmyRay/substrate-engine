@@ -1,0 +1,36 @@
+#pragma once
+
+#include "Engine.h"
+#include "Game.h"
+#include "scene/CameraControllers.h"
+#include "ui/SettingsUi.h"
+
+/**
+ * @file game/@NAME@/@CLASS@.h
+ * @brief @NAME@'s game class.
+ *
+ * `Game` is the one base class the engine defines, and it sits at the outermost edge:
+ * five virtual calls a frame, none of them in an inner loop. Every method has an empty
+ * default, so the smallest possible game is a class with no members and no overrides.
+ */
+class @CLASS@ : public Game {
+  public:
+    void declareSettings(core::settings::Settings& settings) override;
+    void configure(GameSetup& setup, core::settings::Settings& settings) override;
+    void init(Engine& e) override;
+    void frameUpdate(Engine& e, float dt) override;
+    void drawUi(Engine& e, ui::Context& ui) override;
+
+  private:
+    /// Free-fly, installed in `init`. The engine holds a non-owning pointer to it, so a
+    /// game that destroys its camera calls `e.setCamera(nullptr)` first.
+    scene::FlyCamera flyCamera;
+
+    core::input::ActionId quit = core::input::kInvalidAction;
+    core::input::ActionId togglePanel = core::input::kInvalidAction;
+
+    /// This game's own settings row, as a typed handle. `Id::None` until `declareSettings`
+    /// answers, so a refused declaration reads and writes nothing rather than assigning
+    /// some engine row by accident.
+    core::settings::Setting<bool> showRenderSettings{core::settings::Id::None};
+};

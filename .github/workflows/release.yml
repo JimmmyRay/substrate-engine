@@ -1,0 +1,87 @@
+# Build both platforms' artifacts and attach them to a GitHub Release.
+#
+# A thin wrapper on purpose: every step below is `./build_release.sh`, which is the same
+# command a developer runs locally. A workflow that reimplemented the packaging would be a
+# second definition of what a release is, and the one that drifts is always the one nobody
+# runs by hand.
+#
+# Triggered by a tag. There are no tags in this repository yet -- `git tag v0.1.0 && git
+# push --tags` is what starts the first one -- and the version in the artifact's *name*
+# comes from project(Substrate VERSION ...) in CMakeLists.txt, not from the tag. They should
+# agree; see the check below, which says so out loud rather than shipping a file whose name
+# contradicts the tag it was built from.
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      game:
+        description: "Game to package"
+        required: true
+        default: demo
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Resolve the game and version
+        id: meta
+        run: |
+          GAME="${{ github.event.inputs.game || 'demo' }}"
+          VERSION="$(awk -F'[ )]+' '/^project\(Substrate VERSION/ { print $3; exit }' CMakeLists.txt)"
+          echo "game=$GAME"       >>"$GITHUB_OUTPUT"
+          echo "version=$VERSION" >>"$GITHUB_OUTPUT"
+
+          # A tag that disagrees with the project version produces artifacts named after
+          # the second while the release is named after the first, and nobody notices until
+          # someone downloads v0.2.0 and gets demo-0.1.0. Fail here instead.
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            TAG="${GITHUB_REF_NAME#v}"
+            if [ "$TAG" != "$VERSION" ]; then
+              echo "error: tag v$TAG does not match project(Substrate VERSION $VERSION)" >&2
+              echo "       bump the version in CMakeLists.txt, or retag." >&2
+              exit 1
+            fi
+          fi
+
+      # Assets are generated and gitignored, so a fresh clone has none and the manifest
+      # correctly refuses to package nothing. This is the step that makes a runner able to
+      # build a release at all, and it is why the failure is a clear one rather than a
+      # silently empty package.
+      - name: Generate the asset trees
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends python3
+          python3 scripts/make_test_scene.py
+
+      - name: Build both platforms
+        run: ./build_release.sh ${{ steps.meta.outputs.game }} all --docker
+
+      - name: Attach the artifacts
+        uses: softprops/action-gh-release@v2
+        with:
+          files: releases/*
+          fail_on_unmatched_files: true
+          body: |
+            Substrate ${{ steps.meta.outputs.version }} -- `${{ steps.meta.outputs.game }}`
+
+            | Platform | Artifact |
+            |---|---|
+            | Linux x86_64 | `.AppImage` |
+            | Windows x64 | `-setup.exe`, per-user installer |
+
+            The Windows build is cross-compiled with MinGW-w64 and is compile- and
+            link-verified: the import table is checked on every build, so the binary carries
+            no MinGW runtime DLLs and does not link the Vulkan loader. **Nothing runs it.**
+            The unit suite is built for Windows but not executed, the installer is produced
+            but not installed, and no part of the engine is exercised on a Windows machine.
+            Treat this artifact as untested until someone runs it on one.

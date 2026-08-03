@@ -1,0 +1,14 @@
+# core.autocrlf is `input` here, which asks git to rewrite line endings in anything it
+# decides is text. It decides by looking for a NUL in the first 8000 bytes, and the sprite
+# sheets and the synthesised impact both happen to carry one early enough to be classified
+# correctly today. Saying so outright is two lines, and the failure it forecloses is a
+# silently corrupted asset on a checkout that never ran the guess the same way.
+*.png binary
+*.wav binary
+*.glb binary
+*.ktx2 binary
+
+# The generated scenes are JSON with one long base64 buffer per file. Diffing them is
+# noise -- what changed is never legible at the character level -- and merging them is
+# never right, because the accessor offsets either side of a conflict have already moved.
+*.gltf -diff -merge

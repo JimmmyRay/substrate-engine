@@ -1,0 +1,89 @@
+{
+  "window": {
+    "width": 1600,
+    "height": 900,
+    "vsync": false
+  },
+
+  "render": {
+    "msaaSamples": 4,
+    "debugFont": "",
+    "debugFontHeight": 16,
+    "ssao": true,
+    "ssaoRadius": 0.5,
+    "ssaoBias": 0.025,
+    "shadows": true,
+    "punctualShadows": true,
+    "shadowCache": true,
+    "shadowDistance": 0,
+    "lightCutoff": 0,
+    "bloom": true,
+    "bloomThreshold": 1.1,
+    "bloomSoftKnee": 0.6,
+    "bloomStrength": 0.05,
+    "edgeMsaa": true,
+    "culling": true,
+    "occlusionCulling": true,
+    "meshLod": true,
+    "lodThreshold": 0.000244,
+    "rt": true,
+    "rtShadows": true,
+    "ssr": true,
+    "ssrRoughnessCutoff": 0.4,
+    "ssrIntensity": 1,
+    "ssrScale": 1,
+    "ssrMaxDistance": 8,
+    "ssrThickness": 0.5,
+    "rtMaxDistance": 200,
+    "fog": false,
+    "fogDensity": 0.03,
+    "fogAnisotropy": 0.6,
+    "fogMaxDistance": 60,
+    "fogHeightFalloff": 6,
+    "particles": true,
+    "particleSort": true,
+    "taa": false,
+    "taaBlend": 0.1
+  },
+
+  "input": {
+    "gamepadDeadzone": 0.15,
+    "textRepeatDelay": 0.4,
+    "textRepeatRate": 0.03,
+    "bindings": {}
+  },
+
+  "camera": {
+    "fovDegrees": 60,
+    "moveSpeedScale": 1,
+    "orbitSensitivity": 0.005,
+    "zoomStep": 0.9
+  },
+
+  "physics": {
+    "maxStepsPerFrame": 4,
+    "workerThreads": 0
+  },
+
+  "audio": {
+    "enabled": true,
+    "sampleRate": 48000,
+    "channels": 2,
+    "masterVolume": 1,
+    "streamThresholdSeconds": 5,
+    "decodeBudgetBytes": 67108864
+  },
+
+  "ui": {
+    "scale": 0
+  },
+
+  "demo": {
+    "impactVolume": 1,
+    "impactDust": true,
+    "panelX": 16,
+    "panelY": 16,
+    "panelWidth": 300,
+    "panelHeight": 560
+  }
+}

@@ -1,0 +1,120 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+/**
+ * Birth (S3.2). One thread per particle spawned this frame.
+ *
+ * ## Why this dispatch is so small
+ *
+ * It writes the particles the CPU already decided on: `ParticleSystem::update` picked
+ * the slot, the seed and the lifetime, and this fills in the state that follows from
+ * them. The slot in particular is the CPU's to pick, because a GPU free list handed out
+ * with `atomicAdd` is not deterministic and 5.3's golden images are -- ParticleSystem.h
+ * carries the argument in full.
+ *
+ * So there is no allocation here, no atomics, and nothing to read back. `spawnCount`
+ * is a push constant the CPU knows exactly.
+ *
+ * ## Why it runs after the simulate pass rather than before
+ *
+ * A slot freed this frame is reused this frame. Simulate kills it -- writing the dead
+ * key and clearing the lifetime -- and then this overwrites it with the newborn. The
+ * other order would have simulate integrate a particle one step older than it is and
+ * then kill it, which is a newborn that flickers on its first frame.
+ *
+ * That ordering is also why this shader lights the particle itself instead of leaving
+ * it to simulate: nothing else runs before the draw, so a newborn with no colour is a
+ * newborn that is invisible for one frame. The lighting is one call to a shared
+ * function, which is the whole cost of getting that right.
+ */
+
+#include "frame.glsl"
+#include "particle.glsl"
+#include "particle_light.glsl"
+
+layout(local_size_x = 64) in;
+
+layout(push_constant) uniform Push {
+    uint spawnCount;
+    uint indexBits;  ///< log2(pool capacity); the sort key's slot field is this wide
+    float sortRange; ///< distance at which the key's quantised depth saturates
+    float now;       ///< simulated time, the same clock ParticleSystem::update keeps
+} pc;
+
+/**
+ * A direction inside a cone of half-angle `angle` about +Y, from two uniform numbers.
+ *
+ * Uniform over the *cap*, not over the angle: `cos(theta)` is what has to be sampled
+ * uniformly, and interpolating theta itself crowds the samples toward the axis. A jet
+ * built the wrong way has a bright core and a thin skirt, which reads as a bug in the
+ * emitter rather than as a distribution.
+ */
+vec3 coneDirection(float angle, float u, float v) {
+    float cosTheta = mix(cos(angle), 1.0, u);
+    float sinTheta = sqrt(max(1.0 - cosTheta * cosTheta, 0.0));
+    float phi = v * 6.28318530718;
+    return vec3(sinTheta * cos(phi), cosTheta, sinTheta * sin(phi));
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.spawnCount) return;
+
+    Spawn s = spawns[i];
+    uint slot = s.meta.x;
+    uint emitterIndex = s.meta.y;
+    uint seed = s.meta.z;
+    float lifetime = s.params.x;
+    float birth = s.params.y;
+    // How much of this step the particle has already lived. The CPU spread the births
+    // across the step by moving the birth time back, so this is where that shows up.
+    float age = max(pc.now - birth, 0.0);
+
+    Emitter e = emitters[emitterIndex];
+
+    // Birth position, in the emitter's box and then in the world.
+    vec3 local = vec3(particleRandom(seed, RANDOM_POS_X), particleRandom(seed, RANDOM_POS_Y),
+                      particleRandom(seed, RANDOM_POS_Z)) *
+                     2.0 -
+                 1.0;
+    vec3 spawnPos = (e.transform * vec4(local * e.boxExtent.xyz, 1.0)).xyz;
+
+    // Birth velocity. The authored vector gives the axis and the speed; the cone
+    // scatters the axis and the jitter scales the speed. Rotated by the emitter's
+    // transform, not translated by it -- a velocity is a direction.
+    vec3 authored = e.velocity.xyz;
+    float speed = length(authored);
+    vec3 axis = speed > 1e-6 ? authored / speed : vec3(0.0, 1.0, 0.0);
+
+    vec3 dir = axis;
+    if (e.boxExtent.w > 1e-5) {
+        vec3 cone = coneDirection(e.boxExtent.w, particleRandom(seed, RANDOM_CONE_U),
+                                  particleRandom(seed, RANDOM_CONE_V));
+        // An orthonormal basis with `axis` as its +Y, so the cone is aimed rather than
+        // always pointing up. The reference vector is whichever of +X and +Y the axis is
+        // least parallel to, because a cross product with a parallel vector is zero.
+        vec3 ref = abs(axis.y) < 0.99 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+        vec3 t = normalize(cross(ref, axis));
+        vec3 b = cross(axis, t);
+        dir = t * cone.x + axis * cone.y + b * cone.z;
+    }
+
+    speed *= 1.0 + e.velocity.w * (particleRandom(seed, RANDOM_SPEED) * 2.0 - 1.0);
+    vec3 velocity = mat3(e.transform) * (dir * speed);
+
+    // The sub-step age the CPU handed over, integrated here rather than left for the
+    // next frame. Without it a 600-per-second emitter lays ten particles down at exactly
+    // one point every frame and the jet reads as a string of beads. Linear in velocity
+    // and quadratic in gravity, which is the same integrator simulate uses.
+    vec3 position = spawnPos + velocity * age + e.gravity.xyz * (0.5 * age * age);
+    velocity += e.gravity.xyz * age;
+
+    Particle p;
+    p.position = vec4(position, birth);
+    p.velocity = vec4(velocity, lifetime);
+    p.meta = uvec4(emitterIndex, seed, 0u, 0u);
+    p.color = particleColor(e, position, clamp(age / max(lifetime, 1e-6), 0.0, 1.0));
+
+    particles[slot] = p;
+    sortKeys[slot] = particleSortKey(distance(position, frame.cameraPos.xyz), pc.sortRange, slot, pc.indexBits);
+}

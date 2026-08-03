@@ -1,0 +1,81 @@
+# Build output
+build/
+out/
+bin/
+obj/
+dist/
+target/
+compile_commands.json
+
+# Packaged artifacts from ./build_release.sh. Named rather than matched, because the
+# directory itself is part of the layout and only its contents are build output -- and
+# because a release is reproducible from a tag, so the binary is the one thing here that
+# never belongs in history.
+releases/
+
+# Games other than the demo are their own repositories. A game is a separate project
+# under a separate license, and only the demo is this engine's own acceptance test (G9)
+# — deleting it must cost the engine its proof that the API is writable against.
+#
+# Games are discovered on the filesystem (scripts/common.sh iterates game/*/), so a game
+# ignored here still builds, runs and packages exactly as before. This is the whole of
+# what a new game has to do to stay out of the engine's history: nothing.
+game/*
+!game/demo/
+
+# Assets — Sponza is (c) Crytek under the CryEngine Limited License Agreement, the
+# Mixamo rigs carry their own, and the recorded audio is neither ours nor small. All are
+# incompatible with this repo's Apache-2.0 license. Fetch them with
+# scripts/fetch_assets.sh; never commit them.
+#
+# The test scenes beside them *are* committed, because a scene written from nothing is
+# first-party and a file is a better record of it than a script that rebuilds it. That is
+# why these trees are excluded by their contents rather than as directories: git cannot
+# re-include a file whose parent directory is excluded, so each line ends in /* and the
+# exceptions follow.
+engine/assets/*
+!engine/assets/*.gltf
+!engine/assets/readback.png
+!engine/assets/cutout.png
+
+game/demo/assets/*
+!game/demo/assets/*.gltf
+!game/demo/assets/*.png
+
+# Grafted onto files this repo cannot ship, so they are deep copies of them — character
+# carries the rig's whole node and animation table, reflect carries Sponza's. Re-excluded
+# after the *.gltf line above, which would otherwise catch them.
+game/demo/assets/character.gltf
+game/demo/assets/reflect.gltf
+
+# impact.wav is synthesised; every other file here is a recording.
+!game/demo/assets/audio/
+game/demo/assets/audio/*
+!game/demo/assets/audio/impact.wav
+
+# clangd's background index. Regenerated on demand and machine-specific; it reaches
+# tens of MB on this project.
+.cache/
+
+# Profiler / debug output
+debug_frames/
+*.spv
+
+# Editors / IDEs
+.vscode/
+.idea/
+*.swp
+*~
+.DS_Store
+
+# Logs and local env
+*.log
+.env
+.env.local
+
+# Claude Code. The whole directory, not just the local overrides: the skills, agents and
+# commands under it describe how this checkout is worked rather than what the engine is.
+.claude/
+
+# Python bytecode from the asset scripts importing one another
+__pycache__/

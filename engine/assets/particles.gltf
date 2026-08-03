@@ -1,0 +1,504 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Substrate scripts/make_test_scene.py"
+  },
+  "extensionsUsed": [
+    "KHR_lights_punctual"
+  ],
+  "extensions": {
+    "KHR_lights_punctual": {
+      "lights": [
+        {
+          "type": "point",
+          "name": "lamp",
+          "color": [
+            0.35,
+            0.6,
+            1.0
+          ],
+          "intensity": 40.0,
+          "range": 10.0
+        }
+      ]
+    }
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "particles",
+      "nodes": [
+        0,
+        1,
+        2,
+        3,
+        4,
+        5,
+        6,
+        7
+      ]
+    }
+  ],
+  "nodes": [
+    {
+      "name": "ground",
+      "mesh": 0,
+      "translation": [
+        0.0,
+        0.0,
+        0.0
+      ]
+    },
+    {
+      "name": "wall",
+      "mesh": 1,
+      "translation": [
+        0.0,
+        3.0,
+        9.0
+      ],
+      "scale": [
+        14.0,
+        6.0,
+        0.5
+      ]
+    },
+    {
+      "name": "plinth",
+      "mesh": 1,
+      "translation": [
+        -3.0,
+        0.4,
+        1.0
+      ],
+      "scale": [
+        2.0,
+        0.8,
+        2.0
+      ]
+    },
+    {
+      "name": "lamp_node",
+      "extensions": {
+        "KHR_lights_punctual": {
+          "light": 0
+        }
+      },
+      "translation": [
+        4.0,
+        2.2,
+        2.0
+      ]
+    },
+    {
+      "name": "smoke",
+      "translation": [
+        -3.0,
+        0.9,
+        1.0
+      ],
+      "extras": {
+        "substrate_emitter": {
+          "rate": 140.0,
+          "lifetime": 3.2,
+          "lifetimeJitter": 0.25,
+          "velocity": [
+            0.0,
+            1.4,
+            0.0
+          ],
+          "speedJitter": 0.35,
+          "coneAngle": 22.0,
+          "boxExtent": [
+            0.35,
+            0.02,
+            0.35
+          ],
+          "gravity": [
+            0.25,
+            0.35,
+            0.0
+          ],
+          "drag": 0.45,
+          "colorStart": [
+            0.72,
+            0.72,
+            0.74,
+            0.55
+          ],
+          "colorEnd": [
+            0.32,
+            0.32,
+            0.36,
+            0.0
+          ],
+          "sizeStart": 0.35,
+          "sizeEnd": 1.6,
+          "collides": true,
+          "restitution": 0.05
+        }
+      }
+    },
+    {
+      "name": "sparks",
+      "translation": [
+        -3.0,
+        0.85,
+        1.0
+      ],
+      "extras": {
+        "substrate_emitter": {
+          "rate": 220.0,
+          "lifetime": 1.1,
+          "lifetimeJitter": 0.4,
+          "velocity": [
+            0.0,
+            4.2,
+            0.0
+          ],
+          "speedJitter": 0.5,
+          "coneAngle": 34.0,
+          "boxExtent": [
+            0.1,
+            0.02,
+            0.1
+          ],
+          "gravity": [
+            0.0,
+            -6.5,
+            0.0
+          ],
+          "drag": 0.1,
+          "emissive": true,
+          "emissiveIntensity": 6.0,
+          "colorStart": [
+            1.0,
+            0.62,
+            0.22,
+            1.0
+          ],
+          "colorEnd": [
+            0.9,
+            0.15,
+            0.05,
+            0.0
+          ],
+          "sizeStart": 0.06,
+          "sizeEnd": 0.02
+        }
+      }
+    },
+    {
+      "name": "dust",
+      "translation": [
+        1.0,
+        2.8,
+        2.5
+      ],
+      "extras": {
+        "substrate_emitter": {
+          "rate": 90.0,
+          "lifetime": 7.0,
+          "lifetimeJitter": 0.3,
+          "velocity": [
+            -0.12,
+            -0.06,
+            0.0
+          ],
+          "speedJitter": 0.8,
+          "coneAngle": 80.0,
+          "boxExtent": [
+            6.0,
+            2.4,
+            4.5
+          ],
+          "gravity": [
+            0.0,
+            -0.05,
+            0.0
+          ],
+          "drag": 0.2,
+          "colorStart": [
+            0.86,
+            0.84,
+            0.78,
+            0.16
+          ],
+          "colorEnd": [
+            0.7,
+            0.72,
+            0.8,
+            0.0
+          ],
+          "sizeStart": 0.5,
+          "sizeEnd": 0.9
+        }
+      }
+    },
+    {
+      "name": "jet",
+      "translation": [
+        4.0,
+        0.6,
+        2.0
+      ],
+      "extras": {
+        "substrate_emitter": {
+          "rate": 160.0,
+          "lifetime": 1.6,
+          "lifetimeJitter": 0.2,
+          "velocity": [
+            0.0,
+            3.0,
+            0.0
+          ],
+          "speedJitter": 0.25,
+          "coneAngle": 12.0,
+          "boxExtent": [
+            0.05,
+            0.05,
+            0.05
+          ],
+          "gravity": [
+            0.0,
+            -3.0,
+            0.0
+          ],
+          "drag": 0.3,
+          "colorStart": [
+            0.85,
+            0.9,
+            1.0,
+            0.5
+          ],
+          "colorEnd": [
+            0.5,
+            0.6,
+            0.9,
+            0.0
+          ],
+          "sizeStart": 0.12,
+          "sizeEnd": 0.4,
+          "collides": true,
+          "restitution": 0.35
+        }
+      },
+      "rotation": [
+        0.0,
+        0.0,
+        0.7071067811865475,
+        0.7071067811865476
+      ]
+    }
+  ],
+  "meshes": [
+    {
+      "name": "ground",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 5,
+            "NORMAL": 6,
+            "TANGENT": 7,
+            "TEXCOORD_0": 8
+          },
+          "indices": 9,
+          "material": 0
+        }
+      ]
+    },
+    {
+      "name": "block",
+      "primitives": [
+        {
+          "attributes": {
+            "POSITION": 0,
+            "NORMAL": 1,
+            "TANGENT": 2,
+            "TEXCOORD_0": 3
+          },
+          "indices": 4,
+          "material": 1
+        }
+      ]
+    }
+  ],
+  "materials": [
+    {
+      "name": "ground_grey",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.42,
+          0.43,
+          0.46,
+          1.0
+        ],
+        "roughnessFactor": 0.9,
+        "metallicFactor": 0.0
+      }
+    },
+    {
+      "name": "wall_warm",
+      "pbrMetallicRoughness": {
+        "baseColorFactor": [
+          0.62,
+          0.55,
+          0.48,
+          1.0
+        ],
+        "roughnessFactor": 0.85,
+        "metallicFactor": 0.0
+      }
+    }
+  ],
+  "accessors": [
+    {
+      "bufferView": 0,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3",
+      "min": [
+        -0.5,
+        -0.5,
+        -0.5
+      ],
+      "max": [
+        0.5,
+        0.5,
+        0.5
+      ]
+    },
+    {
+      "bufferView": 1,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 2,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 3,
+      "componentType": 5126,
+      "count": 24,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 4,
+      "componentType": 5125,
+      "count": 36,
+      "type": "SCALAR"
+    },
+    {
+      "bufferView": 5,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3",
+      "min": [
+        -6.0,
+        0.0,
+        -11.0
+      ],
+      "max": [
+        6.0,
+        0.0,
+        11.0
+      ]
+    },
+    {
+      "bufferView": 6,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC3"
+    },
+    {
+      "bufferView": 7,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC4"
+    },
+    {
+      "bufferView": 8,
+      "componentType": 5126,
+      "count": 4,
+      "type": "VEC2"
+    },
+    {
+      "bufferView": 9,
+      "componentType": 5125,
+      "count": 6,
+      "type": "SCALAR"
+    }
+  ],
+  "bufferViews": [
+    {
+      "buffer": 0,
+      "byteOffset": 0,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 288,
+      "byteLength": 288,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 576,
+      "byteLength": 384,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 960,
+      "byteLength": 192,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1152,
+      "byteLength": 144,
+      "target": 34963
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1296,
+      "byteLength": 48,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1344,
+      "byteLength": 48,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1392,
+      "byteLength": 64,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1456,
+      "byteLength": 32,
+      "target": 34962
+    },
+    {
+      "buffer": 0,
+      "byteOffset": 1488,
+      "byteLength": 24,
+      "target": 34963
+    }
+  ],
+  "buffers": [
+    {
+      "byteLength": 1512,
+      "uri": "data:application/octet-stream;base64,AAAAvwAAAL8AAAA/AAAAPwAAAL8AAAA/AAAAPwAAAD8AAAA/AAAAvwAAAD8AAAA/AAAAPwAAAL8AAAC/AAAAvwAAAL8AAAC/AAAAvwAAAD8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAL8AAAA/AAAAPwAAAL8AAAC/AAAAPwAAAD8AAAC/AAAAPwAAAD8AAAA/AAAAvwAAAL8AAAC/AAAAvwAAAL8AAAA/AAAAvwAAAD8AAAA/AAAAvwAAAD8AAAC/AAAAvwAAAD8AAAA/AAAAPwAAAD8AAAA/AAAAPwAAAD8AAAC/AAAAvwAAAD8AAAC/AAAAvwAAAL8AAAC/AAAAPwAAAL8AAAC/AAAAPwAAAL8AAAA/AAAAvwAAAL8AAAA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AAAAAAAAAAAAAIC/AACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAgL8AAAAAAACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAACAPwAAgL8AAAAAAAAAAAAAgD8AAIC/AAAAAAAAAAAAAIA/AACAvwAAAAAAAAAAAACAPwAAgL8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgL8AAIA/AAAAAAAAAAAAAIC/AACAPwAAAAAAAAAAAACAvwAAgD8AAAAAAAAAAAAAgL8AAIA/AAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIA/AACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAAAAAAIA/AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAUAAAAGAAAABAAAAAYAAAAHAAAACAAAAAkAAAAKAAAACAAAAAoAAAALAAAADAAAAA0AAAAOAAAADAAAAA4AAAAPAAAAEAAAABEAAAASAAAAEAAAABIAAAATAAAAFAAAABUAAAAWAAAAFAAAABYAAAAXAAAAAADAwAAAAAAAADDBAADAQAAAAAAAADDBAADAQAAAAAAAADBBAADAwAAAAAAAADBBAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAAAAAAAAgD8AAAAAAACAPwAAAAAAAAAAAACAPwAAgD8AAAAAAAAAAAAAgD8AAIA/AAAAAAAAAAAAAIA/AACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAAAAAAIAAAABAAAAAAAAAAMAAAACAAAA"
+    }
+  ]
+}

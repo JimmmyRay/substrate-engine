@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+// No GBUFFER_MULTISAMPLE: the 1x G-buffer is genuinely single-sampled.
+
+#include "frame.glsl"
+#include "light_tile_body.glsl"

@@ -1,0 +1,104 @@
+#include "@CLASS@.h"
+
+#include "Entry.h"
+#include "core/Logger.h"
+
+/**
+ * @file game/@NAME@/@CLASS@.cpp
+ * @brief @NAME@, scaffolded by `./new_game.sh`.
+ *
+ * Everything here is yours to delete. What it demonstrates is the whole of the boundary:
+ * a `Game` subclass, five overrides with empty defaults, and a `SUBSTRATE_GAME` line that
+ * connects the class to the `main()` the engine already compiles.
+ *
+ * **Nothing under `engine/` was edited to make this build, and nothing needs to be.** If
+ * you find yourself reaching past the public headers to do something ordinary, that is a
+ * defect report about the API rather than a thing to work around here.
+ */
+
+void @CLASS@::declareSettings(core::settings::Settings& settings) {
+    // Your game's own settings rows, added to the same table `substrate.json`,
+    // `--dump-settings`, `--set` and the generated panel all read. A game owns every module
+    // the engine does not name, so `@NAME@.` is yours and `render.` is not.
+    //
+    // This runs *before* the config file is read, and that is the whole reason it is not
+    // `configure` below: the file is walked once, so a row declared afterwards would have
+    // had its key reported as the user's typo and would keep its built-in whatever they
+    // wrote. Nothing is available here on purpose -- no engine, no file, no flags -- because
+    // a schema that differed between runs is one the file and the dump cannot both assume.
+    //
+    // Keep the handle. It carries the row's type, so `settings.set(showRenderSettings, 3)`
+    // does not compile.
+    showRenderSettings = settings.declare("@NAME@.showRenderSettings", true, "Show render settings");
+}
+
+void @CLASS@::configure(GameSetup& setup, core::settings::Settings& settings) {
+    // Runs before any subsystem exists, which is what makes it the place for authored
+    // values: the engine needs them to build the world it is about to build.
+    setup.name = "@NAME@";
+
+    // A game's own default: it outranks the built-in and loses to the user's config file
+    // and to the command line. `setDefault` is the door for that -- it writes only where
+    // nothing has claimed the row -- and `set` is the other one, *my answer regardless*.
+    // See `Game::configure` for which to reach for.
+    (void)settings.setDefault(core::options::window::vsync, true);
+}
+
+void @CLASS@::init(Engine& e) {
+    // The world is composed here, out of assets. Drop a glTF in `game/@NAME@/assets/` --
+    // where `res:/` looks before it looks at the engine's -- and import it onto a node:
+    //
+    //   const scene::NodeId level = e.scene().create("level");
+    //   e.scene().add<scene::Model>(level, {core::Resources("res:/level.glb")});
+    //
+    // The node's transform is where it lands. Nothing has to be sized first.
+
+    // The engine installs no camera, so a game that wants to look around asks for one.
+    // These two lines are what give you W, A, S, D, E, Q and a middle-drag to orbit; delete them
+    // when this game has a camera of its own, and the nine `Camera.*` rows go with them.
+    flyCamera.applySettings(e.settingsTable());
+    e.setCamera(&flyCamera);
+
+    // Actions rather than key codes: a key written into a `case` label is a binding
+    // nobody can rebind, serialise or show on screen. Declared here, because `Engine::run`
+    // applies the config's rebinds immediately afterwards.
+    quit = e.input().declare("App.Quit", "Escape");
+    togglePanel = e.input().declare("App.Panel", "Tab");
+
+    // Open the panel, because a scaffolded game with nothing on screen looks broken.
+    // Whether a debug window is up is not a setting -- `ui.panel` was one until D14 found
+    // it was a developer control, and `--panel` is the flag that answers it now -- so a
+    // game that wants one open says so here.
+    e.setUiVisible(true);
+
+    core::Logger::status(core::LogCategory::Core, "@NAME@ ready -- Escape quits, Tab hides the panel");
+}
+
+void @CLASS@::frameUpdate(Engine& e, float /*dt*/) {
+    const core::input::InputMap& in = e.input();
+    if (in.pressed(quit)) e.requestQuit();
+    // Not a plain bool, because the engine reads it: it decides whether `drawUi` is
+    // called at all, and whether the binding menu or this panel owns the keyboard.
+    if (in.pressed(togglePanel)) e.setUiVisible(!e.uiVisible());
+}
+
+void @CLASS@::drawUi(Engine& e, ui::Context& ui) {
+    if (!ui.beginPanel("@NAME@", {16.0f, 16.0f}, {320.0f, 560.0f})) return;
+
+    // Your own module first. The row `declareSettings` added draws here with no more work
+    // than the engine's do, because nothing downstream of `declare` knows the difference.
+    ui::drawSettings(ui, e.settingsTable(), "@NAME@");
+    ui.separator();
+
+    // Every render setting there is, generated from the settings table -- a checkbox per
+    // bool, a slider per bounded number, with the names and ranges the config file uses.
+    // Delete this line and write your own widgets when the game has something to say.
+    if (e.settingsTable().get(showRenderSettings)) ui::drawSettings(ui, e.settingsTable(), "render");
+
+    ui.endPanel();
+}
+
+// The whole of a game's entry point. `SUBSTRATE_ENTRY_POINT` is a CMake option, ON by
+// default, and with it on the engine compiles `main()` and this is the only line
+// connecting your class to it.
+SUBSTRATE_GAME(@CLASS@)

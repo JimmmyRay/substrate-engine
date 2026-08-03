@@ -1,0 +1,69 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "ibl_common.glsl"
+
+/**
+ * Prefiltered specular environment: one mip per roughness step.
+ *
+ * The split-sum approximation's first half. Mip 0 is a mirror, the last mip is fully
+ * rough, and the lighting pass picks a level from the material's roughness.
+ *
+ * Dispatched once per mip, with the roughness for that mip pushed in.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform samplerCube environment;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray outPrefiltered;
+
+layout(push_constant) uniform Push {
+    uint size;        // this mip's face size
+    float roughness;
+    uint sampleCount;
+    uint envSize;     // source cubemap face size, for the mip-selection heuristic
+} pc;
+
+void main() {
+    uvec3 id = gl_GlobalInvocationID;
+    if (id.x >= pc.size || id.y >= pc.size) return;
+
+    vec2 uv = (vec2(id.xy) + 0.5) / float(pc.size);
+    vec3 N = cubeDirection(id.z, uv);
+
+    // The usual simplification: assume the view direction equals the normal. It costs
+    // the elongated grazing-angle highlight and buys a 2D lookup instead of a 3D one.
+    vec3 R = N;
+    vec3 V = N;
+
+    vec3 colorSum = vec3(0.0);
+    float weightSum = 0.0;
+
+    for (uint i = 0u; i < pc.sampleCount; ++i) {
+        vec2 xi = hammersley(i, pc.sampleCount);
+        vec3 H = importanceSampleGGX(xi, N, pc.roughness);
+        vec3 L = normalize(2.0 * dot(V, H) * H - V);
+
+        float ndotl = dot(N, L);
+        if (ndotl <= 0.0) continue;
+
+        // Sample from a mip chosen by the sample's solid angle. Without this, rough
+        // levels alias badly: a few hundred taps of a 512-texel mirror cannot resolve
+        // a wide lobe, and the result sparkles.
+        float ndoth = clamp(dot(N, H), 0.0, 1.0);
+        float hdotv = clamp(dot(H, V), 0.0, 1.0);
+        float a = pc.roughness * pc.roughness;
+        float d = (ndoth * a - ndoth) * ndoth + 1.0;
+        float pdf = (a * a) / max(PI * d * d, 1e-7) * ndoth / max(4.0 * hdotv, 1e-7);
+
+        float saTexel = 4.0 * PI / (6.0 * float(pc.envSize) * float(pc.envSize));
+        float saSample = 1.0 / (float(pc.sampleCount) * max(pdf, 1e-7));
+        float mip = pc.roughness == 0.0 ? 0.0 : 0.5 * log2(saSample / saTexel);
+
+        colorSum += textureLod(environment, L, max(mip, 0.0)).rgb * ndotl;
+        weightSum += ndotl;
+    }
+
+    vec3 prefiltered = weightSum > 0.0 ? colorSum / weightSum : textureLod(environment, N, 0.0).rgb;
+    imageStore(outPrefiltered, ivec3(id), vec4(prefiltered, 1.0));
+}

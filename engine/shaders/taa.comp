@@ -1,0 +1,146 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+/**
+ * Temporal antialiasing (3.4).
+ *
+ * Reprojects last frame's resolved image into this one and blends, so the sub-pixel
+ * jitter the projection matrix carries turns successive frames into successive
+ * samples of the same pixel. Unlike MSAA this antialiases *shading* -- specular
+ * shimmer, cascade stair-stepping, SSAO noise -- because the samples differ in time
+ * rather than only in coverage.
+ *
+ * ## Still no motion-vector attachment, and now there is a correction instead
+ *
+ * The roadmap sized this with "motion vectors (a new G-buffer attachment)". There is
+ * none, and that survived the arrival of moving geometry. The camera's contribution to
+ * every pixel's motion is exactly recoverable from depth and two matrices -- which is
+ * what happens below -- and it is the same for static and dynamic surfaces alike. An
+ * attachment at the G-buffer's sample count would cost 23 MB per frame at 4x and
+ * 1600x900 to restate it per sample.
+ *
+ * What S2, S3 and S4 ended is not the reprojection but its *sufficiency*: a moving
+ * object reprojects against the background behind it. That is now corrected by a
+ * separate single-sample pass over dynamic instances only (`velocity.vert`), writing
+ * the difference between where this reprojection lands and where the surface was.
+ * Single-sample because the correction is a per-fragment quantity that gains nothing
+ * from multisampling, and a separate pass because one render pass cannot mix sample
+ * counts -- the same constraint that gave `recordForward` a resolved depth to test
+ * against, and this pass tests against the same one.
+ *
+ * The failure mode when the pass is off is unchanged and still safe: the history is
+ * rejected by the neighbourhood clamp below, so a moving object reads as
+ * un-antialiased rather than smeared.
+ */
+
+#include "frame.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 1, binding = 0) uniform sampler2D currentColor;
+layout(set = 1, binding = 1) uniform sampler2D historyColor;
+/// Single-sample depth: the resolve at MSAA, gDepth itself at 1x. TAA runs after the
+/// resolve, so there is one depth per output pixel either way.
+layout(set = 1, binding = 2) uniform sampler2D sceneDepth;
+/// image2DArray, not image2D: createStorageView() makes 2D_ARRAY views throughout,
+/// because `imageStore` addresses a cube's faces as array layers and one view shape
+/// across the engine beats two. The layer index is always 0 here.
+layout(set = 1, binding = 3, rgba16f) uniform writeonly image2DArray outColor;
+/// 3.4's dynamic tier: how far the reprojection below is wrong because the *object*
+/// moved as well as the camera. Zero everywhere nothing moved, which is the clear
+/// value, so this is an unconditional add rather than a test -- see velocity.vert.
+/// Bound to a 1x1 zero image when the pass is off, for the same reason the bloom
+/// chain stays bound when bloom is: a descriptor a shader declares must point at
+/// something, and zero is this one's identity.
+layout(set = 1, binding = 4) uniform sampler2D motionCorrection;
+
+layout(push_constant) uniform Push {
+    vec2 texel;   ///< 1 / extent
+    float blend;  ///< weight given to the current frame; 1 discards all history
+    float valid;  ///< 0 when there is no usable history yet
+} pc;
+
+/// Rec. 709 luma, for the tonemap-weighted blend below.
+float luma(vec3 c) { return dot(c, vec3(0.2126, 0.7152, 0.0722)); }
+
+void main() {
+    ivec2 size = textureSize(currentColor, 0);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec3 current = texelFetch(currentColor, coord, 0).rgb;
+
+    // First frame after startup, a resize, or a toggle: there is nothing to blend
+    // against, and blending against an undefined image would take several frames to
+    // wash out of the history.
+    if (pc.valid < 0.5) {
+        imageStore(outColor, ivec3(coord, 0), vec4(current, 1.0));
+        return;
+    }
+
+    vec2 uv = (vec2(coord) + 0.5) * pc.texel;
+
+    // Reverse-Z: the far plane is 0, and this projection is *infinite*, so unprojecting
+    // at exactly 0 divides by zero. Clamping to 1e-5 puts a sky pixel at 10 km with a
+    // near plane of 0.1, which reprojects as rotation-only -- which is what a point at
+    // infinity should do. A special case for sky would arrive at the same answer with
+    // a branch attached.
+    float depth = max(texelFetch(sceneDepth, coord, 0).r, 1e-5);
+
+    // Both sides unjittered, and this is the single most important line in the pass.
+    //
+    // Using the *jittered* inverse here reads correctly -- it is the transform that
+    // actually produced this depth -- and is wrong, because the previous frame is
+    // projected with an unjittered matrix. The two disagree by exactly the jitter, so
+    // even with a perfectly static camera the history is fetched half a pixel away and
+    // bilinearly resampled, every frame, compounding. Measured: it cut the image's
+    // high-frequency energy from 22.2 to 6.3, which is not antialiasing but a blur
+    // deep enough to also brighten the frame by 2/255 through the tonemap's curve.
+    //
+    // Unjittered on both sides makes a static camera map each pixel to itself exactly,
+    // so the only thing the jitter moves is where *this* frame sampled the scene --
+    // which is the whole mechanism.
+    vec4 world = frame.invViewProjNoJitter * vec4(uv * 2.0 - 1.0, depth, 1.0);
+    world /= world.w;
+
+    vec4 prevClip = frame.prevViewProj * vec4(world.xyz, 1.0);
+    vec2 prevUv = (prevClip.xy / prevClip.w) * 0.5 + 0.5;
+
+    // The dynamic tier. `texelFetch` rather than `texture`: the correction is a
+    // per-pixel quantity written by the same rasterisation that produced this depth,
+    // so filtering it would blend a moving surface's correction into its stationary
+    // neighbour's along every silhouette -- which is the one place the value matters
+    // most and the one place a bilinear tap is guaranteed to straddle two surfaces.
+    prevUv += texelFetch(motionCorrection, coord, 0).rg;
+
+    bool offscreen = prevClip.w <= 0.0 || any(lessThan(prevUv, vec2(0.0))) ||
+                     any(greaterThan(prevUv, vec2(1.0)));
+
+    // Neighbourhood clamping. The history is only trustworthy insofar as it resembles
+    // what is on screen now; clamping it into the 3x3 colour box around this pixel is
+    // what turns a disocclusion from a ghost into one un-antialiased frame. It is also
+    // what makes the missing motion vectors above a safe failure rather than a smear.
+    vec3 lo = current;
+    vec3 hi = current;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            vec3 c = texelFetch(currentColor, clamp(coord + ivec2(x, y), ivec2(0), size - 1), 0).rgb;
+            lo = min(lo, c);
+            hi = max(hi, c);
+        }
+    }
+
+    vec3 history = clamp(texture(historyColor, prevUv).rgb, lo, hi);
+    float blend = offscreen ? 1.0 : pc.blend;
+
+    // Karis's tonemap-weighted average. Blending HDR radiance linearly lets one very
+    // bright sample dominate the history and then bleed out of it over the following
+    // frames, which reads as a comet trail behind every specular highlight. Weighting
+    // by 1/(1+luma) performs the average in a compressed space and undoes it after,
+    // so a firefly contributes its share and no more.
+    float wc = blend / (1.0 + luma(current));
+    float wh = (1.0 - blend) / (1.0 + luma(history));
+    vec3 result = (current * wc + history * wh) / max(wc + wh, 1e-6);
+
+    imageStore(outColor, ivec3(coord, 0), vec4(result, 1.0));
+}

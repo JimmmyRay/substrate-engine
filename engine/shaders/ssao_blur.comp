@@ -1,0 +1,52 @@
+#version 450
+
+/**
+ * Blur the SSAO buffer.
+ *
+ * A plain box blur, and that is the whole point: the kernel in ssao.comp is rotated
+ * by a per-pixel hash, so the noise is uncorrelated between neighbours and averaging a
+ * small neighbourhood recovers what a much larger sample count would have produced.
+ * The blur is what makes 16 samples look like 256.
+ *
+ * Not depth-aware. A bilateral version would keep occlusion from bleeding across
+ * silhouettes; if that ever shows, this is the shader to change.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 1, binding = 0) uniform sampler2D srcAo;
+layout(set = 1, binding = 1, rgba8) uniform writeonly image2DArray dstAo;
+
+layout(push_constant) uniform Push {
+    vec2 texel;
+    float radius;
+    float bias;
+    float intensity;
+    uint sampleCount;
+} pc;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dstAo).xy;
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec2 uv = (vec2(coord) + 0.5) * pc.texel;
+
+    // 3x3, centred on the texel. Symmetric deliberately: this was a 4x4 over -2..1, whose
+    // centroid sits half a texel up and left, and when the pass moved to half resolution
+    // that became a whole full-resolution pixel of shift on every contact shadow -- the
+    // largest visible term in the change, and free to remove.
+    //
+    // Nine taps rather than sixteen because what the denoise needs is the count of
+    // independent kernel rotations averaged, not the area covered, and nine is enough to
+    // hide the hash. Sixteen would also span 8x8 full-resolution pixels of bleed across
+    // silhouettes at this resolution, against 6x6 here.
+    float sum = 0.0;
+    for (int y = -1; y <= 1; ++y) {
+        for (int x = -1; x <= 1; ++x) {
+            sum += textureLod(srcAo, uv + vec2(x, y) * pc.texel, 0.0).r;
+        }
+    }
+
+    imageStore(dstAo, ivec3(coord, 0), vec4(sum / 9.0));
+}

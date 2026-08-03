@@ -1,0 +1,67 @@
+#version 450
+
+/**
+ * Hi-Z depth pyramid, one mip per dispatch (C11).
+ *
+ * ## What the reduction is, and why it is `min`
+ *
+ * The camera's projection is reverse-Z: 1.0 is the near plane and 0.0 is infinitely far.
+ * So the *farthest* surface in a footprint is the one with the *smallest* depth value, and
+ * that is the one an occlusion test has to keep. A box is occluded only if it is behind
+ * everything already drawn in the region it covers -- so the pyramid must answer "how far
+ * away is the most distant thing here", and `min` is what answers it under reverse-Z.
+ *
+ * Taking `max` instead would build a pyramid that culls anything behind the *nearest*
+ * occluder in a whole tile, which is most of the scene. It fails in the direction that
+ * looks like a rendering bug rather than like a performance one.
+ *
+ * ## Four taps, point-sampled
+ *
+ * A linear sampler would average the four, and an average of depths is not a depth of
+ * anything -- it is a value in front of the far surface and behind the near one, which is
+ * exactly the value that makes an occlusion test wrong in both directions. `pointSampler`
+ * is what this is bound with.
+ *
+ * The source is the single-sample depth for mip 0 and the pyramid itself for every mip
+ * after, which is why the level is a push constant rather than implied.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D source;
+/// `image2DArray` because `createStorageView` makes array views uniformly -- the pyramid
+/// is one layer, and the layer index below is always zero.
+layout(set = 0, binding = 1, r32f) uniform writeonly image2DArray dest;
+
+layout(push_constant) uniform Push {
+    uvec2 destSize;
+    /// Level of `source` to read. Zero for the depth buffer, `m - 1` for the pyramid.
+    uint sourceLod;
+} pc;
+
+void main() {
+    const uvec2 p = gl_GlobalInvocationID.xy;
+    if (p.x >= pc.destSize.x || p.y >= pc.destSize.y) return;
+
+    const ivec2 srcSize = textureSize(source, int(pc.sourceLod));
+
+    // The base texel is derived from the *size ratio*, not from doubling. Level 0 reduces
+    // the depth buffer into a pyramid whose width is the largest power of two that fits,
+    // so the ratio there is somewhere in [1, 2) and a hard `p * 2` would march off the
+    // right-hand side -- mapping pyramid UV 1.0 onto depth texel 2048 of a 1920-wide
+    // image. Every level after is an exact halving and this reduces to `p * 2` on its own.
+    //
+    // A ratio below 2 makes neighbouring footprints overlap. That is harmless in the safe
+    // direction: a `min` over extra texels can only find something farther away, and a
+    // farther occluder culls less.
+    const vec2 ratio = vec2(srcSize) / vec2(pc.destSize);
+    const ivec2 base = ivec2(vec2(p) * ratio);
+    const ivec2 hi = srcSize - 1;
+
+    float d = texelFetch(source, min(base, hi), int(pc.sourceLod)).r;
+    d = min(d, texelFetch(source, min(base + ivec2(1, 0), hi), int(pc.sourceLod)).r);
+    d = min(d, texelFetch(source, min(base + ivec2(0, 1), hi), int(pc.sourceLod)).r);
+    d = min(d, texelFetch(source, min(base + ivec2(1, 1), hi), int(pc.sourceLod)).r);
+
+    imageStore(dest, ivec3(p, 0), vec4(d));
+}

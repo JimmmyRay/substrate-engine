@@ -1,0 +1,39 @@
+# @NAME@
+
+Scaffolded by `./new_game.sh @NAME@`.
+
+```bash
+./build_game.sh @NAME@          # debug; also release, asan, tsan
+./run.sh                        # the build directory remembers which game it holds
+```
+
+`run.sh` takes no game argument because it does not need one — `build_game.sh` recorded
+the choice in the CMake cache, which is also why `scripts/golden.sh` and
+`scripts/baseline.py` need none either. Naming a different game rebuilds for it.
+
+## What is here
+
+| File | What it is |
+|---|---|
+| `@CLASS@.h` / `@CLASS@.cpp` | The `Game` subclass and its `SUBSTRATE_GAME` line |
+| `CMakeLists.txt` | One `substrate_game(...)` call |
+| `assets/` | Yours. `res:/name` searches here first, then the engine's tree |
+| `shaders/` | Yours. A file named after an engine shader overrides it, for this game only |
+
+Neither `assets/` nor `shaders/` exists until you make one, and both are optional.
+
+## The rule worth knowing
+
+**Nothing under `engine/` is edited to build a game.** The engine builds, tests and
+sanitizes with `game/` absent from the tree entirely, which is what makes a dependency
+leaking across that line a link error rather than something to catch in review. If this
+game needs an engine change to do something ordinary, that is a gap in the public surface
+worth reporting rather than patching around.
+
+## Where to look next
+
+- [`docs/guides/making-a-game.md`](../../docs/guides/making-a-game.md) — the guide, written
+  from the call site backwards.
+- [`docs/kanban/`](../../docs/kanban/) — what the engine cannot do yet, and what is being
+  done about it.
+- `./run.sh -- --help` — every flag, and `--dump-settings` for every setting there is.

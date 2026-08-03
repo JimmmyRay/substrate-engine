@@ -1,0 +1,19 @@
+{
+  "config": "release",
+  "frames": 300,
+  "arm": [
+    "--locked",
+    "--audio-null",
+    "--headless",
+    "--msaa",
+    "4",
+    "--camera",
+    "0.00,1.16,1.80,63.6,-12.6,7.87"
+  ],
+  "marginPct": 12,
+  "note": "Per-frame minimum in ms on this machine. scripts/perfgate.py --update rewrites it.",
+  "zones": {
+    "Frame": 2.9502,
+    "Lighting": 1.8319
+  }
+}

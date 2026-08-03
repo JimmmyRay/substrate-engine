@@ -1,0 +1,71 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+/**
+ * One bitonic compare-exchange stage over the whole key array (S3.3).
+ *
+ * ## Why the particles are sorted at all
+ *
+ * The same reason 1.4's blended surfaces are, and the reason the answer there does not
+ * work here. Premultiplied `src + dst * (1 - src.a)` is order-dependent, so a plume of
+ * smoke drawn in pool order composites wrongly wherever two puffs overlap -- and unlike
+ * a scene of blended *objects*, there is no per-object granularity to sort at: the
+ * objects are the particles, there are thousands of them, and they interpenetrate by
+ * construction. That is exactly what the roadmap's S3.3 row says.
+ *
+ * ## Why bitonic
+ *
+ * It is the sort whose comparison network is fixed. Every pass touches the same pairs
+ * whatever the data holds, so there is no scan, no scatter and no atomic anywhere in
+ * it -- which means the result is bit-identical run to run, and the golden suite can
+ * cover a particle scene. A radix sort would be fewer passes and would need a prefix
+ * sum whose output ordering is not, in general, something this engine could promise.
+ *
+ * ## Why the domain is the whole pool
+ *
+ * A bitonic network sorts a power-of-two array, and the pool is one. Dead slots carry
+ * PARTICLE_DEAD_KEY, which is the largest key there is, so they land after every live
+ * particle and the draw simply takes the first `aliveCount` entries. Padding to a power
+ * of two costs nothing here because the pool is already sized to the steady-state
+ * population -- see ParticleSystem::requiredCapacity. Sorting a fixed 65536-slot pool
+ * to order 500 particles is the cost this avoids, and it avoids it by not having a
+ * fixed pool.
+ *
+ * ## Why there are two shaders
+ *
+ * Passes with `j >= BLOCK` compare elements in different workgroups and must go through
+ * memory; this is that one. Passes with `j < BLOCK` stay inside a block and are done
+ * entirely in shared memory by particle_sort_local.comp, which collapses nine
+ * dispatches into one. At 4096 particles that is 15 dispatches instead of 78.
+ */
+
+#include "particle.glsl"
+
+layout(local_size_x = 256) in;
+
+layout(push_constant) uniform Push {
+    uint k; ///< bitonic stage width; the sort direction of element i is (i & k) == 0
+    uint j; ///< distance between the two elements a thread compares
+    uint capacity;
+    uint pad;
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.capacity) return;
+
+    uint partner = i ^ pc.j;
+    // Each pair is handled by exactly one of its two threads, and the *other* one has
+    // to return rather than do the same swap: two threads writing both elements of a
+    // pair is a race whatever the values are.
+    if (partner <= i) return;
+
+    uint a = sortKeys[i];
+    uint b = sortKeys[partner];
+    bool ascending = (i & pc.k) == 0u;
+
+    if ((a > b) == ascending) {
+        sortKeys[i] = b;
+        sortKeys[partner] = a;
+    }
+}

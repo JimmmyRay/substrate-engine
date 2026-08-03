@@ -1,0 +1,91 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+/**
+ * The bitonic passes that fit inside one workgroup, done in shared memory (S3.3).
+ *
+ * A pass with `j < BLOCK` only ever compares elements within one aligned block of
+ * BLOCK, so every such pass of a stage can run back to back with a `barrier()` between
+ * them instead of a dispatch and a memory barrier. That is the whole optimisation, and
+ * it is worth a great deal: a full sort of 4096 keys is 78 compare-exchange passes, of
+ * which 63 collapse into 15 dispatches of this shader.
+ *
+ * Two modes, selected by the push constant, because they are the same eleven lines with
+ * a different loop around them:
+ *
+ * - `k == 0` sorts each block completely -- every stage from 2 up to BLOCK. This is the
+ *   first dispatch of the sort, and it is the one that replaces nine separate passes.
+ * - `k != 0` finishes stage `k` after the global passes have brought its long-distance
+ *   comparisons down to `j == BLOCK`. One dispatch per stage rather than log2(BLOCK).
+ *
+ * The direction bit uses the *global* index, not the index within the block. At stage
+ * k == BLOCK, alternate blocks must sort in opposite directions to leave a bitonic
+ * sequence for the stage above -- getting that wrong produces an array that is sorted
+ * in pieces and is a nightmare to see in a screenshot, because the symptom is a
+ * handful of misordered particles.
+ */
+
+#include "particle.glsl"
+
+/// Elements per workgroup, and half that many threads: each thread owns one pair.
+///
+/// 256 rather than the 1024 the hardware here would allow. Vulkan guarantees only 128
+/// invocations per workgroup, and this is the one shader in the engine whose workgroup
+/// size is a portability question rather than an occupancy one -- 128 threads is inside
+/// the guarantee, and the extra dispatch a smaller block costs is one, not nine.
+#define BLOCK 256u
+
+layout(local_size_x = 128) in;
+
+shared uint blockKeys[BLOCK];
+
+layout(push_constant) uniform Push {
+    uint k; ///< 0 sorts each block outright; otherwise finish this stage
+    uint j; ///< unused here; the local passes always run BLOCK/2 down to 1
+    uint capacity;
+    uint pad;
+} pc;
+
+/// One compare-exchange level over the block. `thread` owns the pair whose lower index
+/// is `i`, obtained by inserting a zero bit at position log2(j) -- which is what makes
+/// 128 threads cover 128 disjoint pairs for every j.
+void exchange(uint thread, uint base, uint stage, uint j) {
+    uint i = (thread & (j - 1u)) | ((thread & ~(j - 1u)) << 1u);
+    uint partner = i | j;
+
+    uint a = blockKeys[i];
+    uint b = blockKeys[partner];
+    bool ascending = ((base + i) & stage) == 0u;
+
+    if ((a > b) == ascending) {
+        blockKeys[i] = b;
+        blockKeys[partner] = a;
+    }
+}
+
+void main() {
+    uint base = gl_WorkGroupID.x * BLOCK;
+    uint t = gl_LocalInvocationID.x;
+    if (base + BLOCK > pc.capacity) return;
+
+    blockKeys[t] = sortKeys[base + t];
+    blockKeys[t + BLOCK / 2u] = sortKeys[base + t + BLOCK / 2u];
+    barrier();
+
+    if (pc.k == 0u) {
+        for (uint stage = 2u; stage <= BLOCK; stage <<= 1u) {
+            for (uint j = stage >> 1u; j > 0u; j >>= 1u) {
+                exchange(t, base, stage, j);
+                barrier();
+            }
+        }
+    } else {
+        for (uint j = BLOCK / 2u; j > 0u; j >>= 1u) {
+            exchange(t, base, pc.k, j);
+            barrier();
+        }
+    }
+
+    sortKeys[base + t] = blockKeys[t];
+    sortKeys[base + t + BLOCK / 2u] = blockKeys[t + BLOCK / 2u];
+}

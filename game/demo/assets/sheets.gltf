@@ -1,0 +1,21 @@
+{
+  "asset": {
+    "version": "2.0",
+    "generator": "Substrate scripts/make_test_scene.py"
+  },
+  "scene": 0,
+  "scenes": [
+    {
+      "name": "sheets",
+      "nodes": []
+    }
+  ],
+  "images": [
+    {
+      "uri": "flame_sheet.png"
+    },
+    {
+      "uri": "smoke_sheet.png"
+    }
+  ]
+}

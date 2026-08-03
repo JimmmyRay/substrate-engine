@@ -1,0 +1,33 @@
+[submodule "external/glm"]
+	path = external/glm
+	url = https://github.com/g-truc/glm.git
+[submodule "external/volk"]
+	path = external/volk
+	url = https://github.com/zeux/volk.git
+[submodule "external/VulkanMemoryAllocator"]
+	path = external/VulkanMemoryAllocator
+	url = https://github.com/GPUOpen-LibrariesAndSDKs/VulkanMemoryAllocator.git
+[submodule "external/fastgltf"]
+	path = external/fastgltf
+	url = https://github.com/spnda/fastgltf.git
+[submodule "external/stb"]
+	path = external/stb
+	url = https://github.com/nothings/stb.git
+[submodule "external/glfw"]
+	path = external/glfw
+	url = https://github.com/glfw/glfw.git
+[submodule "external/rapidjson"]
+	path = external/rapidjson
+	url = https://github.com/Tencent/rapidjson.git
+[submodule "external/googletest"]
+	path = external/googletest
+	url = https://github.com/google/googletest.git
+[submodule "external/JoltPhysics"]
+	path = external/JoltPhysics
+	url = https://github.com/jrouwe/JoltPhysics.git
+[submodule "external/miniaudio"]
+	path = external/miniaudio
+	url = https://github.com/mackron/miniaudio.git
+[submodule "external/meshoptimizer"]
+	path = external/meshoptimizer
+	url = https://github.com/zeux/meshoptimizer.git

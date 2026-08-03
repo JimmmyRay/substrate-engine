@@ -1,0 +1,289 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+/**
+ * GPU frustum culling (4.2).
+ *
+ * One thread per indirect command. Reads the command template the CPU built when the
+ * instance table last changed, tests that command's world bounds against one view, and
+ * writes the command out with `instanceCount` zeroed if nothing it draws can be seen.
+ * A zero-instance indirect draw costs the command processor a few bytes and the rest
+ * of the pipeline nothing.
+ *
+ * ## Why this and not a compacting cull
+ *
+ * The textbook GPU-driven renderer compacts: surviving commands are appended to a
+ * dense output through an atomic counter and submitted with `vkCmdDrawIndexedIndirect
+ * Count`. That produces a command buffer whose *order* depends on which threads won
+ * the atomic, and this renderer is bit-identical run to run (5.3) precisely because
+ * nothing in it is order-dependent. Depth ties between coplanar surfaces would start
+ * resolving differently between runs, and every golden image would become approximate
+ * to save the command processor from reading a few kilobytes it reads at full memory
+ * bandwidth anyway.
+ *
+ * So: same command count every frame, in the same order, with a count of zero on the
+ * ones that do not matter. Deterministic, and one dispatch rather than a scan.
+ *
+ * ## Why the test is in clip space
+ *
+ * The camera's projection is reverse-Z *infinite*, which has no far plane and puts the
+ * near plane where a plane-extraction routine expects the far one. Transforming the
+ * eight corners and testing them against the six clip-space inequalities avoids the
+ * question entirely: it is the same test the rasteriser applies, it handles w < 0
+ * (behind the eye) because the inequalities stay linear, and the orthographic cascade
+ * matrices go through it unchanged.
+ */
+
+layout(local_size_x = 64) in;
+
+/// Must match GpuCommandBounds in engine/gfx/Renderer.h.
+struct CommandBounds {
+    vec4 boundsMin; // w unused
+    vec4 boundsMax; // w unused
+    /// (firstIndex, indexCount) per LOD level, level 0 first and always present (C17).
+    /// Level 0 is a copy of this command's own range, written from the command itself, so
+    /// selecting level 0 is a no-op rather than a lookup that could disagree with it.
+    uvec2 lods[4];
+    uint lodLevels; // >= 1
+    uint pad0, pad1, pad2;
+};
+
+/// Must match VkDrawIndexedIndirectCommand.
+struct DrawCommand {
+    uint indexCount;
+    uint instanceCount;
+    uint firstIndex;
+    int vertexOffset;
+    uint firstInstance;
+};
+
+layout(set = 0, binding = 0) readonly buffer Bounds {
+    CommandBounds bounds[];
+};
+layout(set = 0, binding = 1) readonly buffer Template {
+    DrawCommand commandTemplate[];
+};
+layout(set = 0, binding = 2) writeonly buffer Output {
+    DrawCommand commandsOut[];
+};
+/// One counter per view, summed with atomicAdd. A sum is order-independent, which is
+/// why this does not cost the determinism a compacting cull would.
+layout(set = 0, binding = 3) buffer Stats {
+    uint visibleCounts[];
+};
+/// One uint per command: was this drawn last time the camera was culled? Phase 0 reads it
+/// to decide what to draw before any depth exists, phase 1 overwrites it with the fresh
+/// answer. Persisting it is the whole of what makes two-pass occlusion cheap -- the first
+/// pass is already a good guess at the visible set.
+layout(set = 0, binding = 4) buffer Visibility {
+    uint visibleLastFrame[];
+};
+
+/// The Hi-Z pyramid, min-reduced under reverse-Z. Read only in phase 1.
+layout(set = 1, binding = 0) uniform sampler2D depthPyramid;
+
+layout(push_constant) uniform Push {
+    mat4 viewProj;
+    /// Coverage below which each level past 0 is selected; w unused (C17). Computed by
+    /// `scene::lodCoverageThresholds` rather than derived here, so the numbers this test
+    /// turns on live in one place and that place is one a unit test can reach.
+    vec4 lodThresholds;
+    uint commandCount;
+    /// Where this view's commands start, in commands rather than bytes.
+    uint outOffset;
+    /// 0 passes everything through. Not a second code path -- the same dispatch runs,
+    /// so the buffer the draw reads is written the same way whether culling is on or
+    /// off, and turning it off measures the test rather than the plumbing.
+    uint enabled;
+    uint viewIndex;
+
+    // ------------------------------------------------------------- occlusion (C11)
+    /// 0 = draw what was visible last frame. 1 = test everything against the pyramid
+    /// built from what phase 0 just drew, and draw whatever is newly visible.
+    uint phase;
+    /// 0 leaves phase 1 testing the frustum only, which makes the two passes draw exactly
+    /// what the single pass drew. That is not a debug path -- it is how the feature is
+    /// proved image-preserving, by turning off the only part that can remove anything.
+    uint occlusionEnabled;
+    vec2 pyramidSize;
+    uint pyramidLevels;
+    /// Where the triangle counters start in `visibleCounts`, in uints.
+    uint statsStride;
+
+    // ------------------------------------------------------------------- LOD (C17)
+    /// 0 leaves every command at level 0, which is what it drew before this existed. Set
+    /// for the camera view alone: a shadow cascade is orthographic and covers the world
+    /// rather than the screen, so it has no coverage to test.
+    uint lodEnabled;
+} pc;
+
+/**
+ * How much of the viewport does this box's projection cover? (C17)
+ *
+ * The area of the screen-space rectangle around the eight transformed corners, as a
+ * fraction of the viewport -- so 1.0 is a box whose footprint fills the frame.
+ *
+ * **Not clamped to the viewport**, deliberately. An object mostly off screen still has the
+ * on-screen size it has, and clamping would shrink its coverage as it left the frame and
+ * drop its detail while it was still filling the part of the frame it occupies.
+ *
+ * A box crossing the eye returns 1.0 -- "as large as it gets" -- for the same reason the
+ * occlusion test refuses to answer for one: its projection is not a rectangle, and the
+ * conservative answer here is the one that keeps full detail.
+ */
+float screenCoverage(vec3 lo, vec3 hi) {
+    vec2 rectMin = vec2(1e30);
+    vec2 rectMax = vec2(-1e30);
+
+    for (int i = 0; i < 8; ++i) {
+        vec3 corner = vec3((i & 1) != 0 ? hi.x : lo.x,
+                           (i & 2) != 0 ? hi.y : lo.y,
+                           (i & 4) != 0 ? hi.z : lo.z);
+        vec4 c = pc.viewProj * vec4(corner, 1.0);
+        if (c.w <= 0.0) return 1.0;
+
+        vec2 uv = (c.xy / c.w) * 0.5 + 0.5;
+        rectMin = min(rectMin, uv);
+        rectMax = max(rectMax, uv);
+    }
+
+    vec2 extent = rectMax - rectMin;
+    return extent.x * extent.y;
+}
+
+/**
+ * Which level `coverage` selects. Mirrors `scene::lodForCoverage` in MeshLod.cpp, and the
+ * mirror is three lines because every number it compares against arrived as a push
+ * constant: what is duplicated is the loop, not the policy.
+ */
+uint selectLod(float coverage, uint levels) {
+    uint level = 0u;
+    while (level + 1u < levels && level < 3u && coverage < pc.lodThresholds[level]) ++level;
+    return level;
+}
+
+/**
+ * Is this box behind everything already drawn?
+ *
+ * Conservative in every direction it can be. A box that crosses the near plane is not
+ * tested at all -- its projection is not a rectangle and clamping one out of it would be
+ * inventing an answer. The comparison is strict and biased, so a box exactly level with
+ * the depth it is tested against survives.
+ *
+ * Returns false -- "not occluded" -- for anything it cannot answer.
+ */
+bool occluded(vec3 lo, vec3 hi) {
+    vec2 uvMin = vec2(1.0);
+    vec2 uvMax = vec2(0.0);
+    float nearest = 0.0; // reverse-Z: larger is nearer
+
+    for (int i = 0; i < 8; ++i) {
+        vec3 corner = vec3((i & 1) != 0 ? hi.x : lo.x,
+                           (i & 2) != 0 ? hi.y : lo.y,
+                           (i & 4) != 0 ? hi.z : lo.z);
+        vec4 c = pc.viewProj * vec4(corner, 1.0);
+        if (c.w <= 0.0) return false; // Crosses or is behind the eye.
+
+        vec3 ndc = c.xyz / c.w;
+        vec2 uv = ndc.xy * 0.5 + 0.5;
+        uvMin = min(uvMin, uv);
+        uvMax = max(uvMax, uv);
+        nearest = max(nearest, ndc.z);
+    }
+
+    // Entirely off screen is the frustum test's business, not this one.
+    if (uvMax.x <= 0.0 || uvMax.y <= 0.0 || uvMin.x >= 1.0 || uvMin.y >= 1.0) return false;
+    uvMin = clamp(uvMin, vec2(0.0), vec2(1.0));
+    uvMax = clamp(uvMax, vec2(0.0), vec2(1.0));
+
+    // The level where the box spans about two texels, so four taps cover it. Ceil rather
+    // than round: a level too coarse is conservative, a level too fine misses occluders.
+    vec2 spanTexels = (uvMax - uvMin) * pc.pyramidSize;
+    float level = ceil(log2(max(max(spanTexels.x, spanTexels.y), 1.0)));
+    level = clamp(level, 0.0, float(pc.pyramidLevels - 1u));
+
+    // Four corners of the footprint, min-reduced again: the farthest surface any of them
+    // saw is the shallowest thing that could possibly occlude this box.
+    float d = textureLod(depthPyramid, vec2(uvMin.x, uvMin.y), level).r;
+    d = min(d, textureLod(depthPyramid, vec2(uvMax.x, uvMin.y), level).r);
+    d = min(d, textureLod(depthPyramid, vec2(uvMin.x, uvMax.y), level).r);
+    d = min(d, textureLod(depthPyramid, vec2(uvMax.x, uvMax.y), level).r);
+
+    // Strictly behind, with a bias. Equality survives, and so does anything within a
+    // rounding error of the depth it is tested against.
+    const float kBias = 1e-6;
+    return nearest + kBias < d;
+}
+
+bool visible(vec3 lo, vec3 hi) {
+    // Six accumulators, one per clip-space half-space. A box is outside the frustum
+    // only if *every* corner fails the *same* plane; failing different planes each is
+    // the classic false negative, and it is why these are counted separately.
+    int outLeft = 0, outRight = 0, outBottom = 0, outTop = 0, outNear = 0, outFar = 0;
+
+    for (int i = 0; i < 8; ++i) {
+        vec3 corner = vec3((i & 1) != 0 ? hi.x : lo.x,
+                           (i & 2) != 0 ? hi.y : lo.y,
+                           (i & 4) != 0 ? hi.z : lo.z);
+        vec4 c = pc.viewProj * vec4(corner, 1.0);
+
+        if (c.x < -c.w) ++outLeft;
+        if (c.x > c.w) ++outRight;
+        if (c.y < -c.w) ++outBottom;
+        if (c.y > c.w) ++outTop;
+        if (c.z < 0.0) ++outNear;
+        if (c.z > c.w) ++outFar;
+    }
+
+    return outLeft < 8 && outRight < 8 && outBottom < 8 && outTop < 8 && outNear < 8 && outFar < 8;
+}
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.commandCount) return;
+
+    DrawCommand cmd = commandTemplate[i];
+
+    vec3 lo = bounds[i].boundsMin.xyz;
+    vec3 hi = bounds[i].boundsMax.xyz;
+    bool inFrustum = pc.enabled == 0u || visible(lo, hi);
+
+    bool keep;
+    if (pc.phase == 0u) {
+        // Before any depth exists. Draw what was visible last time and nothing else --
+        // whatever this misses, phase 1 picks up against real depth.
+        keep = inFrustum && visibleLastFrame[i] != 0u;
+    } else {
+        // Against the pyramid phase 0's draw produced. Anything phase 0 already drew is
+        // skipped here rather than tested, because it is in that depth buffer and would
+        // occlude itself.
+        bool drawnAlready = inFrustum && visibleLastFrame[i] != 0u;
+        bool nowVisible = inFrustum && (pc.occlusionEnabled == 0u || !occluded(lo, hi));
+        keep = nowVisible && !drawnAlready;
+        visibleLastFrame[i] = nowVisible ? 1u : 0u;
+    }
+
+    if (keep) {
+        atomicAdd(visibleCounts[pc.viewIndex], cmd.instanceCount);
+
+        // Detail last, and only for something that is going to be drawn (C17). A command
+        // with no chain has `lodLevels == 1`, so this resolves to level 0 -- which is
+        // `lods[0]`, which is what `cmd` already holds. That is the state every mesh in
+        // every scene is in until a bake gives it levels, and it is the state the golden
+        // suite pins: a reference camera that selected anything else would move a
+        // silhouette, and moving a silhouette there is a failure of this test rather than a
+        // new reference image.
+        if (pc.lodEnabled != 0u && bounds[i].lodLevels > 1u) {
+            uint level = selectLod(screenCoverage(lo, hi), bounds[i].lodLevels);
+            cmd.firstIndex = bounds[i].lods[level].x;
+            cmd.indexCount = bounds[i].lods[level].y;
+        }
+
+        // After the selection, so this counts what is drawn rather than what was offered.
+        atomicAdd(visibleCounts[pc.statsStride + pc.viewIndex], (cmd.indexCount / 3u) * cmd.instanceCount);
+    } else {
+        cmd.instanceCount = 0u;
+    }
+
+    commandsOut[pc.outOffset + i] = cmd;
+}

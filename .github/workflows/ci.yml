@@ -1,0 +1,91 @@
+# Build and test on every push. GPU-free by construction, so it runs on a stock runner.
+#
+# What is deliberately absent is as important as what is here:
+#
+#   * scripts/golden.sh. The golden images need Sponza, which is gitignored and cannot be
+#     redistributed, and docs/architecture/limitations.md records that they are only valid
+#     for the same binary on the same machine -- Jolt's cross-platform determinism is off by
+#     choice. A regression suite that cannot reproduce is one that fails for reasons nobody
+#     can attribute.
+#   * scripts/bench.sh. GBuffer and Bloom settle into one of two states about 5% apart and
+#     hold it for a whole run, so a threshold either never fires or fires constantly.
+#   * Anything that renders. --headless unmaps the window, it does not remove the surface,
+#     so this still needs a real Vulkan 1.3 device. Lavapipe would be worse than nothing:
+#     the engine warns about it explicitly because a pass under it is not evidence.
+#
+# What is left -- the unit suite, the sanitizers and the ASCII guard -- is everything that
+# can be checked without a GPU, which is most of what breaks.
+name: ci
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  tests:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # release for the optimiser's warnings, asan for memory errors, tsan because the
+        # unit suite is the only place the profiler's and the logger's threading is checked
+        # at all -- the renderer cannot run under it.
+        config: [release, asan, tsan]
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential cmake ninja-build \
+            libvulkan-dev libglfw3-dev glslang-tools spirv-tools
+
+      # setarch -R is not optional under tsan and its absence is invisible: without it
+      # ThreadSanitizer aborts with "unexpected memory mapping" before main(), which a job
+      # that only greps for race warnings reads as a clean run. ./test.sh already wraps it;
+      # this checks the runner will permit the personality change at all, so the failure is
+      # named here rather than mistaken for a pass later.
+      - name: Check setarch is permitted
+        if: matrix.config == 'tsan'
+        run: setarch -R true
+
+      - name: Test
+        run: ./test.sh ${{ matrix.config }}
+
+  manifest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # No submodules and no build: these test the generator scripts against trees they
+      # create in a temp directory, or against nothing at all, which is what makes them
+      # runnable on a fresh clone where the real asset trees do not exist.
+      - name: Manifest tests
+        run: python3 tests/manifest_test.py
+      - name: Scene generator tests
+        run: python3 tests/make_composite_scene_test.py
+      - name: Cloth pin check tests
+        run: python3 tests/check_pins_test.py
+
+  package:
+    # The packaging path itself, on every push, because the failure it catches -- a layout
+    # change that breaks a glTF's relative references -- is invisible until someone runs the
+    # artifact. Builds the container and cross-compiles; does not upload anything.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Cross-compile for Windows and check the import table
+        run: |
+          docker build -f docker/windows.Dockerfile -t substrate-windows .
+          docker run --rm -v "$PWD:/src" -w /src substrate-windows bash -c '
+            cmake -B /tmp/win -G Ninja \
+              -DCMAKE_TOOLCHAIN_FILE=/src/cmake/toolchains/mingw-w64-x86_64.cmake \
+              -DCMAKE_BUILD_TYPE=Release -DSUBSTRATE_GAME=demo -DSUBSTRATE_PORTABLE=ON
+            cmake --build /tmp/win
+            x86_64-w64-mingw32-objdump -p /tmp/win/demo.exe | grep "DLL Name:" | sort -u'

@@ -1,0 +1,61 @@
+#version 450
+
+/**
+ * One halving step of the bloom chain.
+ *
+ * The 13-tap pattern is Jimenez's, and the reason for it over a 4-tap box is
+ * stability rather than quality: a box downsample of a bright sub-pixel highlight
+ * produces a different result each frame as the highlight moves within the footprint,
+ * and that shows up as bloom that visibly boils. The five overlapping 2x2 groups here
+ * average that away.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D srcImage;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray dstImage;
+
+layout(push_constant) uniform Push {
+    vec2 dstTexel;
+    float srcLod;
+    float threshold;
+    float knee;
+    float strength;
+} pc;
+
+vec3 tap(vec2 uv, vec2 offset) { return textureLod(srcImage, uv + offset, pc.srcLod).rgb; }
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dstImage).xy;
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec2 uv = (vec2(coord) + 0.5) * pc.dstTexel;
+    // One source texel is half a destination texel, this being a halving step.
+    vec2 t = pc.dstTexel * 0.5;
+
+    vec3 a = tap(uv, vec2(-2.0, 2.0) * t);
+    vec3 b = tap(uv, vec2(0.0, 2.0) * t);
+    vec3 c = tap(uv, vec2(2.0, 2.0) * t);
+    vec3 d = tap(uv, vec2(-2.0, 0.0) * t);
+    vec3 e = tap(uv, vec2(0.0, 0.0) * t);
+    vec3 f = tap(uv, vec2(2.0, 0.0) * t);
+    vec3 g = tap(uv, vec2(-2.0, -2.0) * t);
+    vec3 h = tap(uv, vec2(0.0, -2.0) * t);
+    vec3 i = tap(uv, vec2(2.0, -2.0) * t);
+
+    vec3 j = tap(uv, vec2(-1.0, 1.0) * t);
+    vec3 k = tap(uv, vec2(1.0, 1.0) * t);
+    vec3 l = tap(uv, vec2(-1.0, -1.0) * t);
+    vec3 m = tap(uv, vec2(1.0, -1.0) * t);
+
+    // The inner 2x2 group carries half the weight; the four outer groups share the
+    // rest. Weights sum to 1.
+    vec3 result = (j + k + l + m) * 0.5 * 0.25;
+    result += (a + b + d + e) * 0.125 * 0.25;
+    result += (b + c + e + f) * 0.125 * 0.25;
+    result += (d + e + g + h) * 0.125 * 0.25;
+    result += (e + f + h + i) * 0.125 * 0.25;
+
+    imageStore(dstImage, ivec3(coord, 0), vec4(result, 1.0));
+}

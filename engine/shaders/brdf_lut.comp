@@ -1,0 +1,70 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#include "ibl_common.glsl"
+
+/**
+ * The split-sum approximation's second half: a scale and bias for F0.
+ *
+ * Depends only on NdotV and roughness, not on the environment, so it is the same
+ * table for every scene and could equally be a baked asset. It is computed at startup
+ * instead because it costs under a millisecond and a generated table cannot go stale
+ * against a change to the BRDF above it.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+// image2DArray with one layer, and binding 1, so this matches the shared IBL
+// compute layout. A plain image2D would need a descriptor layout of its own for
+// a single dispatch.
+layout(set = 0, binding = 1, rg16f) uniform writeonly image2DArray outLut;
+
+layout(push_constant) uniform Push {
+    uint size;
+    uint sampleCount;
+} pc;
+
+/// Smith geometry term with the IBL k, which differs from the direct-lighting one:
+/// k = a^2/2 here versus (a+1)^2/8 for analytic lights.
+float geometrySmithIBL(float ndotv, float ndotl, float roughness) {
+    float a = roughness * roughness;
+    float k = a * a * 0.5;
+    float ggxV = ndotv / (ndotv * (1.0 - k) + k);
+    float ggxL = ndotl / (ndotl * (1.0 - k) + k);
+    return ggxV * ggxL;
+}
+
+void main() {
+    uvec2 id = gl_GlobalInvocationID.xy;
+    if (id.x >= pc.size || id.y >= pc.size) return;
+
+    float ndotv = (float(id.x) + 0.5) / float(pc.size);
+    float roughness = (float(id.y) + 0.5) / float(pc.size);
+
+    vec3 V = vec3(sqrt(1.0 - ndotv * ndotv), 0.0, ndotv);
+    vec3 N = vec3(0.0, 0.0, 1.0);
+
+    float scale = 0.0;
+    float bias = 0.0;
+
+    for (uint i = 0u; i < pc.sampleCount; ++i) {
+        vec2 xi = hammersley(i, pc.sampleCount);
+        vec3 H = importanceSampleGGX(xi, N, roughness);
+        vec3 L = normalize(2.0 * dot(V, H) * H - V);
+
+        float ndotl = clamp(L.z, 0.0, 1.0);
+        if (ndotl <= 0.0) continue;
+
+        float ndoth = clamp(H.z, 0.0, 1.0);
+        float vdoth = clamp(dot(V, H), 0.0, 1.0);
+
+        float g = geometrySmithIBL(max(ndotv, 1e-4), ndotl, roughness);
+        float gVis = g * vdoth / max(ndoth * max(ndotv, 1e-4), 1e-7);
+        float fc = pow(1.0 - vdoth, 5.0);
+
+        scale += (1.0 - fc) * gVis;
+        bias += fc * gVis;
+    }
+
+    imageStore(outLut, ivec3(id, 0), vec4(scale / float(pc.sampleCount), bias / float(pc.sampleCount), 0.0, 1.0));
+}

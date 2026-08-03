@@ -1,0 +1,126 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+/**
+ * Volumetric fog: single-scattering sunlight through participating media (3.2).
+ *
+ * Marches the view ray from the camera to whatever the depth buffer says is in front
+ * of it, accumulating in-scattered sunlight. The sun term is *unshadowed*: the cascade
+ * map this pass once sampled went with the rest of the shadow system, so there are no
+ * occluded shafts -- the media brightens toward the sun by the phase function alone.
+ * Shafts return when shadows do.
+ *
+ * ## Output
+ *
+ * rgb is in-scattered radiance and alpha is *opacity* -- one minus transmittance --
+ * which makes the composite ordinary premultiplied-alpha `src + dst * (1 - src.a)`.
+ * Additive alone would light the fog without ever dimming what is behind it, which
+ * reads as glow rather than as depth.
+ */
+
+#include "frame.glsl"
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 1, binding = 0) uniform sampler2D sceneDepth;
+layout(set = 1, binding = 1, rgba16f) uniform writeonly image2DArray outFog;
+
+layout(push_constant) uniform Push {
+    vec2 texel;
+    float density;       ///< extinction per world unit at the reference height
+    float anisotropy;    ///< Henyey-Greenstein g; 0 isotropic, toward 1 forward-scattering
+    float maxDistance;   ///< the march stops here even if the surface is further
+    float heightFalloff; ///< e-folding distance in world Y; 0 makes the media uniform
+    float baseHeight;    ///< world Y at which density is `density`
+    uint stepCount;
+} pc;
+
+/// Henyey-Greenstein. `cosTheta` is between the view ray and the direction *toward*
+/// the light, so g > 0 concentrates scattering when looking into the sun -- which is
+/// the whole reason a light shaft is visible from one side of the arcade and not the
+/// other.
+float henyeyGreenstein(float cosTheta, float g) {
+    float gg = g * g;
+    float d = 1.0 + gg - 2.0 * g * cosTheta;
+    return (1.0 - gg) / (4.0 * 3.14159265 * max(d * sqrt(max(d, 1e-6)), 1e-6));
+}
+
+/// Density at a world point. Exponential in height, so fog pools on the floor rather
+/// than filling the vault evenly -- a constant-density medium reads as a dirty lens.
+float mediaDensity(vec3 p) {
+    if (pc.heightFalloff <= 0.0) return pc.density;
+    return pc.density * exp(-max(p.y - pc.baseHeight, 0.0) / pc.heightFalloff);
+}
+
+/// A per-pixel offset into the first step, so the march's discrete samples do not line
+/// up across neighbouring pixels. Without it 32 steps produce 32 visible bands across
+/// the depth range, and they are far more objectionable than the noise this trades for.
+float dither(ivec2 c) {
+    return fract(52.9829189 * fract(dot(vec2(c), vec2(0.06711056, 0.00583715))));
+}
+
+void main() {
+    ivec2 size = textureSize(sceneDepth, 0);
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec2 uv = (vec2(coord) + 0.5) * pc.texel;
+
+    // A sky pixel has no surface to stop at, so the march runs the full fog distance --
+    // which is what `viewDistance` answers for a depth still holding the clear (P3).
+    float depth = texelFetch(sceneDepth, coord, 0).r;
+    float surfaceDist = viewDistance(depth);
+
+    // The ray through this pixel, from unprojecting near the far plane. Not at
+    // FAR_DEPTH itself: a reverse-Z *infinite* projection sends depth 0 to w = 0 and the
+    // divide is undefined. A hair in front of it is a point on the same ray, which is all
+    // the direction below needs.
+    //
+    // **This fans out from the eye, so it is the perspective ray and only that.** Under a
+    // parallel projection there is no eye and every ray is `frame.cameraForward`, the same
+    // defect P3 fixed in the skybox lookup. Fog is off by default and no ortho path
+    // reaches it yet; the row that turns one on owns this line.
+    vec3 rayDir = normalize(worldFromDepth(uv, 1e-5) - frame.cameraPos.xyz);
+
+    // How far along the view axis one unit of ray travel gets, which is what converts
+    // between the two distances in play. `surfaceDist` above is a distance along the
+    // *view axis*, not along this pixel's ray -- so dividing by this
+    // is what turns it into the ray length the march below actually needs. Dropping it
+    // would stop the march short by a factor of cos(angle from centre), most visibly at
+    // the screen edge.
+    //
+    // It also used to keep this pass agreeing with cascade selection, which split on the
+    // same axis. That reason went with the cascades; this one did not.
+    float axis = max(dot(rayDir, frame.cameraForward.xyz), 1e-4);
+
+    float marchEnd = min(surfaceDist / axis, pc.maxDistance);
+    float dt = marchEnd / float(pc.stepCount);
+
+    vec3 sunDir = frame.sunDirection.xyz;               // toward the light
+    vec3 sunRadiance = frame.sunColor.rgb * frame.sunDirection.w;
+    float phase = henyeyGreenstein(dot(rayDir, sunDir), pc.anisotropy);
+
+    vec3 inscatter = vec3(0.0);
+    float transmittance = 1.0;
+    float t = dt * dither(coord);
+
+    for (uint i = 0u; i < pc.stepCount; ++i) {
+        vec3 p = frame.cameraPos.xyz + rayDir * t;
+        float sigma = mediaDensity(p);
+
+        if (sigma > 1e-6) {
+            float stepTransmittance = exp(-sigma * dt);
+            // Analytic integration of the constant-density segment, rather than
+            // `sigma * dt` at the sample point. The two agree only while sigma*dt is
+            // small, and at 32 steps across 60 units it is not.
+            vec3 s = sunRadiance * phase * sigma;
+            inscatter += s * (1.0 - stepTransmittance) / sigma * transmittance;
+            transmittance *= stepTransmittance;
+        }
+        t += dt;
+    }
+
+    // Opacity rather than transmittance, so the composite is standard premultiplied
+    // `src + dst * (1 - src.a)` rather than a blend mode invented for this one pass.
+    imageStore(outFog, ivec3(coord, 0), vec4(inscatter, 1.0 - transmittance));
+}

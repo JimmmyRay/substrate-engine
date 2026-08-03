@@ -1,0 +1,167 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+/**
+ * Integrate, collide, light and key every particle in the pool (S3.2, S3.4, S3.5).
+ * One thread per pool *slot*, dead ones included.
+ *
+ * ## One thread per slot, not per live particle
+ *
+ * A compacted live list would need an atomic to build and an indirect dispatch to
+ * consume, and it would save nothing here: the pool is sized from `rate x lifetime`
+ * summed over the emitters (ParticleSystem::requiredCapacity), which *is* the steady
+ * state, so the dead slots this walks over are the handful that are between deaths and
+ * births. Paying an atomic to skip them would cost more than they do.
+ *
+ * ## Death is by age and by nothing else
+ *
+ * The CPU predicted every death when it handed out the slot, and it frees the slot on
+ * the frame this shader kills the particle -- the two run the same comparison on the
+ * same numbers, which is why a particle carries its *birth time* rather than an
+ * accumulated age. An age advanced by `+= dt` on the GPU and predicted by
+ * `birth + lifetime` on the CPU would drift by an ULP and disagree about which frame a
+ * particle dies on.
+ *
+ * That is also why collision below bounces and never kills. A particle removed by the
+ * GPU would leave a slot the CPU believes is occupied until its lifetime runs out --
+ * correct, but it would quietly shrink the effective pool, and "the emitter got slower
+ * near a wall" is a bug nobody would attribute.
+ */
+
+#include "frame.glsl"
+#include "particle.glsl"
+#include "particle_light.glsl"
+
+layout(local_size_x = 64) in;
+
+/// The single-sample scene depth: the MSAA resolve at 4x, gDepth itself at 1x. The
+/// renderer hands over whichever it is, so this shader has no sample-count variant --
+/// unlike the lighting pass, a collision test wants one depth per pixel and not four.
+layout(set = 4, binding = 0) uniform sampler2D sceneDepth;
+
+layout(push_constant) uniform Push {
+    float dt;
+    float now;        ///< simulated time, the same clock ParticleSystem::update keeps
+    float sortRange;  ///< distance at which the sort key's quantised depth saturates
+    /// How far behind a surface a particle may be and still count as having hit it,
+    /// in world units. Without an upper bound every particle in the room behind a wall
+    /// would be "inside" it; with too small a bound a fast particle tunnels through in
+    /// one step. Scaled from the scene, not a constant -- see recordParticles.
+    ///
+    /// Fourth rather than last, where `nearPlane` used to sit, because `texel` below is a
+    /// `vec2` and std430 aligns those to 8: a hole here is one the shader inserts and
+    /// `ParticleSimPush` does not, which reads as every field after it holding garbage.
+    float collisionThickness;
+    vec2 texel;
+    uint capacity;
+    uint indexBits;   ///< log2(capacity)
+} pc;
+
+void main() {
+    uint i = gl_GlobalInvocationID.x;
+    if (i >= pc.capacity) return;
+
+    Particle p = particles[i];
+
+    // A slot that has never held a particle has a zero lifetime, which is what the pool
+    // is cleared to. One test covers that and every slot between a death and a birth.
+    float lifetime = p.velocity.w;
+    if (lifetime <= 0.0) {
+        sortKeys[i] = PARTICLE_DEAD_KEY;
+        return;
+    }
+
+    float birth = p.position.w;
+    if (birth + lifetime <= pc.now) {
+        // Exactly the comparison ParticleSystem::update ran to free this slot.
+        particles[i].velocity.w = 0.0;
+        sortKeys[i] = PARTICLE_DEAD_KEY;
+        return;
+    }
+
+    Emitter e = emitters[p.meta.x];
+
+    vec3 previous = p.position.xyz;
+    vec3 velocity = p.velocity.xyz;
+
+    // Semi-implicit Euler: gravity and drag first, then the position from the *new*
+    // velocity. Stable under the drag term in a way that integrating the position first
+    // is not, and it is the same one-step integrator emit.comp uses for the sub-frame.
+    velocity += e.gravity.xyz * pc.dt;
+    velocity *= max(1.0 - e.gravity.w * pc.dt, 0.0);
+    vec3 position = previous + velocity * pc.dt;
+
+    // ------------------------------------------------------------ collision (S3.4)
+    //
+    // Against the depth buffer, exactly as SSAO (3.1) and volumetric fog (3.2) read it,
+    // and with the same limitation stated rather than discovered: this sees the surfaces
+    // that are on screen and nothing else. A particle outside the frustum, or behind
+    // something nearer than the surface it should be hitting, passes straight through.
+    // A depth buffer is not a collision world -- S4's Jolt integration is -- and what
+    // this buys for one texture fetch is smoke that pools on a floor the camera is
+    // looking at.
+    if ((e.flags.y & EMITTER_COLLIDES) != 0u) {
+        vec4 clip = frame.viewProj * vec4(position, 1.0);
+        if (clip.w > 0.0) {
+            vec2 ndc = clip.xy / clip.w;
+            vec2 uv = ndc * 0.5 + 0.5;
+            if (all(greaterThanEqual(uv, vec2(0.0))) && all(lessThanEqual(uv, vec2(1.0)))) {
+                float depth = texture(sceneDepth, uv).r;
+                // Zero is the far plane under reverse-Z: sky, and nothing to hit.
+                if (depth > FAR_DEPTH) {
+                    float surfaceDistance = viewDistance(depth);
+                    float particleDistance = max(dot(position - frame.cameraPos.xyz, frame.cameraForward.xyz), 1e-4);
+                    float penetration = particleDistance - surfaceDistance;
+
+                    if (penetration > 0.0 && penetration < pc.collisionThickness) {
+                        // The surface normal from the depth buffer's own gradient. The
+                        // G-buffer normal would be the obvious source and is not
+                        // available: at MSAA it is a multisampled image, and resolving
+                        // one for this would cost a full-screen pass to serve a few
+                        // thousand particles.
+                        vec3 p0 = worldFromDepth(uv, depth);
+                        vec3 px = worldFromDepth(uv + vec2(pc.texel.x, 0.0), texture(sceneDepth, uv + vec2(pc.texel.x, 0.0)).r);
+                        vec3 py = worldFromDepth(uv + vec2(0.0, pc.texel.y), texture(sceneDepth, uv + vec2(0.0, pc.texel.y)).r);
+
+                        vec3 n = cross(px - p0, py - p0);
+                        float len = length(n);
+                        // A degenerate cross product means the three taps were
+                        // collinear -- a depth discontinuity, usually a silhouette. No
+                        // normal, no bounce: passing through is a better answer than
+                        // bouncing off an invented direction.
+                        if (len > 1e-8) {
+                            n /= len;
+                            if (dot(n, frame.cameraPos.xyz - p0) < 0.0) n = -n;
+
+                            float into = dot(velocity, n);
+                            if (into < 0.0) {
+                                vec3 normalPart = into * n;
+                                vec3 tangentPart = velocity - normalPart;
+                                // Tangential damping is a constant rather than an
+                                // authored field: it is the difference between dust
+                                // that skids and dust that settles, and no scene has
+                                // yet wanted a number for it.
+                                velocity = tangentPart * 0.8 - normalPart * e.params.z;
+                            }
+                            // Back to where it was rather than pushed out along the
+                            // normal by the penetration: the penetration is measured
+                            // along the *view* axis, and treating it as a distance along
+                            // the normal would launch a particle sideways off a wall
+                            // seen at a glancing angle.
+                            position = previous;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    float life = clamp((pc.now - birth) / lifetime, 0.0, 1.0);
+
+    p.position = vec4(position, birth);
+    p.velocity = vec4(velocity, lifetime);
+    p.color = particleColor(e, position, life);
+    particles[i] = p;
+
+    sortKeys[i] = particleSortKey(distance(position, frame.cameraPos.xyz), pc.sortRange, i, pc.indexBits);
+}

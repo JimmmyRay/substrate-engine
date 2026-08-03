@@ -1,0 +1,7 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+
+#define GBUFFER_MULTISAMPLE 1
+
+#include "frame.glsl"
+#include "light_tile_body.glsl"

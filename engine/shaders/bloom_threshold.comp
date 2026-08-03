@@ -1,0 +1,47 @@
+#version 450
+
+/**
+ * First step of the bloom chain: take the lit HDR image down to half resolution and
+ * keep only what is bright enough to bleed.
+ *
+ * The knee matters more than the threshold. A hard cutoff makes bloom pop on and off
+ * as a highlight crosses it, which reads as flicker under any camera motion; the
+ * quadratic ramp below fades a pixel in across a band around the threshold instead.
+ * This is the curve from Jimenez's SIGGRAPH 2014 course notes.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D srcImage;
+layout(set = 0, binding = 1, rgba16f) uniform writeonly image2DArray dstImage;
+
+layout(push_constant) uniform Push {
+    vec2 dstTexel;   // 1 / destination size
+    float srcLod;    // unused here; the block is shared with the down/up passes
+    float threshold;
+    float knee;      // half-width of the soft ramp, in the same units as threshold
+    float strength;  // unused here
+} pc;
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dstImage).xy;
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    // Sample at the destination texel centre: with a half-resolution target and a
+    // linear sampler this is a 2x2 box average of the source for free.
+    vec2 uv = (vec2(coord) + 0.5) * pc.dstTexel;
+    vec3 color = textureLod(srcImage, uv, 0.0).rgb;
+
+    // Channel maximum, not a luminance weighting. A saturated red at 3.0 is genuinely
+    // three times over the threshold and should bleed like it; weighting by luminance
+    // would nearly extinguish it because red carries little of the luma coefficient.
+    float brightness = max(max(color.r, color.g), color.b);
+
+    float knee = max(pc.knee, 1e-4);
+    float soft = clamp(brightness - pc.threshold + knee, 0.0, 2.0 * knee);
+    soft = soft * soft / (4.0 * knee);
+    float contribution = max(soft, brightness - pc.threshold) / max(brightness, 1e-4);
+
+    imageStore(dstImage, ivec3(coord, 0), vec4(color * contribution, 1.0));
+}

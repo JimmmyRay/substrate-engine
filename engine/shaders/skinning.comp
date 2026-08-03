@@ -1,0 +1,184 @@
+#version 450
+#extension GL_GOOGLE_include_directive : require
+#extension GL_EXT_scalar_block_layout : require
+
+/**
+ * Compute deformation: morph targets then skinning (4.4, S2.1, S2.2).
+ *
+ * One thread per vertex of one deformed instance. Reads the bind-pose vertex out of the
+ * scene's own vertex buffer, adds the weighted sum of its morph target displacements,
+ * applies the weighted sum of its joints' matrices, and writes the result into a
+ * separate vertex buffer that the geometry passes bind in place of the scene's.
+ *
+ * ## Morph before skin, and it is not a preference
+ *
+ * The glTF spec fixes the order: morph targets displace the *bind pose*, and the skin
+ * then takes the morphed vertex to model space. Skinning first would apply each joint
+ * matrix to an undisplaced vertex and then add a displacement in model space, which
+ * puts a character's expression in world coordinates -- their face stays behind when
+ * they turn their head.
+ *
+ * Either half may be absent. A morph-only mesh has `morphTargets > 0` and no
+ * influences; a plain skinned mesh has influences and no targets. Both take this one
+ * dispatch, because the alternative is two pipelines whose only difference is which
+ * of two loops they skip.
+ *
+ * ## Why a second buffer rather than skinning in place
+ *
+ * Two reasons, and the second is the one that decides it. The bind pose is the *input*,
+ * so overwriting it would leave the next frame skinning an already-skinned mesh. And an
+ * instance table can hold the same skinned mesh several times at different poses (4.5's
+ * merging is switched off for these precisely because each needs its own vertices), so
+ * the output is per *instance* and the bind pose is per *primitive*. The indirect
+ * command's `vertexOffset` is what maps one to the other, at no cost: it is a field the
+ * command already has.
+ *
+ * ## scalar layout
+ *
+ * `layout(scalar)` and not std430. The C++ `Vertex` is a packed 48 bytes -- vec3, vec3,
+ * vec4, vec2 -- and std430 would round each vec3 up to 16 and make the struct 64. The
+ * mismatch is silent: every field past the first normal would read from the wrong
+ * offset, which looks like a mesh with scrambled normals rather than like a layout bug.
+ * `scalarBlockLayout` is already enabled on the device for exactly this class of
+ * problem.
+ */
+
+layout(local_size_x = 64) in;
+
+/**
+ * Must match `Vertex` in engine/scene/GltfScene.h: twelve tightly packed floats.
+ *
+ * Scalars rather than vec3/vec4, and not for style. The C++ struct is 48 packed bytes,
+ * so `normal` sits at offset 12 and `tangent` at 24 -- both straddle a 16-byte boundary.
+ * `layout(scalar)` permits that, but spirv-val checks a storage-buffer block against the
+ * *relaxed* rules unless the module declares scalar layout as a capability, and glslang
+ * does not emit one here. Declaring the members as floats sidesteps the question: a
+ * float can start at any multiple of four, so there is nothing to straddle, and the
+ * bytes are identical either way.
+ */
+struct Vertex {
+    float px, py, pz;
+    float nx, ny, nz;
+    float tx, ty, tz, tw;
+    float u, v;
+};
+
+/// Must match `SkinVertex` in engine/scene/GltfScene.h. Both members are 16-byte aligned
+/// and 16 bytes wide, so this one needs no such care.
+struct SkinVertex {
+    uvec4 joints;
+    vec4 weights;
+};
+
+layout(scalar, set = 0, binding = 0) readonly buffer SourceVertices {
+    Vertex sourceVertices[];
+};
+layout(scalar, set = 0, binding = 1) writeonly buffer SkinnedVertices {
+    Vertex skinnedVertices[];
+};
+layout(scalar, set = 0, binding = 2) readonly buffer Influences {
+    SkinVertex influences[];
+};
+layout(set = 0, binding = 3) readonly buffer JointMatrices {
+    mat4 jointMatrices[];
+};
+
+/// Must match `MorphDelta` in engine/scene/GltfScene.h: nine tightly packed floats, in
+/// target-major order. Scalars for the same reason `Vertex` uses them.
+struct MorphDelta {
+    float px, py, pz;
+    float nx, ny, nz;
+    float tx, ty, tz;
+};
+
+layout(scalar, set = 0, binding = 4) readonly buffer MorphDeltas {
+    MorphDelta morphDeltas[];
+};
+layout(scalar, set = 0, binding = 5) readonly buffer MorphWeights {
+    float morphWeights[];
+};
+
+layout(push_constant) uniform Push {
+    /// First vertex of the bind-pose primitive in the scene vertex buffer.
+    uint sourceBase;
+    /// Where this instance's deformed vertices go.
+    uint destBase;
+    /// First influence of the primitive in the influence array.
+    uint influenceBase;
+    /// Where this instance's character starts in the shared joint matrix array.
+    uint jointBase;
+    uint vertexCount;
+    /// First displacement of the primitive in the delta array, its target count, and
+    /// where this placement's weights start. Zero targets skips the morph loop
+    /// entirely, which is every instance in every scene this engine has but one.
+    uint morphBase;
+    uint morphTargets;
+    uint weightBase;
+} pc;
+
+void main() {
+    uint v = gl_GlobalInvocationID.x;
+    if (v >= pc.vertexCount) return;
+
+    Vertex src = sourceVertices[pc.sourceBase + v];
+
+    vec3 position = vec3(src.px, src.py, src.pz);
+    vec3 normal = vec3(src.nx, src.ny, src.nz);
+    vec4 tangent = vec4(src.tx, src.ty, src.tz, src.tw);
+
+    // ------------------------------------------------------------ morph (S2.2)
+    // Target-major, so target t's displacement of vertex v is one add away from
+    // target t-1's -- the array walks contiguously per target rather than striding.
+    for (uint t = 0; t < pc.morphTargets; ++t) {
+        float w = morphWeights[pc.weightBase + t];
+        // A weight of zero is the common case for all but one or two targets of a face
+        // rig, and skipping it saves nine loads and nine multiply-adds.
+        if (w == 0.0) continue;
+        MorphDelta d = morphDeltas[pc.morphBase + t * pc.vertexCount + v];
+        position += w * vec3(d.px, d.py, d.pz);
+        normal += w * vec3(d.nx, d.ny, d.nz);
+        tangent.xyz += w * vec3(d.tx, d.ty, d.tz);
+    }
+
+    // ------------------------------------------------------------------- skin
+    // A morph-only mesh has no influence array to read at all, and the sentinel says
+    // so. Reading one anyway is not a wrong pose but an out-of-bounds load: the
+    // influence array is sized from the *skinned* primitives, and a face rig with no
+    // skeleton contributes nothing to it.
+    mat4 skin = mat4(1.0);
+    if (pc.influenceBase != 0xFFFFFFFFu) {
+        SkinVertex inf = influences[pc.influenceBase + v];
+
+        // Sum of weighted joint matrices, then one transform -- not four transforms
+        // summed. Same result for the position and far fewer operations, and it is the
+        // matrix the normal needs the inverse-transpose of anyway.
+        mat4 sum = inf.weights.x * jointMatrices[pc.jointBase + inf.joints.x] +
+                   inf.weights.y * jointMatrices[pc.jointBase + inf.joints.y] +
+                   inf.weights.z * jointMatrices[pc.jointBase + inf.joints.z] +
+                   inf.weights.w * jointMatrices[pc.jointBase + inf.joints.w];
+
+        // A vertex with no influence at all would collapse to the origin under a zero
+        // matrix. Falling back to identity keeps it where the artist put it, which is a
+        // visible mesh with one wrong vertex rather than a spike to (0,0,0).
+        float total = inf.weights.x + inf.weights.y + inf.weights.z + inf.weights.w;
+        if (total > 0.0) skin = sum;
+    }
+
+    vec3 outPosition = vec3(skin * vec4(position, 1.0));
+    // The 3x3 part, not its inverse-transpose. For the rigid rotations a skeleton is
+    // built from they are the same matrix, and computing a per-vertex inverse to be
+    // correct under non-uniform joint scale would cost more than the case is worth --
+    // stated rather than silently assumed, because a rig that scales joints will show
+    // it in the shading.
+    mat3 rotation = mat3(skin);
+    vec3 outNormal = normalize(rotation * normal);
+    vec3 outTangent = normalize(rotation * tangent.xyz);
+
+    Vertex dst;
+    dst.px = outPosition.x; dst.py = outPosition.y; dst.pz = outPosition.z;
+    dst.nx = outNormal.x;   dst.ny = outNormal.y;   dst.nz = outNormal.z;
+    dst.tx = outTangent.x;  dst.ty = outTangent.y;  dst.tz = outTangent.z; dst.tw = tangent.w;
+    dst.u = src.u;          dst.v = src.v;
+
+    skinnedVertices[pc.destBase + v] = dst;
+}

@@ -1,0 +1,56 @@
+#version 450
+
+/**
+ * One doubling step back up the chain, added onto the mip already there.
+ *
+ * The 3x3 tent is deliberately wider than a bilinear upsample. Progressive upsampling
+ * with a tent at every level is what turns a stack of box-filtered mips into a smooth
+ * falloff; a straight bilinear expand leaves the blocky structure of the small mips
+ * visible in the final composite.
+ *
+ * Read-modify-write on the destination is safe without a barrier because every
+ * invocation touches exactly the texel it loaded.
+ */
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D srcImage;
+/// The one storage image in the engine that is deliberately *not* `writeonly`: the
+/// upsample adds into the mip below it, so line 51 reads what it is about to overwrite.
+/// Every other pass's destination carries the qualifier.
+layout(set = 0, binding = 1, rgba16f) uniform image2DArray dstImage;
+
+layout(push_constant) uniform Push {
+    vec2 dstTexel;
+    float srcLod;
+    float threshold;
+    float knee;
+    float strength;
+} pc;
+
+vec3 tap(vec2 uv, vec2 offset) { return textureLod(srcImage, uv + offset, pc.srcLod).rgb; }
+
+void main() {
+    ivec2 coord = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 size = imageSize(dstImage).xy;
+    if (coord.x >= size.x || coord.y >= size.y) return;
+
+    vec2 uv = (vec2(coord) + 0.5) * pc.dstTexel;
+    // Radius in destination texels. Larger spreads further but starts to smear the
+    // bloom off its source; one destination texel is the usual compromise.
+    vec2 t = pc.dstTexel;
+
+    vec3 sum = tap(uv, vec2(-1.0, 1.0) * t) * 1.0;
+    sum += tap(uv, vec2(0.0, 1.0) * t) * 2.0;
+    sum += tap(uv, vec2(1.0, 1.0) * t) * 1.0;
+    sum += tap(uv, vec2(-1.0, 0.0) * t) * 2.0;
+    sum += tap(uv, vec2(0.0, 0.0) * t) * 4.0;
+    sum += tap(uv, vec2(1.0, 0.0) * t) * 2.0;
+    sum += tap(uv, vec2(-1.0, -1.0) * t) * 1.0;
+    sum += tap(uv, vec2(0.0, -1.0) * t) * 2.0;
+    sum += tap(uv, vec2(1.0, -1.0) * t) * 1.0;
+    sum *= 1.0 / 16.0;
+
+    vec4 existing = imageLoad(dstImage, ivec3(coord, 0));
+    imageStore(dstImage, ivec3(coord, 0), vec4(existing.rgb + sum, 1.0));
+}
