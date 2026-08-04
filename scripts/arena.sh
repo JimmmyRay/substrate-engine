@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
-# battle_arena, Phase 2 -- the scripted check that a fighter moves under the camera it is
-# looking through, and stops at what is in the way.
+# battle_arena, Phases 2 and 3 -- the scripted check that a fighter moves under the camera it
+# is looking through and stops at what is in the way, and that the enemy walks to it.
 #
 #   scripts/arena.sh [config]
 #
@@ -48,6 +48,12 @@
 #    survives at any yaw: the fighter has to keep turning into a camera that keeps moving, so
 #    its path curves and its net displacement comes out a fraction of the distance walked.
 #
+#  - **`pursuit`** is Phase 3's own arm: the player runs away for five seconds and stops, and
+#    the enemy has to have kept re-searching to still be behind it at the end. Every *other*
+#    arm carries the pursuit too, because the enemy does not wait to be asked -- which is why
+#    `still` is no longer a run in which nothing happens, only one in which the player does
+#    nothing.
+#
 #  - **`column`** is the milestone's last clause and the regression check for
 #    `bug-a-blocked-character-reports-the-speed-it-asked-for`. It runs a fighter dead-centre
 #    into a column and **never releases the keys**, so every number after the impact is the
@@ -77,6 +83,12 @@ WALK_FRACTION=0.45 # BattleArenaGame.cpp, kWalkFraction
 # model reaches every distance below through them.
 ACCEL=10.0
 DECEL=40.0
+
+# Phase 3's numbers: `kPursuitStandOff` and `kPursuitDeadBand` from `ArenaWorld.cpp`, and the
+# distance between the two spawns it authors.
+STAND_OFF=1.5
+DEAD_BAND=0.5
+SPAWN_GAP=12.0
 
 # The `run` threshold `fighterMachine` authors, as a speed. The machine compares a `speed`
 # normalised against `characterMoveSpeed`, so the authored 0.66 is this -- derived rather than
@@ -139,6 +151,9 @@ ARMS=(
     "camera-south|400|$WALK|--camera $CAMERA_AT,180,-10,5"
     "camera-turning|400|$WALK|--camera $CAMERA_AT,0,-10,5 --camera-spin 1.5"
     "column|500|30:Player.Forward+,30:Player.Run+|--camera $CAMERA_AT,$COLUMN_YAW,-10,6"
+    # Five seconds of running away under a camera looking down +Z, then a stop with enough
+    # frames left for the enemy to close the gap it opened.
+    "pursuit|700|30:Player.Forward+,30:Player.Run+,330:Player.Forward-,330:Player.Run-|--camera $CAMERA_AT,0,-10,6"
 )
 
 failures=0
@@ -199,6 +214,18 @@ for arm in "${ARMS[@]}"; do
     grep -q "battle_arena: 2 fighters, navmesh baked" "$log" ||
         fail "$name: the arena did not report two fighters over a baked navmesh"
 
+    # **"Baked" was true of a navmesh that could not see a single column**, and this is the
+    # assertion that closes that. The route probed at load runs the length of one row of the
+    # grid, so it has to leave the straight line; two waypoints is a straight line, and a
+    # straight line the length of the arena means the floor collider is a bare quad again and
+    # `game/battle_arena/tools/cut_arena_floor.py` has not been run over it.
+    waypoints="$(sed -n 's/.*a route across the arena is \([0-9]*\) waypoints.*/\1/p' "$log" | head -1)"
+    if [[ -z "$waypoints" ]]; then
+        fail "$name: the arena never probed a route across itself"
+    elif [[ "$waypoints" -lt 3 ]]; then
+        fail "$name: a route the length of the arena is $waypoints waypoints -- the columns are not in the navmesh"
+    fi
+
     # **Two imports of one file are two slices of the clip table, and the ranges must not
     # overlap.** `SceneAnimator::merge` renumbers an appended clip's channels onto the appended
     # nodes, so a second fighter handed the first one's clip indices stands in its bind pose
@@ -226,6 +253,32 @@ for arm in "${ARMS[@]}"; do
     [[ -n "$path" ]] || fail "$name: the run reported no path at all"
     [[ $failures -eq 0 ]] || break
 
+    # ------------------------------------------------------------------ the enemy, Phase 3
+    read -r searches search_fails corners enemy_walked enemy_net enemy_closest enemy_gap stall < <(sed -n \
+        's/.*Arena enemy: \([0-9]*\) searches, \([0-9]*\) failed, longest route \([0-9]*\) waypoints, \([0-9.]*\) m travelled, net \([0-9.]*\) m, closest \([0-9.]*\) m, final \([0-9.]*\) m, worst stall \([0-9]*\) steps.*/\1 \2 \3 \4 \5 \6 \7 \8/p' \
+        "$log" | head -1)
+    if [[ -z "$stall" ]]; then
+        fail "$name: the run reported no pursuit at all"
+        break
+    fi
+
+    # **`path ok` flickering is what this is.** A failed search keeps the route it had, so the
+    # enemy goes on walking and the screen looks identical -- the count is the only place a
+    # search that found nothing is visible.
+    [[ "$search_fails" == "0" ]] || fail "$name: $search_fails of $searches searches found no route"
+
+    # **A fighter pressed into a column asks for its full travel and does not move.** Five
+    # steps is the acceleration ramp out of a standstill; three hundred is a column.
+    [[ "$stall" -le 10 ]] ||
+        fail "$name: the enemy asked to move and did not for $stall steps running -- it walked into something"
+
+    # It arrived, and every arm ends with the player stationary long enough for it to. The
+    # band is the whole of the arrival rule: `scene::steer` gives its last waypoint up short
+    # of the stand-off, and the pursuit holds until the player is `DEAD_BAND` past it.
+    within "$enemy_gap" "$(awk -v s=$STAND_OFF 'BEGIN { print s - 0.1 }')" \
+        "$(awk -v s=$STAND_OFF -v b=$DEAD_BAND 'BEGIN { print s + b }')" ||
+        fail "$name: the enemy finished $enemy_gap m away, expected to stand off at $STAND_OFF m"
+
     case "$name" in
     still | modifier)
         # The fighter is asked for nothing it can act on, so nothing happens. Not "roughly
@@ -241,6 +294,30 @@ for arm in "${ARMS[@]}"; do
         # `travelled` stays flat.
         within "$net" 0 0.01 || fail "$name: net displacement $net m with nothing pressed"
         within "$along" 0 0.01 || fail "$name: went $along along the camera with nothing pressed"
+
+        # **The one pair of arms where the enemy's arithmetic is exact**, because the target
+        # never moves: it walks the spawn gap less where it stopped, and the walk agreeing with
+        # the displacement is what says it went at the player rather than around anything.
+        #
+        # Within a percent rather than to the centimetre, and the percent is the route: the
+        # floor is cut into pieces around the columns now, so a walk across it is a polyline
+        # over a few portals rather than one segment. Half a percent of ten metres is what that
+        # costs; going round a column costs fifteen.
+        want="$(awk -v g=$SPAWN_GAP -v f="$enemy_gap" 'BEGIN { printf "%.2f", g - f }')"
+        within "$enemy_walked" "$(awk -v w="$want" 'BEGIN { print w - 0.05 }')" \
+            "$(awk -v w="$want" 'BEGIN { print w + 0.15 }')" ||
+            fail "$name: the enemy walked $enemy_walked m, expected about $want m"
+        within "$enemy_net" "$(awk -v t="$enemy_walked" 'BEGIN { print t * 0.99 }')" "$enemy_walked" ||
+            fail "$name: the enemy's net $enemy_net m against $enemy_walked m walked -- it did not walk straight"
+        # And it never came inside the stand-off. The two capsules cannot collide, so nothing
+        # but this number would stop it standing inside the player.
+        within "$enemy_closest" "$(awk -v s=$STAND_OFF 'BEGIN { print s - 0.05 }')" 99 ||
+            fail "$name: the enemy came within $enemy_closest m, inside the $STAND_OFF m stand-off"
+        # **The dead band, read as a cost.** Repathing on the step count alone would be one
+        # search every 20 of the 600 this arm runs; it holds instead, and only the approach
+        # is searched for.
+        [[ "$searches" -le 15 ]] ||
+            fail "$name: $searches searches -- an arrived pursuit is still looking for a route"
         ;;
     walk-run-jump)
         expected="idle > walk > run > walk > idle > jump > fall > land > idle"
@@ -376,11 +453,30 @@ for arm in "${ARMS[@]}"; do
                 fail "$name: left 'run' at step $stopped, expected about $want_stop -- the column is elsewhere"
         fi
         ;;
+    pursuit)
+        # The player's half is the ordinary one: five seconds of running, then a stop.
+        [[ "$path" == "idle > walk > run > walk > idle" ]] ||
+            fail "$name: path is '$path', expected 'idle > walk > run > walk > idle'"
+
+        # **The clause this arm exists for.** A pursuit that searched once and walked the
+        # answer would arrive where the player *was* -- sixteen metres short -- so the only
+        # way to finish at the stand-off is to have re-searched the whole way. The floor is
+        # the run divided by the repath interval, less the steps spent arrived.
+        [[ "$searches" -ge 15 ]] ||
+            fail "$name: $searches searches over a five-second chase -- it did not repath"
+
+        # And it took the longer way round a moving target. A pursuit resolved once would be
+        # a straight line, so path length and displacement would agree.
+        within "$enemy_walked" "$(awk -v n="$enemy_net" 'BEGIN { print n * 1.05 }')" 99 ||
+            fail "$name: the enemy walked $enemy_walked m for $enemy_net m of displacement -- it went straight"
+        ;;
     esac
 
     echo "   path: $path"
     echo "   $changes changes, $travelled m travelled, peak rise $rise m"
     echo "   net $net m, $along along the camera, $across across it, $facing faced"
+    echo "   enemy: $searches searches, longest route $corners waypoints, $enemy_walked m walked," \
+        "net $enemy_net m, closest $enemy_closest m, final $enemy_gap m"
 done
 
 if [[ $failures -ne 0 ]]; then

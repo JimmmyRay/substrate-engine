@@ -497,6 +497,42 @@ walking, stopping and jumping. The combination is untested.
 
 ---
 
+## Navigation
+
+### Clearance and overhangs are not modelled, and `agentHeight` is not a parameter
+
+`scene::NavMesh` is a triangle navmesh: the scene's static mesh colliders, filtered to what
+an agent could stand on, welded, searched with A\* and pulled straight with the funnel. A
+voxel field would know that a ceiling is 1.2 m above a floor and refuse to walk a 1.8 m agent
+under it; this has no idea, and accepting an `agentHeight` would be a promise it could not
+keep. **Trigger for the voxel row: a game whose levels have headroom that matters** — a crawl
+space, a low arch, a mezzanine an agent must not path under.
+
+Radius erosion has the same shape. `NavBuildParams::agentRadius` insets the funnel's portals
+rather than shrinking the walkable region, so it keeps a path off the walls it passes
+*through* a portal and does nothing about a wall it merely passes *beside*.
+
+### A prop is cut out of the floor only if its collider stands on it
+
+`bake` cuts the walkable surface where geometry too steep to walk reaches above it and
+touches or crosses it — which is what makes a column an obstacle to a route rather than a
+decoration on top of one. Three things follow, and the first is the one that bites:
+
+- **A prop with no collider is not an obstacle.** The bake reads static *mesh* colliders and
+  nothing else, so a pillar the artist modelled and nobody authored collision for is invisible
+  to routing exactly as it is invisible to the solver.
+- **A prop that floats does not cut.** Standing on is contact: a crate hovering a centimetre
+  above the floor cuts nothing, and so does one whose collider is a box or a capsule rather
+  than a mesh — those carry no triangles and the bake has never taken them.
+- **A cut costs bake time and triangles.** `game/battle_arena`'s arena is 3508 collider
+  triangles and bakes 3632 navmesh triangles in 16.2 ms, of which the cut is 12.6. Sponza
+  authors no colliders and bakes no navmesh, so nothing in the golden set pays it.
+
+The hole itself is exact: the pieces are convex and split by arithmetic, so there is no cell
+size to tune and no rasterisation error.
+
+---
+
 ## Audio
 
 ### ~~There is no one-shot API~~ — `playAt` since G7

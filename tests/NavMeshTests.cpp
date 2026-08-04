@@ -46,6 +46,29 @@ void addCell(Soup& s, float x, float z, float cell, float y = 0.0f) {
     for (const uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u}) s.indices.push_back(base + i);
 }
 
+/// A solid box, every face wound so its normal points out of it. What the bake reads to
+/// decide what is standing on a floor is the faces that are too steep to walk, so a box
+/// authored as six quads is the smallest thing that can stand on anything.
+void addBox(Soup& s, const glm::vec3& lo, const glm::vec3& hi) {
+    const auto base = static_cast<uint32_t>(s.positions.size());
+    s.positions.push_back({lo.x, lo.y, lo.z});
+    s.positions.push_back({hi.x, lo.y, lo.z});
+    s.positions.push_back({hi.x, lo.y, hi.z});
+    s.positions.push_back({lo.x, lo.y, hi.z});
+    s.positions.push_back({lo.x, hi.y, lo.z});
+    s.positions.push_back({hi.x, hi.y, lo.z});
+    s.positions.push_back({hi.x, hi.y, hi.z});
+    s.positions.push_back({lo.x, hi.y, hi.z});
+    for (const uint32_t i : {0u, 1u, 2u, 0u, 2u, 3u,   // down
+                             4u, 6u, 5u, 4u, 7u, 6u,   // up
+                             0u, 4u, 5u, 0u, 5u, 1u,   // -Z
+                             3u, 2u, 6u, 3u, 6u, 7u,   // +Z
+                             0u, 3u, 7u, 0u, 7u, 4u,   // -X
+                             1u, 5u, 6u, 1u, 6u, 2u}) { // +X
+        s.indices.push_back(base + i);
+    }
+}
+
 /// A floor from a predicate over cell coordinates. Every cell is authored independently,
 /// so its four corners are distinct vertices and the mesh only becomes connected if
 /// welding works -- which is the same shape a merged glTF scene arrives in.
@@ -193,6 +216,120 @@ TEST(NavMesh, SlopeIsATheshholdAndTheThresholdIsHonoured) {
     NavMesh steep;
     steep.bake(ramp(2.0f).positions, ramp(2.0f).indices, sharpParams()); // ~63 degrees
     EXPECT_TRUE(steep.empty());
+}
+
+// -------------------------------------------------------------- what stands on the floor
+
+TEST(NavMesh, APillarStandingOnAFloorIsCutOutOfIt) {
+    // **The floor is one quad**, which is how a floor is authored and what made this
+    // findable: there is no tessellation to hide behind, so a bake that cannot see the
+    // pillar hands back two triangles and routes every agent straight through it.
+    // **Clear of the quad's own diagonal**, which is not fussiness: a corner of the hole
+    // sitting exactly on the edge where the floor's two triangles meet is a portal of zero
+    // width, and A* then finds a corridor the funnel cannot pull tight through. That is a
+    // property of a corridor search rather than of the cut, and it is not what is under test.
+    Soup s;
+    addCell(s, -5.0f, -5.0f, 10.0f);
+    addBox(s, {-1.0f, 0.0f, 2.0f}, {1.0f, 3.0f, 4.0f});
+
+    NavMesh nav;
+    nav.bake(s.positions, s.indices, sharpParams());
+
+    const NavPoint from = nav.nearest({-4.0f, 0.0f, 3.0f});
+    const NavPoint to = nav.nearest({4.0f, 0.0f, 3.0f});
+    ASSERT_TRUE(from);
+    ASSERT_TRUE(to);
+
+    // Cutting a hole in a floor must not cut the floor in half.
+    EXPECT_TRUE(nav.reachable(from, to));
+    // The pillar's top is walkable and is a place; it is simply not one you can walk to.
+    const NavPoint above = nav.nearest({0.0f, 3.0f, 3.0f});
+    ASSERT_TRUE(above);
+    EXPECT_FALSE(nav.reachable(from, above));
+
+    EXPECT_FALSE(nav.raycast(from, to.position));
+
+    std::vector<glm::vec3> path;
+    ASSERT_TRUE(nav.findPath(from, to, path));
+    EXPECT_GT(path.size(), 2u);
+    // Round two corners of the footprint rather than through it: 3.162 out, 2 across, 3.162
+    // back. Written as arithmetic because a length lifted off a passing run cannot be wrong.
+    EXPECT_NEAR(pathLength(path), 2.0f * std::sqrt(10.0f) + 2.0f, 0.02f);
+}
+
+TEST(NavMesh, TheCutIsTheFootprintAndNotAQuantisationOfIt) {
+    // The property the whole triangle approach is here for, and the one a voxel field cannot
+    // offer: there is no cell size, so the hole's edge is the pillar's edge to the millimetre
+    // rather than to the nearest cell.
+    Soup s;
+    addCell(s, -5.0f, -5.0f, 10.0f);
+    addBox(s, {-1.0f, 0.0f, -1.0f}, {1.0f, 3.0f, 1.0f});
+
+    NavMesh nav;
+    nav.bake(s.positions, s.indices, sharpParams());
+
+    EXPECT_TRUE(nav.nearest({1.02f, 0.0f, 0.0f}, 0.01f));
+    EXPECT_FALSE(nav.nearest({0.98f, 0.0f, 0.0f}, 0.01f));
+}
+
+TEST(NavMesh, AFloorTileInsideAPillarIsNotWalkable) {
+    // The tessellated case, and the one splitting alone does not answer: nothing crosses a
+    // tile that is wholly under the pillar, so it is never cut -- it is simply inside, and
+    // what settles that is what is above it rather than what split it.
+    Soup s = floorOf(9, 9, [](int, int) { return true; });
+    addBox(s, {3.0f, 0.0f, 3.0f}, {6.0f, 3.0f, 6.0f});
+
+    NavMesh nav;
+    nav.bake(s.positions, s.indices, sharpParams());
+
+    EXPECT_FALSE(nav.nearest({4.5f, 0.0f, 4.5f}, 0.4f));
+    EXPECT_TRUE(nav.nearest({1.5f, 0.0f, 1.5f}, 0.4f));
+}
+
+TEST(NavMesh, APillarElsewhereDoesNotBendAPathAcrossOpenFloor) {
+    // Cutting a hole leaves the rest of the floor in pieces, and a path across it now crosses
+    // portals where it used to cross nothing. **Default parameters on purpose**, agent radius
+    // included: every one of those portals is inset, and a path that bends at each is an agent
+    // that weaves across an empty room because something is standing in the far corner.
+    Soup s;
+    addCell(s, -5.0f, -5.0f, 10.0f);
+    addBox(s, {-1.0f, 0.0f, 2.0f}, {1.0f, 3.0f, 4.0f});
+
+    NavMesh nav;
+    nav.bake(s.positions, s.indices, {});
+
+    const NavPoint from = nav.nearest({-4.0f, 0.0f, -3.0f});
+    const NavPoint to = nav.nearest({4.0f, 0.0f, -3.0f});
+    ASSERT_TRUE(from);
+    ASSERT_TRUE(to);
+
+    std::vector<glm::vec3> path;
+    ASSERT_TRUE(nav.findPath(from, to, path));
+    EXPECT_EQ(path.size(), 2u);
+    EXPECT_NEAR(pathLength(path), 8.0f, 1e-3f);
+}
+
+TEST(NavMesh, AFloorUnderABridgeIsStillWalkable) {
+    // **Standing on and above are different questions**, and only the first one cuts.
+    // Clearance is not modelled here and that is deliberate -- see the file comment -- so a
+    // bridge crossing over a floor must take nothing away from it.
+    Soup s;
+    addCell(s, -5.0f, -5.0f, 10.0f);
+    addBox(s, {-1.0f, 2.0f, -5.0f}, {1.0f, 3.0f, 5.0f});
+
+    NavMesh nav;
+    nav.bake(s.positions, s.indices, sharpParams());
+
+    const NavPoint from = nav.nearest({-4.0f, 0.0f, 0.0f});
+    const NavPoint to = nav.nearest({4.0f, 0.0f, 0.0f});
+    ASSERT_TRUE(from);
+    ASSERT_TRUE(to);
+    EXPECT_TRUE(nav.raycast(from, to.position));
+
+    std::vector<glm::vec3> path;
+    ASSERT_TRUE(nav.findPath(from, to, path));
+    EXPECT_EQ(path.size(), 2u);
+    EXPECT_NEAR(pathLength(path), 8.0f, 1e-3f);
 }
 
 TEST(NavMesh, UnreachableScrapsAreDropped) {

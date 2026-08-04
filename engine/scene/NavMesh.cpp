@@ -52,6 +52,556 @@ size_t cellHash(int64_t x, int64_t y, int64_t z) {
     return h;
 }
 
+// ------------------------------------------------------------------ standing geometry
+
+/// XZ. Every triangle the slope filter keeps has a normal within 89 degrees of up, so its
+/// footprint has area and nothing below projects onto a line.
+glm::vec2 footprint(const glm::vec3& p) { return {p.x, p.z}; }
+
+/// Twice the signed area of a footprint triangle, on `triArea2`'s convention: **positive is
+/// the winding a walkable triangle already has**, because `n.y` and this are the same
+/// expression. Every side test below inherits that, so "inside" is "positive" throughout.
+float area2(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c) {
+    return (c.x - a.x) * (b.y - a.y) - (b.x - a.x) * (c.y - a.y);
+}
+
+/// How far `p` is inside the edge through `a` along unit `dir`, signed the same way.
+float sideOf(const glm::vec2& p, const glm::vec2& a, const glm::vec2& dir) {
+    return dir.y * (p.x - a.x) - dir.x * (p.y - a.y);
+}
+
+/// One blocking triangle's trace across a walkable triangle's plane, in XZ.
+struct StandingCut {
+    glm::vec2 a{0.0f};
+    glm::vec2 b{0.0f};
+};
+
+/**
+ * @brief Where a triangle meets the plane `dot(n, x) == d`, in XZ, if it *stands on* it.
+ *
+ * Standing on is the whole rule, and it is what lets this need no agent height. Geometry
+ * that reaches above the surface and touches or crosses it is standing on it; geometry
+ * entirely above -- a ceiling, a balcony, a bridge -- is not, and neither is geometry
+ * entirely below, which is what the underside of the floor itself always is. **A ceiling is
+ * therefore not an obstacle**, which is this file's clearance limitation restated rather
+ * than a new one.
+ *
+ * A column's side triangles have two vertices on the floor and one ten metres up, so each
+ * contributes the base edge it stands on and the ring comes out once, whole. The ones with
+ * a single vertex down meet the plane in a point and are refused here.
+ */
+bool standingCut(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& n, float d,
+                 float eps, StandingCut& out) {
+    const glm::vec3 p[3] = {p0, p1, p2};
+    float h[3];
+    float highest = -std::numeric_limits<float>::max();
+    float lowest = std::numeric_limits<float>::max();
+    for (int i = 0; i < 3; ++i) {
+        h[i] = glm::dot(n, p[i]) - d;
+        highest = std::max(highest, h[i]);
+        lowest = std::min(lowest, h[i]);
+    }
+    if (highest <= eps || lowest > eps) return false;
+
+    glm::vec2 touch[4];
+    int count = 0;
+    for (int i = 0; i < 3 && count < 4; ++i) {
+        const int j = (i + 1) % 3;
+        if (std::abs(h[i]) <= eps) touch[count++] = footprint(p[i]);
+        if (count < 4 && ((h[i] > eps && h[j] < -eps) || (h[i] < -eps && h[j] > eps))) {
+            touch[count++] = footprint(glm::mix(p[i], p[j], h[i] / (h[i] - h[j])));
+        }
+    }
+    if (count < 2) return false;
+
+    float best = -1.0f;
+    for (int i = 0; i < count; ++i) {
+        for (int j = i + 1; j < count; ++j) {
+            const glm::vec2 span = touch[i] - touch[j];
+            const float len2 = glm::dot(span, span);
+            if (len2 <= best) continue;
+            best = len2;
+            out.a = touch[i];
+            out.b = touch[j];
+        }
+    }
+    return best > eps * eps;
+}
+
+/// Split convex `poly` by the line through `a` along unit `dir`. Either side comes back
+/// empty when the polygon lies wholly on the other one.
+void splitConvex(const std::vector<glm::vec2>& poly, const glm::vec2& a, const glm::vec2& dir, float eps,
+                 std::vector<glm::vec2>& inside, std::vector<glm::vec2>& outside) {
+    inside.clear();
+    outside.clear();
+    const size_t n = poly.size();
+    for (size_t i = 0; i < n; ++i) {
+        const glm::vec2& p = poly[i];
+        const glm::vec2& q = poly[(i + 1) % n];
+        const float dp = sideOf(p, a, dir);
+        const float dq = sideOf(q, a, dir);
+        if (dp >= -eps) inside.push_back(p);
+        if (dp <= eps) outside.push_back(p);
+        if ((dp > eps && dq < -eps) || (dp < -eps && dq > eps)) {
+            const glm::vec2 x = p + (q - p) * (dp / (dp - dq));
+            inside.push_back(x);
+            outside.push_back(x);
+        }
+    }
+    if (inside.size() < 3) inside.clear();
+    if (outside.size() < 3) outside.clear();
+}
+
+/**
+ * @brief Does the segment `a`..`b` pass through the interior of convex `poly`?
+ *
+ * **The segment and not the line it lies on**, and that is what keeps the output bounded: a
+ * cut may only split a piece it actually reaches. Splitting every piece by every cut's line
+ * would build the arrangement of all of them against each other, which for a floor with
+ * twenty-eight rings on it is hundreds of thousands of cells rather than hundreds.
+ */
+bool segmentEnters(const std::vector<glm::vec2>& poly, const glm::vec2& a, const glm::vec2& b, float eps) {
+    const glm::vec2 travel = b - a;
+    float first = 0.0f;
+    float last = 1.0f;
+    const size_t n = poly.size();
+    for (size_t i = 0; i < n; ++i) {
+        const glm::vec2& p = poly[i];
+        glm::vec2 edge = poly[(i + 1) % n] - p;
+        const float len = glm::length(edge);
+        if (len <= 1e-9f) continue;
+        edge /= len;
+
+        const float depth = sideOf(a, p, edge);
+        const float rate = sideOf(a + travel, p, edge) - depth;
+        if (std::abs(rate) <= 1e-9f) {
+            if (depth < eps) return false;
+            continue;
+        }
+        const float t = (eps - depth) / rate;
+        if (rate > 0.0f) {
+            first = std::max(first, t);
+        } else {
+            last = std::min(last, t);
+        }
+        if (first > last) return false;
+    }
+    return last - first > 1e-6f;
+}
+
+/**
+ * @brief A bucket grid over triangle footprints, in XZ.
+ *
+ * Not the BVH further down this file. That one indexes the *baked* triangles and is built
+ * from what this decides; this one indexes the soup that arrived, and both of the carve's
+ * questions -- what stands near this floor, what is above this point -- are footprint
+ * queries. Two occurrences are a coincidence.
+ */
+struct Footprints {
+    glm::vec2 origin{0.0f};
+    float cell = 1.0f;
+    int32_t wide = 1;
+    int32_t deep = 1;
+    std::vector<std::vector<uint32_t>> buckets;
+
+    [[nodiscard]] int32_t column(float x) const {
+        return std::clamp(static_cast<int32_t>(std::floor((x - origin.x) / cell)), 0, wide - 1);
+    }
+    [[nodiscard]] int32_t row(float z) const {
+        return std::clamp(static_cast<int32_t>(std::floor((z - origin.y) / cell)), 0, deep - 1);
+    }
+
+    void build(const std::vector<glm::vec3>& verts, const std::vector<uint32_t>& soup) {
+        glm::vec2 lo(std::numeric_limits<float>::max());
+        glm::vec2 hi(-std::numeric_limits<float>::max());
+        for (const glm::vec3& v : verts) {
+            lo = glm::min(lo, footprint(v));
+            hi = glm::max(hi, footprint(v));
+        }
+        const uint32_t count = static_cast<uint32_t>(soup.size() / 3);
+        // About one triangle a cell, capped so a sparse world does not allocate a grid it
+        // will never fill.
+        const auto side = static_cast<int32_t>(std::clamp(std::sqrt(static_cast<float>(count)), 1.0f, 256.0f));
+        origin = lo;
+        const glm::vec2 span = glm::max(hi - lo, glm::vec2(1e-3f));
+        cell = std::max(span.x, span.y) / static_cast<float>(side);
+        wide = std::max(1, static_cast<int32_t>(span.x / cell) + 1);
+        deep = std::max(1, static_cast<int32_t>(span.y / cell) + 1);
+        buckets.assign(static_cast<size_t>(wide) * static_cast<size_t>(deep), {});
+
+        for (uint32_t t = 0; t < count; ++t) {
+            glm::vec2 tlo(std::numeric_limits<float>::max());
+            glm::vec2 thi(-std::numeric_limits<float>::max());
+            for (uint32_t k = 0; k < 3; ++k) {
+                const glm::vec2 p = footprint(verts[soup[3 * t + k]]);
+                tlo = glm::min(tlo, p);
+                thi = glm::max(thi, p);
+            }
+            for (int32_t j = row(tlo.y); j <= row(thi.y); ++j) {
+                for (int32_t i = column(tlo.x); i <= column(thi.x); ++i) {
+                    buckets[static_cast<size_t>(j) * static_cast<size_t>(wide) + static_cast<size_t>(i)].push_back(t);
+                }
+            }
+        }
+    }
+
+    /// Every triangle whose footprint may overlap the box, each once.
+    void gather(const glm::vec2& lo, const glm::vec2& hi, std::vector<uint32_t>& seen,
+                std::vector<uint32_t>& out) const {
+        out.clear();
+        for (int32_t j = row(lo.y); j <= row(hi.y); ++j) {
+            for (int32_t i = column(lo.x); i <= column(hi.x); ++i) {
+                for (const uint32_t t : buckets[static_cast<size_t>(j) * static_cast<size_t>(wide) +
+                                                static_cast<size_t>(i)]) {
+                    if (seen[t] != 0u) continue;
+                    seen[t] = 1u;
+                    out.push_back(t);
+                }
+            }
+        }
+        for (const uint32_t t : out) seen[t] = 0u;
+    }
+};
+
+/**
+ * @brief Is `p` inside solid geometry -- the nearest surface above it faces up?
+ *
+ * **The nearest one and not the parity of all of them**, because a point that lands exactly
+ * on the edge two triangles share is counted twice or not at all by a parity test, and the
+ * centroid of a piece cut along a footprint's own edges lands there often. The nearest hit
+ * is the same surface from either triangle, and their normals agree.
+ *
+ * Going up out of a solid you leave through a face pointing up -- a column's cap. Going up
+ * from open floor you either meet nothing or you enter something through a face pointing
+ * down, which is what the underside of a bridge is.
+ */
+bool insideSolid(const glm::vec3& p, const std::vector<glm::vec3>& verts, const std::vector<uint32_t>& soup,
+                 const std::vector<uint32_t>& candidates) {
+    float nearest = std::numeric_limits<float>::max();
+    bool facingUp = false;
+    for (const uint32_t t : candidates) {
+        const glm::vec3& a = verts[soup[3 * t]];
+        const glm::vec3& b = verts[soup[3 * t + 1]];
+        const glm::vec3& c = verts[soup[3 * t + 2]];
+        // A vertical triangle has no footprint for the ray to pass through, so it is neither
+        // a floor nor a ceiling as far as this question goes.
+        const float twice = triArea2(a, b, c);
+        if (std::abs(twice) < 1e-9f) continue;
+
+        const glm::vec2 q = footprint(p);
+        const glm::vec2 fa = footprint(a);
+        const glm::vec2 fb = footprint(b);
+        const glm::vec2 fc = footprint(c);
+        const float wa = area2(q, fb, fc) / twice;
+        const float wb = area2(fa, q, fc) / twice;
+        const float wc = area2(fa, fb, q) / twice;
+        if (wa < 0.0f || wb < 0.0f || wc < 0.0f) continue;
+
+        const float height = wa * a.y + wb * b.y + wc * c.y;
+        if (height <= p.y || height >= nearest) continue;
+        nearest = height;
+        facingUp = twice > 0.0f;
+    }
+    return nearest < std::numeric_limits<float>::max() && facingUp;
+}
+
+/**
+ * @brief Give every polygon the corners its neighbours put on its edges.
+ *
+ * Splitting each piece on its own leaves T-junctions: a cut that ends on an edge two pieces
+ * share is a corner one of them has and the other does not, and the two then agree on a line
+ * in space and disagree about which vertices are on it. The weld cannot close that -- the
+ * positions are distinct and correct -- so the adjacency pass sees two edges rather than one
+ * and the surface comes apart into a region per piece.
+ *
+ * One pass is enough because inserting a corner introduces no new corner: the point set is
+ * whatever the splitting already produced.
+ */
+void closeTJunctions(std::vector<std::vector<glm::vec3>>& loops, float weld) {
+    std::vector<glm::vec3> corners;
+    for (const std::vector<glm::vec3>& loop : loops) corners.insert(corners.end(), loop.begin(), loop.end());
+    if (corners.empty()) return;
+
+    // The same bucket idea as the footprints, over points rather than triangles.
+    glm::vec2 lo(std::numeric_limits<float>::max());
+    glm::vec2 hi(-std::numeric_limits<float>::max());
+    for (const glm::vec3& p : corners) {
+        lo = glm::min(lo, footprint(p));
+        hi = glm::max(hi, footprint(p));
+    }
+    const glm::vec2 span = glm::max(hi - lo, glm::vec2(1e-3f));
+    const auto side =
+        static_cast<int32_t>(std::clamp(std::sqrt(static_cast<float>(corners.size())), 1.0f, 256.0f));
+    const float cell = std::max(std::max(span.x, span.y) / static_cast<float>(side), weld);
+    const int32_t wide = std::max(1, static_cast<int32_t>(span.x / cell) + 1);
+    const int32_t deep = std::max(1, static_cast<int32_t>(span.y / cell) + 1);
+    const auto column = [&](float x) {
+        return std::clamp(static_cast<int32_t>(std::floor((x - lo.x) / cell)), 0, wide - 1);
+    };
+    const auto row = [&](float z) {
+        return std::clamp(static_cast<int32_t>(std::floor((z - lo.y) / cell)), 0, deep - 1);
+    };
+
+    std::vector<std::vector<uint32_t>> buckets(static_cast<size_t>(wide) * static_cast<size_t>(deep));
+    for (uint32_t i = 0; i < corners.size(); ++i) {
+        buckets[static_cast<size_t>(row(corners[i].z)) * static_cast<size_t>(wide) +
+                static_cast<size_t>(column(corners[i].x))]
+            .push_back(i);
+    }
+
+    const float weld2 = weld * weld;
+    std::vector<std::pair<float, glm::vec3>> inserts;
+    std::vector<glm::vec3> rebuilt;
+    for (std::vector<glm::vec3>& loop : loops) {
+        rebuilt.clear();
+        for (size_t i = 0; i < loop.size(); ++i) {
+            const glm::vec3& a = loop[i];
+            const glm::vec3& b = loop[(i + 1) % loop.size()];
+            rebuilt.push_back(a);
+
+            const glm::vec3 edge = b - a;
+            const float len2 = glm::dot(edge, edge);
+            if (len2 <= weld2) continue;
+
+            inserts.clear();
+            const glm::vec2 elo = glm::min(footprint(a), footprint(b));
+            const glm::vec2 ehi = glm::max(footprint(a), footprint(b));
+            for (int32_t j = row(elo.y); j <= row(ehi.y); ++j) {
+                for (int32_t k = column(elo.x); k <= column(ehi.x); ++k) {
+                    for (const uint32_t c : buckets[static_cast<size_t>(j) * static_cast<size_t>(wide) +
+                                                    static_cast<size_t>(k)]) {
+                        const glm::vec3& p = corners[c];
+                        const float along = glm::dot(p - a, edge) / len2;
+                        // Strictly between, and by more than the weld: an endpoint is already
+                        // this edge's, and a point within the weld of one is that one.
+                        if (along <= 0.0f || along >= 1.0f) continue;
+                        const glm::vec3 offset = p - (a + edge * along);
+                        if (glm::dot(offset, offset) > weld2) continue;
+                        if (glm::dot(p - a, p - a) <= weld2 || glm::dot(p - b, p - b) <= weld2) continue;
+                        inserts.emplace_back(along, p);
+                    }
+                }
+            }
+            if (inserts.empty()) continue;
+
+            std::sort(inserts.begin(), inserts.end(),
+                      [](const auto& x, const auto& y) { return x.first < y.first; });
+            for (const auto& insert : inserts) {
+                if (!rebuilt.empty() && glm::dot(rebuilt.back() - insert.second, rebuilt.back() - insert.second) <= weld2) {
+                    continue;
+                }
+                rebuilt.push_back(insert.second);
+            }
+        }
+        loop = rebuilt;
+    }
+}
+
+/**
+ * @brief Cut the walkable surface where solid geometry stands on it, rewriting the soup.
+ *
+ * The bake filters by slope and keeps what an agent could stand on. That silently answers a
+ * question nobody asked: a floor authored as one large quad with props resting on it stays
+ * one large quad, so every route across it is a straight line through every prop. The
+ * geometry that proves the prop is there -- its sides, too steep to walk and thrown away by
+ * the very next test -- is in this soup, and this is what reads it.
+ *
+ * Each walkable triangle is split by the traces of whatever stands on its plane, and the
+ * pieces that end up inside something are dropped. The pieces are convex throughout, which
+ * is what makes the splitting four lines of arithmetic rather than a triangulator, and no
+ * length is quantised anywhere: this adds no cell size to tune and no rasterisation error,
+ * which is the property the whole triangle approach is here for.
+ */
+void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& soup, const NavBuildParams& params) {
+    auto zone = core::Profiler::scope("NavMesh::cutStandingGeometry");
+    const uint32_t count = static_cast<uint32_t>(soup.size() / 3);
+    if (count == 0) return;
+
+    const float cosLimit = std::cos(glm::radians(std::clamp(params.walkableSlopeDegrees, 0.0f, 89.0f)));
+    const float weld = std::max(params.weldEpsilon, 1e-6f);
+    // Well under the weld, so a piece this splitting leaves too thin to matter collapses in
+    // the weld that follows rather than surviving as a sliver with an opinion about adjacency.
+    const float flat = weld * 0.01f;
+
+    std::vector<glm::vec3> normals(count, glm::vec3(0.0f));
+    std::vector<uint8_t> walkable(count, 0u);
+    uint32_t standing = 0;
+    uint32_t floors = 0;
+    for (uint32_t t = 0; t < count; ++t) {
+        const glm::vec3& a = verts[soup[3 * t]];
+        const glm::vec3 n = glm::cross(verts[soup[3 * t + 1]] - a, verts[soup[3 * t + 2]] - a);
+        const float len = glm::length(n);
+        if (len < 1e-12f) continue;
+        normals[t] = n / len;
+        if (normals[t].y >= cosLimit) {
+            walkable[t] = 1u;
+            ++floors;
+        } else {
+            ++standing;
+        }
+    }
+    // Nothing stands on anything, or there is nothing for it to stand on.
+    if (standing == 0 || floors == 0) return;
+
+    Footprints grid;
+    grid.build(verts, soup);
+
+    std::vector<uint32_t> seen(count, 0u);
+    std::vector<uint32_t> nearby;
+    std::vector<StandingCut> cuts;
+    std::vector<std::vector<glm::vec2>> pieces;
+    std::vector<glm::vec2> inside;
+    std::vector<glm::vec2> outside;
+
+    std::vector<uint32_t> out;
+    out.reserve(soup.size());
+
+    // **Every walkable triangle becomes a polygon here, cut or not.** A triangle nothing
+    // stands on still has a neighbour that was cut, and the point that cut landed on their
+    // shared edge is a vertex one of them has and the other does not -- which is a T-junction,
+    // and a T-junction is two triangles that visibly touch and are not adjacent. The repair
+    // below needs every boundary in one place to close them.
+    std::vector<std::vector<glm::vec3>> kept;
+
+    for (uint32_t t = 0; t < count; ++t) {
+        const uint32_t base = 3 * t;
+        if (walkable[t] == 0u) {
+            // Passed through rather than dropped: the slope filter is still the one that
+            // decides what a surface is, and it runs over what this hands back.
+            out.insert(out.end(), {soup[base], soup[base + 1], soup[base + 2]});
+            continue;
+        }
+
+        const glm::vec3& a = verts[soup[base]];
+        const glm::vec3& b = verts[soup[base + 1]];
+        const glm::vec3& c = verts[soup[base + 2]];
+        const glm::vec3 n = normals[t];
+        const float d = glm::dot(n, a);
+
+        const glm::vec2 fa = footprint(a);
+        const glm::vec2 fb = footprint(b);
+        const glm::vec2 fc = footprint(c);
+        const glm::vec2 lo = glm::min(fa, glm::min(fb, fc));
+        const glm::vec2 hi = glm::max(fa, glm::max(fb, fc));
+
+        cuts.clear();
+        grid.gather(lo, hi, seen, nearby);
+        for (const uint32_t other : nearby) {
+            if (walkable[other] != 0u || other == t) continue;
+            StandingCut cut;
+            if (!standingCut(verts[soup[3 * other]], verts[soup[3 * other + 1]], verts[soup[3 * other + 2]], n, d,
+                             weld, cut)) {
+                continue;
+            }
+            cuts.push_back(cut);
+        }
+
+        // The triangle's own winding is already the one every side test below assumes: `n.y`
+        // and `area2` are the same expression, so a walkable triangle is a positively wound
+        // footprint by construction.
+        pieces.clear();
+        pieces.push_back({fa, fb, fc});
+        for (const StandingCut& cut : cuts) {
+            glm::vec2 dir = cut.b - cut.a;
+            const float len = glm::length(dir);
+            if (len <= flat) continue;
+            dir /= len;
+            for (size_t i = 0; i < pieces.size();) {
+                if (!segmentEnters(pieces[i], cut.a, cut.b, flat)) {
+                    ++i;
+                    continue;
+                }
+                splitConvex(pieces[i], cut.a, dir, flat, inside, outside);
+                if (inside.empty() || outside.empty()) {
+                    ++i;
+                    continue;
+                }
+                pieces[i] = inside;
+                pieces.push_back(outside);
+                ++i;
+            }
+        }
+
+        for (const std::vector<glm::vec2>& piece : pieces) {
+            glm::vec2 centre(0.0f);
+            for (const glm::vec2& p : piece) centre += p;
+            centre /= static_cast<float>(piece.size());
+            // On the surface and a hair above it, so the floor it sits on is below the ray
+            // rather than the first thing the ray meets.
+            const glm::vec3 stand((centre.x), (d - n.x * centre.x - n.z * centre.y) / n.y + weld, centre.y);
+
+            glm::vec2 plo = piece[0];
+            glm::vec2 phi = piece[0];
+            for (const glm::vec2& p : piece) {
+                plo = glm::min(plo, p);
+                phi = glm::max(phi, p);
+            }
+            // **Asked of every piece and not only of the ones something cut.** A floor
+            // tessellated finer than the prop standing on it has triangles entirely within the
+            // footprint, and no trace crosses those -- they are simply inside, and a cut that
+            // only looked at what it had split would leave them walkable.
+            grid.gather(plo, phi, seen, nearby);
+            if (insideSolid(stand, verts, soup, nearby)) continue;
+
+            std::vector<glm::vec3> loop;
+            loop.reserve(piece.size());
+            for (const glm::vec2& p : piece) loop.push_back({p.x, (d - n.x * p.x - n.z * p.y) / n.y, p.y});
+            kept.push_back(std::move(loop));
+        }
+    }
+
+    closeTJunctions(kept, weld);
+
+    for (const std::vector<glm::vec3>& loop : kept) {
+        const auto first = static_cast<uint32_t>(verts.size());
+        if (loop.size() == 3) {
+            // A triangle nothing cut, emitted as itself. The weld puts these back on the
+            // vertices they arrived as, so a surface with nothing standing on it is the
+            // surface it was.
+            verts.insert(verts.end(), loop.begin(), loop.end());
+            out.insert(out.end(), {first, first + 1, first + 2});
+            continue;
+        }
+        // **A fan from a corner, and not from the middle.** A fan rooted inside the piece is a
+        // pinwheel: the two ways round it are the same length to a corridor search comparing
+        // centroids, so it takes whichever, and the funnel then has to pull the path through
+        // the portals of the wrong half. A fan from a vertex is a strip -- one way through --
+        // and because the piece is convex the straight line crosses its portals in order.
+        //
+        // The root has to be a corner whose own two edges carry no split point, or the first
+        // or last triangle of the fan is three collinear points: no area, so no edge for the
+        // piece on the other side to be adjacent across.
+        const uint32_t n = static_cast<uint32_t>(loop.size());
+        uint32_t root = n;
+        for (uint32_t i = 0; i < n && root == n; ++i) {
+            const glm::vec3& here = loop[i];
+            const auto clear = [&](const glm::vec3& p, const glm::vec3& q) {
+                const float base = distanceXZ(p, q);
+                return base > 1e-6f && std::abs(triArea2(here, p, q)) > weld * base;
+            };
+            if (clear(loop[(i + 1) % n], loop[(i + 2) % n]) && clear(loop[(i + n - 2) % n], loop[(i + n - 1) % n])) {
+                root = i;
+            }
+        }
+        if (root == n) {
+            // Every corner has a split point beside it. A centre vertex always works and
+            // never degenerates; it only costs the path quality argued for above.
+            glm::vec3 centre(0.0f);
+            for (const glm::vec3& p : loop) centre += p;
+            verts.push_back(centre / static_cast<float>(n));
+            verts.insert(verts.end(), loop.begin(), loop.end());
+            for (uint32_t k = 0; k < n; ++k) out.insert(out.end(), {first, first + 1 + k, first + 1 + (k + 1) % n});
+            continue;
+        }
+        verts.insert(verts.end(), loop.begin(), loop.end());
+        for (uint32_t k = 1; k + 1 < n; ++k) {
+            out.insert(out.end(), {first + root, first + (root + k) % n, first + (root + k + 1) % n});
+        }
+    }
+
+    soup.swap(out);
+}
+
 } // namespace
 
 // ==================================================================== bake
@@ -92,6 +642,17 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
 
     if (indices.size() < 3) return;
 
+    // ---------------------------------------------------------------- standing geometry
+    //
+    // **Before the weld and in the solver's frame**, because everything the carve decides is
+    // a question about up: what is standing on what, and which way a surface faces. It hands
+    // back a soup, so every stage below is unchanged and still the one deciding what a
+    // walkable surface is -- this only makes sure the surface has the props cut out of it.
+    std::vector<glm::vec3> nav(positions.size());
+    for (size_t i = 0; i < positions.size(); ++i) nav[i] = toNav(positions[i]);
+    std::vector<uint32_t> soup = indices;
+    cutStandingGeometry(nav, soup, params);
+
     // ---------------------------------------------------------------- weld
     //
     // A triangle soup has no adjacency: two floor tiles that visibly share an edge have
@@ -101,12 +662,12 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
     const float weld = std::max(params.weldEpsilon, 1e-6f);
     const float weld2 = weld * weld;
     std::unordered_map<size_t, std::vector<uint32_t>> grid;
-    std::vector<uint32_t> remap(positions.size(), 0);
+    std::vector<uint32_t> remap(nav.size(), 0);
 
-    for (uint32_t i = 0; i < positions.size(); ++i) {
-        // The one place the world enters. Everything welded, filtered, indexed and stored
-        // below is in the solver's frame from here on.
-        const glm::vec3 p = toNav(positions[i]);
+    for (uint32_t i = 0; i < nav.size(); ++i) {
+        // Already in the solver's frame: the carve above is where the world entered, and
+        // everything welded, filtered, indexed and stored below stays in that frame.
+        const glm::vec3 p = nav[i];
         const auto cx = static_cast<int64_t>(std::floor(p.x / weld));
         const auto cy = static_cast<int64_t>(std::floor(p.y / weld));
         const auto cz = static_cast<int64_t>(std::floor(p.z / weld));
@@ -140,10 +701,10 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
 
     // ---------------------------------------------------------------- slope filter
     const float cosLimit = std::cos(glm::radians(std::clamp(params.walkableSlopeDegrees, 0.0f, 89.0f)));
-    for (size_t i = 0; i + 2 < indices.size(); i += 3) {
-        uint32_t a = remap[indices[i]];
-        uint32_t b = remap[indices[i + 1]];
-        uint32_t c = remap[indices[i + 2]];
+    for (size_t i = 0; i + 2 < soup.size(); i += 3) {
+        uint32_t a = remap[soup[i]];
+        uint32_t b = remap[soup[i + 1]];
+        uint32_t c = remap[soup[i + 2]];
         // Welding collapses degenerate slivers onto themselves, which is a feature: they
         // carry no area and would only add adjacency noise.
         if (a == b || b == c || a == c) continue;

@@ -41,6 +41,26 @@
  * floors -- which is every scene this engine loads -- it is the right first answer, and the
  * voxel field is the row that follows it if a game needs clearance.
  *
+ * ## What stands on a floor is cut out of it
+ *
+ * A slope filter on its own answers a question nobody asked. A floor authored as one large
+ * quad with columns resting on it passes that filter whole, so the columns contribute
+ * nothing but their tops and **every route across the floor is a straight line through all
+ * of them** -- while the triangle count, the region count and the word "baked" all look
+ * healthy. So `bake` reads the geometry it is about to throw away: a triangle too steep to
+ * walk that reaches above a walkable surface and touches or crosses it is *standing on* it,
+ * and where it stands the surface is cut and whatever ends up enclosed is dropped.
+ *
+ * **Standing on and above are different questions, and only the first one cuts.** A bridge
+ * over a floor takes nothing away from it -- that is the clearance limit above rather than a
+ * second one -- and neither does the underside of the floor itself. Asking about contact
+ * instead of about headroom is what lets this need no agent height, so `agentHeight` stays
+ * absent for exactly the reason it always was.
+ *
+ * The hole is the footprint and not a quantisation of it: the pieces stay convex and the
+ * splitting is arithmetic, so a cut costs triangles and introduces no cell size and no
+ * rasterisation error -- which is the property the triangle approach is here for.
+ *
  * ## Coordinates
  *
  * The solver works in Y up. "Slope" is the angle between a triangle's normal and +Y, and

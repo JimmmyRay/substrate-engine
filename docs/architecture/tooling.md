@@ -1017,10 +1017,10 @@ the suite does not say it.
 ### The scripted arena check
 
 `scripts/arena.sh [config]`, and it is the same argument made about `game/battle_arena`.
-Seven arms, the same five flags, and the same shape of assertion: press keys under `--locked`
-and read back a `Arena:` line per transition and an `Arena path:` summary, all of it filled
-from `SceneAnimator::currentState`, `PhysicsWorld::characterTransform` and
-`Scene::worldTransform`.
+Eight arms, the same five flags, and the same shape of assertion: press keys under `--locked`
+and read back a `Arena:` line per transition, an `Arena path:` summary and an `Arena enemy:`
+one, all of it filled from `SceneAnimator::currentState`, `PhysicsWorld::characterTransform`
+and `Scene::worldTransform`.
 
 **It is a second script and not `locomotion.sh` with a game argument**, which is the question
 worth answering because the two files look alike. Every number in either is derived from *that
@@ -1038,6 +1038,7 @@ which is the bundling the conventions refuse. What the two share is a shape, not
 | `camera-south` | the identical run under a camera pointing the other way | the same answer, against a world heading 180° away |
 | `camera-turning` | the same run again with `--camera-spin 1.5` | still along the camera, and a path that curved |
 | `column` | forward and the modifier, **never released**, aimed dead-centre at a column | stopped at the column's face, and out of `run` |
+| `pursuit` | five seconds of running away, then a stop | the enemy re-searched twenty-one times and is back at its stand-off by the end |
 
 **`column` is the arm neither game had, and it is what found
 `bug-a-blocked-character-reports-the-speed-it-asked-for`.** Every arm in `locomotion.sh` walks
@@ -1054,6 +1055,30 @@ radii — 9.08 m from `kPlayerSpawn`, against 9.07 measured. The camera yaw that
 column is computed from the same two positions, because an approach a few degrees off centre
 slides around the column instead of stopping at it and the distance stops being derivable.
 Both come out of the column grid `arena.glb` authors, read out of the document.
+
+**Every arm asserts the pursuit, because the enemy does not wait to be asked.** `still` is no
+longer a run in which nothing happens, only one in which the player does nothing — and that is
+what makes it the arm where the enemy's arithmetic is exact, since its target never moves. The
+three numbers carried on all eight are: no search failed, the enemy never asked to move and
+stayed put for more than ten steps running, and it finished at its stand-off. The middle one is
+the direct statement that it did not walk into a column, and it is only readable because
+`bug-a-blocked-character-reports-the-speed-it-asked-for` made `characterSpeed` the swept
+displacement — a blocked fighter used to report the speed it requested, so this number would
+have been zero however hard it pushed. Five steps is the acceleration ramp out of a standstill.
+
+**The claim that a route goes *round* a column is made by a probe rather than by an arm**, and
+the reason is worth keeping. Two fighters share one top speed, so a pursuit closes to its 1.5 m
+stand-off and stays there: the segment between them is then 1.5 m long, and nothing 2 m across
+fits in it. Before it closes, the nearest column is ten metres off the spawn line. No sequence
+of keystrokes puts a column between them for long enough to matter. So `battle_arena` searches
+one route the length of a column row at load and reports its waypoint count beside `navmesh
+baked`, and the script asserts it is more than two.
+
+Two is what it was for as long as `NavMesh::bake` could not see a column at all — the arena's
+floor collider is one quad, one quad passes a slope filter whole, and a straight line across it
+went through all twenty-eight of them. The bake cuts what stands on a floor out of it now, and
+this arm is the regression check for that from the game's side; `tests/NavMeshTests.cpp` holds
+the engine's.
 
 ---
 
