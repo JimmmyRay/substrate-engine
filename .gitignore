@@ -20,8 +20,21 @@ releases/
 # Games are discovered on the filesystem (scripts/common.sh iterates game/*/), so a game
 # ignored here still builds, runs and packages exactly as before. This is the whole of
 # what a new game has to do to stay out of the engine's history: nothing.
+# **Un-ignoring is not tracking, and that is the point.** A path ignored here is one the editor
+# greys out and refuses to decorate, so a game carrying its own repo -- `game/battle_arena` --
+# had its own history made invisible by the engine's ignore rule. Listed here, the parent sees
+# an untracked directory it never descends into, and the nested repo owns its files.
+#
+# **Never `git add` one of these into the parent.** Git will take an embedded repository as a
+# gitlink -- a submodule entry with no `.gitmodules` and no remote to fetch from -- which is
+# broken for anyone who clones. Add the game's own repo as a submodule properly, or leave it.
+#
+# `game/viewer` is not a game in that sense: it is what `run.sh` builds when none is named, so
+# `scripts/golden.sh` captures all thirteen baselines through its `configure`. It is tracked.
 game/*
 !game/demo/
+!game/viewer/
+!game/battle_arena/
 
 # Assets — Sponza is (c) Crytek under the CryEngine Limited License Agreement, the
 # Mixamo rigs carry their own, and the recorded audio is neither ours nor small. All are
