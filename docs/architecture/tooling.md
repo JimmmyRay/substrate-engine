@@ -1014,6 +1014,47 @@ carries the character toward world `-X`, which is what `cross(forward, up)` give
 `glm::lookAt`'s right-handed basis makes screen-right — but that was established by hand, and
 the suite does not say it.
 
+### The scripted arena check
+
+`scripts/arena.sh [config]`, and it is the same argument made about `game/battle_arena`.
+Seven arms, the same five flags, and the same shape of assertion: press keys under `--locked`
+and read back a `Arena:` line per transition and an `Arena path:` summary, all of it filled
+from `SceneAnimator::currentState`, `PhysicsWorld::characterTransform` and
+`Scene::worldTransform`.
+
+**It is a second script and not `locomotion.sh` with a game argument**, which is the question
+worth answering because the two files look alike. Every number in either is derived from *that
+game's* collider, *that game's* gait thresholds and *that game's* scene geometry — the demo's
+character walks a showcase atrium and the arena's fighter walks a floor with a 7×4 grid of
+columns on it — so one script would be two unrelated sets of arithmetic behind a mode flag,
+which is the bundling the conventions refuse. What the two share is a shape, not a body.
+
+| Arm | What it presses | What it must produce |
+|---|---|---|
+| `still` | nothing | `idle`, no transitions, 0.00 m travelled |
+| `modifier` | `Player.Run` held for the whole run | the same answer, exactly |
+| `walk-run-jump` | forward, the modifier on, the modifier off, release, jump | `idle > walk > run > walk > idle > jump > fall > land > idle` |
+| `camera-north` | forward, under `--camera` at yaw 0 | 4.24 m walked, all of it along the camera's forward |
+| `camera-south` | the identical run under a camera pointing the other way | the same answer, against a world heading 180° away |
+| `camera-turning` | the same run again with `--camera-spin 1.5` | still along the camera, and a path that curved |
+| `column` | forward and the modifier, **never released**, aimed dead-centre at a column | stopped at the column's face, and out of `run` |
+
+**`column` is the arm neither game had, and it is what found
+`bug-a-blocked-character-reports-the-speed-it-asked-for`.** Every arm in `locomotion.sh` walks
+across open floor, where the request and the result agree to the last decimal, so nothing in
+the tree pressed a character into anything — and `characterVelocity` was Jolt's stored linear
+velocity, which is the request. The fighter stopped at the column, correctly, and went on
+reporting 3.2 m/s and holding `run` for the three hundred steps it stood there; releasing the
+keys was the only thing that ever moved the machine. Both halves are asserted now, and the
+second is the one that was broken.
+
+The stop distance is arithmetic rather than observation: a capsule against a cylinder touches
+along the line between the two axes, so it is the distance to the column's centre less the two
+radii — 9.08 m from `kPlayerSpawn`, against 9.07 measured. The camera yaw that aims at that
+column is computed from the same two positions, because an approach a few degrees off centre
+slides around the column instead of stopping at it and the distance stops being derivable.
+Both come out of the column grid `arena.glb` authors, read out of the document.
+
 ---
 
 ## Profiling
@@ -2147,6 +2188,9 @@ run as its **own** invocation, never chained.
   added the other half of that rule: **when the answer is a direction, the arm has to assert
   one.** A summed path length, a travel time and a state name are all invariant under a
   heading error, and three checks passed over one for a year because none of them was.
+  `scripts/arena.sh` is the same suite over `game/battle_arena` and carries a rule of its own:
+  **an arm has to press the character into something.** Nine arms across open floor could not
+  see that a blocked character was reporting the speed it asked for.
 - **A section of `docs/guides/making-a-game.md`** per stage, written while the stage is
   fresh.
 

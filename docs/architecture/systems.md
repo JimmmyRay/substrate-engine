@@ -1491,6 +1491,19 @@ a mesh to face where its character is going turns it to face where the floor is 
 demo did, and its character pirouetted with the sliding platform for as long as anyone stood
 on it.
 
+**Both come out of the swept displacement, and that is not the same as Jolt's velocity.**
+`CharacterVirtual::Update` slides the shape through the world and leaves `mLinearVelocity`
+exactly as the caller set it, so an accessor built on `GetLinearVelocity` reports the request
+back — a character flat against a wall reads as running at `moveSpeed`, and the locomotion
+machine plays a full-speed run on the spot for as long as the key is held. It read that way
+until `bug-a-blocked-character-reports-the-speed-it-asked-for`, and no arm anywhere pressed a
+character into anything, so nothing could have said so. Taking the position before the sweep
+and differencing it afterwards is what makes the three cases the surface promises true at
+once: a wall takes away the component into it, a ramp is climbed at the speed the ramp
+allows, and a stair arrives with whatever `WalkStairs` actually moved. The displacement is
+**not** fed back into the motion model's ramp — that integrator's state is the request, so a
+character leaning on a wall still has its speed the moment the wall stops being in the way.
+
 **`setCharacterInput` takes a request, and the vector's length is part of the request.** The
 controller multiplies it by the character's `moveSpeed` without normalising, so a
 half-length direction is half the speed — which is what makes an analogue stick analogue,

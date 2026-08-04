@@ -2064,3 +2064,76 @@ TEST(PhysicsCharacter, RidingAPlatformIsNeitherWalkingNorAHeading) {
     // Horizontal only: a rider on a rising lift is not walking upward.
     EXPECT_FLOAT_EQ(world.characterVelocity(rider).y, 0.0f);
 }
+
+/**
+ * The other half of the same accessor, and the half that was wrong.
+ *
+ * The pair above establishes that the ground is subtracted; this one establishes that what is
+ * left is the *sweep's* answer and not the request. Jolt's `CharacterVirtual::Update` slides
+ * the shape through the world and leaves `mLinearVelocity` exactly as the caller set it, so an
+ * accessor built on `GetLinearVelocity` reports full speed for a character flat against a wall
+ * -- which a locomotion machine reads as a full-speed run played on the spot, for as long as
+ * the key is held.
+ *
+ * Two walls, because "blocked" and "deflected" fail differently. Head-on, the request survives
+ * intact and only the *result* is zero. At forty-five degrees the result is neither zero nor
+ * the request: it is the component along the wall, and an accessor returning the request passes
+ * the first arm's magnitude test on the second while pointing into the wall.
+ */
+TEST(PhysicsCharacter, WalkingIntoAWallReportsWhatTheSweepDidAndNotWhatWasAsked) {
+    PhysicsWorld world;
+    world.init({}, 4);
+    addFloor(world);
+
+    // Head-on: a wall across +Z, far enough away that the character reaches top speed before
+    // it arrives.
+    world.createBody(box({0.0f, 1.0f, 8.0f}, {40.0f, 1.0f, 0.5f}, ColliderMotion::Static));
+
+    ColliderDesc c = capsule({0.0f, 0.0f, 0.0f});
+    const PhysicsCharacterId walker = world.createCharacter(c);
+    ASSERT_TRUE(walker.valid());
+    world.finalize();
+
+    for (int i = 0; i < 30; ++i) world.step(kStep);
+    world.setCharacterInput(walker, {0.0f, 0.0f, 1.0f}, false);
+    for (int i = 0; i < 60; ++i) world.step(kStep);
+    // Half way there and moving, or the arm below proves nothing about arriving.
+    ASSERT_GT(world.characterSpeed(walker), 1.0f) << "the character never got going";
+
+    for (int i = 0; i < 180; ++i) world.step(kStep);
+
+    // **The input has never been taken off.** Every step above and below asks for the same
+    // full-speed walk into the wall, so the number that changed is the solver's and not the
+    // caller's.
+    const float reached = world.characterTransform(walker, 0.0f)[3].z;
+    EXPECT_NEAR(reached, 8.0f - 0.5f - c.radius, 0.06f) << "the character did not arrive at the wall";
+    EXPECT_NEAR(world.characterSpeed(walker), 0.0f, 0.05f)
+        << "a character flat against a wall is reporting the speed it asked for";
+
+    // ------------------------------------------------------------ and deflected, not stopped
+    //
+    // A second wall at forty-five degrees to the first. The request is still due +Z; what
+    // survives is its component along the face, at `moveSpeed / sqrt(2)` and pointing off to
+    // one side -- so both the magnitude and the direction differ from the request.
+    PhysicsWorld angled;
+    angled.init({}, 4);
+    addFloor(angled);
+    ColliderDesc slope = box({0.0f, 1.0f, 8.0f}, {40.0f, 1.0f, 0.5f}, ColliderMotion::Static);
+    slope.transform = glm::rotate(slope.transform, glm::radians(45.0f), glm::vec3(0.0f, 1.0f, 0.0f));
+    angled.createBody(slope);
+
+    const PhysicsCharacterId sliding = angled.createCharacter(capsule({0.0f, 0.0f, 0.0f}));
+    ASSERT_TRUE(sliding.valid());
+    angled.finalize();
+
+    for (int i = 0; i < 30; ++i) angled.step(kStep);
+    angled.setCharacterInput(sliding, {0.0f, 0.0f, 1.0f}, false);
+    for (int i = 0; i < 240; ++i) angled.step(kStep);
+
+    const glm::vec3 along = angled.characterVelocity(sliding);
+    EXPECT_GT(std::abs(along.x), 0.5f) << "the character is not sliding along the angled wall at all";
+    // The wall's normal is (-1, 0, 1)/sqrt(2) or its opposite, so a velocity along the face has
+    // equal and opposite components. Asserted as the ratio rather than as two numbers, because
+    // what is being claimed is the *direction* and the speed it slides at is the wall's answer.
+    EXPECT_NEAR(along.x + along.z, 0.0f, 0.15f) << "the reported heading is not along the wall";
+}

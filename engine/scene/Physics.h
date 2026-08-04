@@ -413,7 +413,9 @@ class PhysicsWorld {
      *
      * Still what the solver *did* rather than what it was asked for -- a ramp is climbed at
      * the speed the ramp allows and a wall slides the direction along it -- so it is a
-     * heading, not a restatement of `setCharacterInput`.
+     * heading, not a restatement of `setCharacterInput`. That comes from differencing the
+     * swept position: **Jolt's `GetLinearVelocity` is the request**, unchanged by the sweep,
+     * and reading it back is the edit that makes this sentence false again.
      */
     [[nodiscard]] glm::vec3 characterVelocity(PhysicsCharacterId id) const;
     /// This character's top speed, from the `ColliderDesc` that made it. What

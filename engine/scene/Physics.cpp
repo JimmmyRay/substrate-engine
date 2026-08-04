@@ -1372,24 +1372,39 @@ void PhysicsWorld::step(float dt) {
             updateSettings.mWalkStairsStepUp = JPH::Vec3(0.0f, c.stepHeight, 0.0f);
             updateSettings.mStickToFloorStepDown = JPH::Vec3(0.0f, -c.stepHeight * 1.25f, 0.0f);
 
+            // **Taken before the sweep, because the sweep is the only thing that knows what
+            // the request survived.** `ExtendedUpdate` slides the shape and leaves
+            // `mLinearVelocity` exactly as it was set, so reading it back afterwards answers
+            // with the line above rather than with the result -- a character pressed into a
+            // wall reported a full-speed run for as long as the key was held.
+            const JPH::RVec3 before = cv.GetPosition();
+
             cv.ExtendedUpdate(dt, gravity, updateSettings, impl->system.GetDefaultBroadPhaseLayerFilter(kLayerMoving),
                               impl->system.GetDefaultLayerFilter(kLayerMoving), {}, {}, *impl->temp);
 
-            // **Relative to the ground, not to the world.** This is the number a locomotion
-            // state machine blends on, and gait is what the legs do, not where the character
-            // ends up: standing still on a platform moving at 2 m/s is `0`, and walking
-            // backwards along it at its own speed is `moveSpeed`, not stillness. Read after
-            // `ExtendedUpdate` rather than reusing `base` from above, because the ground the
-            // character is on is one of the things that call can change.
+            // **What the sweep did, relative to the ground rather than to the world.** This is
+            // the number a locomotion state machine blends on, and gait is what the legs do,
+            // not where the character ends up: standing still on a platform moving at 2 m/s is
+            // `0`, and walking backwards along it at its own speed is `moveSpeed`, not
+            // stillness. The ground is read after `ExtendedUpdate` rather than reusing `base`
+            // from above, because the ground the character is on is one of the things that call
+            // can change.
+            //
+            // The displacement carries every case the request cannot: a wall takes the
+            // component into it away, a ramp is climbed at the speed the ramp allows, and a
+            // stair-step arrives with the horizontal `WalkStairs` actually moved. It is *not*
+            // fed back into the ramp above -- that integrator is C20's motion model and its
+            // state is the request, so a fighter that leans on a column for a second still has
+            // its speed when the column stops being in the way.
             //
             // Kept as a vector rather than collapsed to a length here: the direction is the
             // same measurement and a caller that wants a heading has nowhere else to get one
             // -- differencing `characterTransform` gets the carry back.
-            const JPH::Vec3 v = cv.GetLinearVelocity();
+            const JPH::Vec3 moved = JPH::Vec3(cv.GetPosition() - before) / dt;
             const JPH::Vec3 under = cv.GetGroundState() == JPH::CharacterBase::EGroundState::OnGround
                                         ? cv.GetGroundVelocity()
                                         : JPH::Vec3::sZero();
-            c.velocity = glm::vec3(v.GetX() - under.GetX(), 0.0f, v.GetZ() - under.GetZ());
+            c.velocity = glm::vec3(moved.GetX() - under.GetX(), 0.0f, moved.GetZ() - under.GetZ());
         }
     }
 
