@@ -8,7 +8,7 @@ namespace scene {
  * @file engine/scene/Node.h
  * @brief What "no glTF node" is called, in one place.
  *
- * The narrowest scope `Animation.h`, `Collider.h`, `AudioSource.h` and `ParticleSystem.h`
+ * The narrowest scope `Animation.h`, `Collider.h`, `AudioSource.h` and `ParticleEmitter.h`
  * all already reach; anything wider belongs elsewhere.
  */
 

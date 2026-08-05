@@ -473,11 +473,11 @@ void Engine::loadScene() {
     render.setInstances(&instanceTable);
     render.setAnimator(&sceneAnimator, &sceneData);
 
-    particleSystem.setEmitters(std::move(sceneData.emitters()), 0);
-    render.setParticles(&particleSystem);
-    if (!particleSystem.empty()) {
-        core::Logger::status(core::LogCategory::Scene, "Particles: %zu emitters, pool %u", particleSystem.emitters().size(),
-                       particleSystem.capacity());
+    modules::particles->setEmitters(std::move(sceneData.emitters()), 0);
+    const modules::Particles::Pool pool = modules::particles->pool();
+    render.setParticleCapacity(pool.capacity, pool.emitters);
+    if (pool.emitters != 0) {
+        core::Logger::status(core::LogCategory::Scene, "Particles: %u emitters, pool %u", pool.emitters, pool.capacity);
     }
 
     // Fog pools from the floor up, so the height reference is the scene's lower bound
@@ -542,11 +542,11 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
     // them out of the frame.
     for (uint32_t i = 0; i < m.lightCount; ++i) render.lights.push_back(sceneData.lights()[m.firstLight + i]);
     for (uint32_t i = 0; i < m.audioCount; ++i) (void)audioEngine.create(sceneData.audioSources()[m.firstAudio + i]);
-    // `create` rather than rebuilding the list through `setEmitters`: the renderer allocated
+    // `addEmitter` rather than rebuilding the list through `setEmitters`: the renderer allocated
     // its buffers against the capacity the scene loaded with, so an import shares the
     // particles the existing emitters did not claim rather than resizing under it.
     for (uint32_t i = 0; i < m.emitterCount; ++i) {
-        (void)particleSystem.create(sceneData.emitters()[m.firstEmitter + i]);
+        modules::particles->addEmitter(sceneData.emitters()[m.firstEmitter + i]);
     }
 
     if (m.colliderCount > 0) {
@@ -1665,18 +1665,16 @@ void Engine::simulate(float stepSeconds) {
 
 void Engine::growParticles() {
     /**
-     * **The pair, and the only place either half may be called.** `ParticleSystem::grow`
-     * resizes the pool's CPU side and `Renderer::resizeParticlePool` the GPU buffers the
-     * shaders write into; the first without the second emits past the end of a device
-     * allocation.
+     * **The pair, and the only place either half may be called.** `growToWanted` resizes
+     * the pool's CPU side and `Renderer::resizeParticlePool` the GPU buffers the shaders
+     * write into; the first without the second emits past the end of a device allocation.
      *
      * After the step, never inside it: a resize waits for the device to go idle and
      * re-records descriptor sets.
      */
-    const uint32_t want = particleSystem.wantedCapacity();
-    if (want <= particleSystem.capacity()) return;
-    if (!particleSystem.grow(want)) return;
-    render.resizeParticlePool();
+    if (!modules::particles->growToWanted()) return;
+    const modules::Particles::Pool pool = modules::particles->pool();
+    render.resizeParticlePool(pool.capacity, pool.emitters);
 }
 
 void Engine::endFrame() {
@@ -1710,10 +1708,14 @@ void Engine::endFrame() {
                 if (p.node < world.size()) instanceTable.setTransform(id, world[p.node]);
             }
 
-            for (scene::ParticleEmitter& e : particleSystem.emitters()) {
-                const std::vector<glm::mat4>& world = poseFor(e.node);
-                if (e.node < world.size()) e.transform = world[e.node];
-            }
+            modules::particles->placeEmitters(core::Slot<bool(uint32_t, glm::mat4*)>(
+                [](void* ctx, uint32_t node, glm::mat4* out) {
+                    const std::vector<glm::mat4>& world = static_cast<const Engine*>(ctx)->poseFor(node);
+                    if (node >= world.size()) return false;
+                    *out = world[node];
+                    return true;
+                },
+                this));
         }
 
         // *After* the animation loop above: a node with both a clip and a collider is one the
@@ -1723,7 +1725,7 @@ void Engine::endFrame() {
         targets.lights = &render.lights;
         targets.audio = &audioEngine;
         targets.physics = &physicsWorld;
-        targets.particles = &particleSystem;
+        targets.emitterTransform = modules::particles->emitterTransforms();
         targets.alpha = alpha;
         sceneTree.update(targets);
     }
@@ -1737,7 +1739,7 @@ void Engine::endFrame() {
     // that steps were dropped and the counter says on which frames.
     core::Profiler::counter("droppedSteps", simClock.droppedSteps());
     core::Profiler::counter("bodies", physicsWorld.bodyCount());
-    core::Profiler::counter("particles", particleSystem.aliveCount());
+    core::Profiler::counter("particles", modules::particles->frame().alive);
     core::Profiler::counter("audioSources", audioEngine.sourceCount());
     core::Profiler::counter("nodes", sceneTree.liveCount());
 
@@ -1818,6 +1820,11 @@ void Engine::endFrame() {
     // Outside `drawFrame`, which holds the table by const pointer; this is the one thing that
     // mutates it.
     spriteTable.prepare();
+
+    // Every frame, and after the last step of it: the spans in here point into the pool's
+    // own vectors and the next step reallocates them. A frame that skips this records the
+    // particle passes against a default -- see `gfx::ParticleFrame`.
+    render.setParticleFrame(modules::particles->frame());
 
     if (render.drawFrame(camera()) == gfx::FrameResult::WindowClosed) closed = true;
 

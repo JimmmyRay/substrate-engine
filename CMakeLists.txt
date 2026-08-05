@@ -387,6 +387,7 @@ add_custom_target(layer_guard ALL
 set(SUBSTRATE_HOSTED_SOURCES
     engine/ai/Planner.cpp
     engine/nav/NavMesh.cpp
+    engine/particles/ParticleSystem.cpp
     engine/core/AudioTap.cpp
     engine/core/AudioBackend.cpp
     engine/core/Config.cpp
@@ -418,7 +419,7 @@ set(SUBSTRATE_HOSTED_SOURCES
     engine/scene/Locomotion.cpp
     engine/scene/MeshLod.cpp
     engine/scene/miniaudio_impl.cpp
-    engine/scene/ParticleSystem.cpp
+    engine/scene/ParticleEmitter.cpp
     engine/scene/Physics.cpp
     engine/scene/Scene.cpp
     engine/scene/SceneData.cpp
@@ -486,6 +487,7 @@ add_library(substrate STATIC
     # why none of these joins SUBSTRATE_HOSTED_SOURCES beside the module it wires: the module
     # itself stays hosted and testable, and only the wiring leaves.
     engine/nav/NavModule.cpp
+    engine/particles/ParticlesModule.cpp
 )
 
 # main() itself, and it is optional. ON by default: the engine compiles the entry point

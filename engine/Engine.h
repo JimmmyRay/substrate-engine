@@ -16,7 +16,6 @@
 #include "scene/LitSprite.h"
 #include "scene/Locomotion.h"
 #include "scene/SpatialIndex.h"
-#include "scene/ParticleSystem.h"
 #include "scene/Physics.h"
 #include "scene/Scene.h"
 #include "scene/Simulation.h"
@@ -48,6 +47,10 @@ namespace nav {
 class NavMesh;
 struct NavBuildParams;
 } // namespace nav
+
+namespace particles {
+class ParticleSystem;
+} // namespace particles
 
 class Engine {
   public:
@@ -336,7 +339,11 @@ class Engine {
      * itself is not, and stays unpaired until the game calls `pair()`.
      */
     scene::LocomotionDriver& locomotion() { return locomotionDriver; }
-    scene::ParticleSystem& particles() { return particleSystem; }
+    /// The pool a game spawns effects into.
+    ///
+    /// **Defined in `particles/ParticlesModule.cpp`, and naming it is what links
+    /// particles** -- a game that never calls this draws none. See that header.
+    ::particles::ParticleSystem& particles();
     scene::PhysicsWorld& physics() { return physicsWorld; }
     scene::AudioEngine& audio() { return audioEngine; }
     core::input::InputMap& input() { return inputMap; }
@@ -568,7 +575,6 @@ class Engine {
     scene::SpriteTable& spriteTable = sim.sprites;
     scene::SceneAnimator& sceneAnimator = sim.animator;
     scene::LocomotionDriver& locomotionDriver = sim.locomotion;
-    scene::ParticleSystem& particleSystem = sim.particles;
     scene::PhysicsWorld& physicsWorld = sim.physics;
     scene::ClothSystem& clothSystem = sim.cloth;
     scene::AudioEngine& audioEngine = sim.audio;

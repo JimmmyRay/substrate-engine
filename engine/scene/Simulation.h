@@ -4,7 +4,6 @@
 #include "scene/Audio.h"
 #include "scene/Cloth.h"
 #include "scene/Locomotion.h"
-#include "scene/ParticleSystem.h"
 #include "scene/Physics.h"
 #include "scene/Scene.h"
 #include "scene/SpriteTable.h"
@@ -47,7 +46,6 @@ class Simulation {
     SpriteTable sprites;
     SceneAnimator animator;
     LocomotionDriver locomotion;
-    ParticleSystem particles;
     PhysicsWorld physics;
     ClothSystem cloth;
     AudioEngine audio;

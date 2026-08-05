@@ -9,7 +9,7 @@
 #include "scene/InstanceTable.h"
 #include "core/RangeAllocator.h"
 #include "scene/SceneData.h"
-#include "scene/ParticleSystem.h"
+#include "scene/ParticleEmitter.h"
 #include "scene/SceneTypes.h"
 
 #include <glm/glm.hpp>
@@ -237,7 +237,7 @@ class GltfScene {
     const std::vector<gfx::GpuLight>& lights() const { return sceneLights; }
 
     /// Particle emitters the file authored, already placed by their nodes' world transforms.
-    /// `ParticleSystem::setEmitters` takes ownership by move.
+    /// `particles::ParticleSystem::setEmitters` takes ownership by move.
     std::vector<ParticleEmitter>& emitters() { return sceneEmitters; }
     const std::vector<ParticleEmitter>& emitters() const { return sceneEmitters; }
 

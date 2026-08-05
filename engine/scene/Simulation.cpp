@@ -1,5 +1,6 @@
 #include "scene/Simulation.h"
 
+#include "Modules.h"
 #include "core/Profiler.h"
 
 namespace scene {
@@ -21,7 +22,7 @@ void Simulation::step(float stepSeconds) {
     // `firedEvents()` after a quiet step the previous step's list.
     sprites.update(stepSeconds);
 
-    particles.update(stepSeconds);
+    modules::particles->update(stepSeconds);
 
     // Last of the three, so a body nothing pushed this step is still where the animation
     // left it.

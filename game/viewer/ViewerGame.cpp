@@ -2,6 +2,7 @@
 
 #include "Engine.h"
 #include "Entry.h"
+#include "particles/ParticlesModule.h"
 
 namespace {
 
@@ -62,6 +63,11 @@ void ViewerGame::init(Engine& e) {
     if (e.gltfScene().lights().empty()) {
         placeLights(e.renderer(), e.gltfScene().boundsMin, e.gltfScene().boundsMax);
     }
+
+    // A module is linked by a game naming it and by nothing else, and the golden set's
+    // `particles` case is a viewer run: delete this and a scene's emitters spawn nothing,
+    // in a build that reports no error.
+    (void)e.particles();
 }
 
 void ViewerGame::frameUpdate(Engine& e, float /*dt*/) {

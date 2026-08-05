@@ -1,5 +1,5 @@
 #include "GltfExtras.h"
-#include "scene/ParticleSystem.h"
+#include "particles/ParticleSystem.h"
 
 #include <gtest/gtest.h>
 
@@ -11,7 +11,8 @@
 #include <vector>
 
 using namespace core;
-
+using namespace gfx;
+using namespace particles;
 using namespace scene;
 
 /**

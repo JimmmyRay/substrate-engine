@@ -4,7 +4,7 @@
 #include "scene/AudioSource.h"
 #include "scene/Collider.h"
 #include "scene/SceneTypes.h"
-#include "scene/ParticleSystem.h"
+#include "scene/ParticleEmitter.h"
 
 #include <cstdint>
 #include <filesystem>

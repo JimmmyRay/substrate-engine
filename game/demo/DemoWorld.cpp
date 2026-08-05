@@ -405,10 +405,10 @@ void buildDemoWorld(Engine& e, DemoWorld& world) {
     }
 
     // The second call is the one that is easy to forget: `setEmitters` resizes the CPU pool
-    // and the renderer sizes its buffers from `capacity()` in `setParticles`, so calling
-    // only the first emits into a pool the GPU has no storage for. There is no single verb.
+    // and `setParticleCapacity` the device buffers, so calling only the first emits into a
+    // pool the GPU has no storage for. There is no single verb.
     e.particles().setEmitters(std::move(emitters), 0);
-    e.renderer().setParticles(&e.particles());
+    e.renderer().setParticleCapacity(e.particles().capacity(), e.particles().emitterCount());
 
     scene::AudioSourceDesc crackle;
     {

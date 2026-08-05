@@ -426,10 +426,7 @@ void Scene::update(const SceneTargets& targets) {
         if (targets.audio != nullptr && a.sound.valid()) {
             targets.audio->setSourceTransform(a.sound, n.world);
         }
-        if (targets.particles != nullptr && a.emitter != kNoAttachment) {
-            std::vector<ParticleEmitter>& emitters = targets.particles->emitters();
-            if (a.emitter < emitters.size()) emitters[a.emitter].transform = n.world;
-        }
+        if (a.emitter != kNoAttachment) targets.emitterTransform(a.emitter, n.world);
         if (targets.lights != nullptr && a.light != kNoAttachment && a.light < targets.lights->size()) {
             gfx::GpuLight& l = (*targets.lights)[a.light];
             // Place and aim only: everything else is what `light()` hands out a reference

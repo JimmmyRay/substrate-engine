@@ -1,30 +1,14 @@
-#include "scene/ParticleSystem.h"
+#include "particles/ParticleSystem.h"
 
-#include "core/Json.h"
 #include "core/Logger.h"
 #include "core/Profiler.h"
 
-#include <rapidjson/document.h>
-
 #include <algorithm>
 #include <cmath>
-#include <cstring>
 
-namespace scene {
+namespace particles {
 
-namespace {
-
-using rapidjson::Value;
-using core::json::gltfJsonSpan;
-using core::json::member;
-using core::json::readAngleDegrees;
-using core::json::readBool;
-using core::json::readFloat;
-using core::json::readString;
-using core::json::readUint;
-using core::json::readVec;
-
-} // namespace
+using scene::ParticleEmitter;
 
 void ParticleSystem::setEmitters(std::vector<ParticleEmitter> emitters, uint32_t budget) {
     emitterList = std::move(emitters);
@@ -257,7 +241,7 @@ void ParticleSystem::update(float dt) {
 
             // Symmetric about the authored lifetime: a one-sided jitter shifts the mean,
             // and the mean is what the pool was sized from.
-            const float r = particleRandom(seed, kRandomLifetime) * 2.0f - 1.0f;
+            const float r = gfx::particleRandom(seed, gfx::kRandomLifetime) * 2.0f - 1.0f;
             const float lifetime = std::max(em.lifetime * (1.0f + em.lifetimeJitter * r), 1.0f / 1024.0f);
 
             // Births spread across the step. Stacked on its first instant instead, a
@@ -269,7 +253,7 @@ void ParticleSystem::update(float dt) {
             deathTime[slot] = birth + lifetime;
             ++alive;
 
-            GpuSpawn s;
+            gfx::GpuSpawn s;
             s.meta = glm::uvec4(slot, e, seed, 0u);
             s.params = glm::vec4(lifetime, birth, 0.0f, 0.0f);
             spawnList.push_back(s);
@@ -277,10 +261,10 @@ void ParticleSystem::update(float dt) {
     }
 }
 
-void ParticleSystem::writeGpuEmitters(GpuEmitter* out) const {
+void ParticleSystem::writeGpuEmitters(gfx::GpuEmitter* out) const {
     for (size_t i = 0; i < emitterList.size(); ++i) {
         const ParticleEmitter& e = emitterList[i];
-        GpuEmitter& g = out[i];
+        gfx::GpuEmitter& g = out[i];
         g.transform = e.transform;
         g.velocity = glm::vec4(e.velocity, e.speedJitter);
         g.boxExtent = glm::vec4(e.boxExtent, e.coneAngle);
@@ -291,8 +275,8 @@ void ParticleSystem::writeGpuEmitters(GpuEmitter* out) const {
         g.sprite = glm::vec4(e.spin, e.erosion, e.flipbookLoops, 0.0f);
 
         uint32_t bits = 0;
-        if (e.emissive) bits |= kEmitterEmissive;
-        if (e.collides) bits |= kEmitterCollides;
+        if (e.emissive) bits |= scene::kEmitterEmissive;
+        if (e.collides) bits |= scene::kEmitterCollides;
         // Clamped to at least one cell each way. A grid of zero would make the frame
         // count zero, and the shader divides by it.
         const uint32_t cols = std::max(e.flipbookCols, 1u);
@@ -301,54 +285,4 @@ void ParticleSystem::writeGpuEmitters(GpuEmitter* out) const {
     }
 }
 
-bool parseSceneEmitters(const rapidjson::Value& nodesArray, std::vector<ParticleEmitter>& out) {
-    const Value* nodes = &nodesArray;
-
-    for (rapidjson::SizeType n = 0; n < nodes->Size(); ++n) {
-        const Value* extras = core::json::member((*nodes)[n], "extras");
-        if (extras == nullptr) continue;
-        const Value* def = core::json::member(*extras, "substrate_emitter");
-        if (def == nullptr || !def->IsObject()) continue;
-
-        ParticleEmitter e;
-        e.node = n;
-        core::json::readString(*def, "name", e.name);
-        if (e.name.empty()) core::json::readString((*nodes)[n], "name", e.name);
-        // Every diagnostic naming an emitter uses this, so an unnamed node must still
-        // come out identifiable -- matching what a collider and an audio source report.
-        if (e.name.empty()) e.name = "node " + std::to_string(n);
-
-        core::json::readFloat(*def, "rate", e.rate);
-        core::json::readFloat(*def, "lifetime", e.lifetime);
-        readFloat(*def, "lifetimeJitter", e.lifetimeJitter);
-
-        core::json::readVec<3>(*def, "velocity", &e.velocity.x);
-        readFloat(*def, "speedJitter", e.speedJitter);
-        core::json::readAngleDegrees(*def, "coneAngle", e.coneAngle);
-        core::json::readVec<3>(*def, "boxExtent", &e.boxExtent.x);
-
-        readVec<3>(*def, "gravity", &e.gravity.x);
-        readFloat(*def, "drag", e.drag);
-
-        readVec<4>(*def, "colorStart", &e.colorStart.x);
-        readVec<4>(*def, "colorEnd", &e.colorEnd.x);
-        readFloat(*def, "sizeStart", e.sizeStart);
-        readFloat(*def, "sizeEnd", e.sizeEnd);
-
-        core::json::readUint(*def, "texture", e.texture);
-        core::json::readUint(*def, "flipbookCols", e.flipbookCols);
-        core::json::readUint(*def, "flipbookRows", e.flipbookRows);
-        readFloat(*def, "flipbookLoops", e.flipbookLoops);
-        readFloat(*def, "spin", e.spin);
-        readFloat(*def, "erosion", e.erosion);
-        core::json::readBool(*def, "emissive", e.emissive);
-        readFloat(*def, "emissiveIntensity", e.emissiveIntensity);
-        core::json::readBool(*def, "collides", e.collides);
-        readFloat(*def, "restitution", e.restitution);
-
-        out.push_back(std::move(e));
-    }
-    return true;
-}
-
-} // namespace scene
+} // namespace particles

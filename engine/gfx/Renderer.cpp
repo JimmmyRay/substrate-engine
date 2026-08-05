@@ -3970,11 +3970,10 @@ void Renderer::recordSkinning(VkCommandBuffer cmd, uint32_t slot) {
                   VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
 }
 
-void Renderer::setParticles(const scene::ParticleSystem* system) {
-    particles = system;
-
+void Renderer::setParticleCapacity(uint32_t capacity, uint32_t emitterCount) {
     destroyParticleResources();
-    particleCapacity = system != nullptr ? system->capacity() : 0;
+    particleCapacity = capacity;
+    particleEmitterCount = emitterCount;
 
     if (particleCapacity == 0) {
         pipelinesDirty = true;
@@ -3990,9 +3989,9 @@ void Renderer::setParticles(const scene::ParticleSystem* system) {
     pipelinesDirty = true;
 
     core::Logger::status(core::LogCategory::Render,
-                   "Particles: %zu emitters, pool %u slots (%u index bits, %.1f KB), sort range %.1f",
-                   system->emitters().size(), particleCapacity, particleIndexBits,
-                   static_cast<double>(particleCapacity * (sizeof(scene::GpuParticle) + sizeof(uint32_t))) / 1024.0,
+                   "Particles: %u emitters, pool %u slots (%u index bits, %.1f KB), sort range %.1f",
+                   particleEmitterCount, particleCapacity, particleIndexBits,
+                   static_cast<double>(particleCapacity * (sizeof(GpuParticle) + sizeof(uint32_t))) / 1024.0,
                    static_cast<double>(particleSortRange));
 }
 
@@ -4045,12 +4044,12 @@ void Renderer::growLightBuffer() {
     lightsWanted = 0;
 }
 
-void Renderer::resizeParticlePool() {
-    if (ctx == nullptr || particles == nullptr) return;
-    const uint32_t want = particles->capacity();
+void Renderer::resizeParticlePool(uint32_t capacity, uint32_t emitterCount) {
+    if (ctx == nullptr) return;
+    const uint32_t want = capacity;
     if (want == particleCapacity) return;
     if (particleCapacity == 0) {
-        setParticles(particles);
+        setParticleCapacity(capacity, emitterCount);
         return;
     }
 
@@ -4063,6 +4062,7 @@ void Renderer::resizeParticlePool() {
     destroyParticleResourcesKeepingPool();
 
     particleCapacity = want;
+    particleEmitterCount = emitterCount;
     particleIndexBits = 0;
     while ((1u << particleIndexBits) < particleCapacity) ++particleIndexBits;
     createParticleResources();
@@ -4070,7 +4070,7 @@ void Renderer::resizeParticlePool() {
     {
         VkCommandBuffer cmd = uploader->beginImmediate(*ctx);
         VkBufferCopy region{};
-        region.size = static_cast<VkDeviceSize>(carried) * sizeof(scene::GpuParticle);
+        region.size = static_cast<VkDeviceSize>(carried) * sizeof(GpuParticle);
         vkCmdCopyBuffer(cmd, oldPool.buffer, particlePool.buffer, 1, &region);
         uploader->endImmediate(*ctx);
     }
@@ -4079,7 +4079,7 @@ void Renderer::resizeParticlePool() {
     pipelinesDirty = true;
     core::Logger::status(core::LogCategory::Render, "Particles: pool grown to %u slots (%u index bits, %.1f KB)",
                          particleCapacity, particleIndexBits,
-                         static_cast<double>(particleCapacity * (sizeof(scene::GpuParticle) + sizeof(uint32_t))) /
+                         static_cast<double>(particleCapacity * (sizeof(GpuParticle) + sizeof(uint32_t))) /
                              1024.0);
 }
 
@@ -4088,7 +4088,7 @@ void Renderer::createParticleResources() {
     // the fill below is what makes the pool start empty on any driver rather than on this
     // one. `TRANSFER_SRC` as well as `DST` because `resizeParticlePool` copies the old
     // pool into the new one.
-    particlePool = createBuffer(*ctx, static_cast<VkDeviceSize>(particleCapacity) * sizeof(scene::GpuParticle),
+    particlePool = createBuffer(*ctx, static_cast<VkDeviceSize>(particleCapacity) * sizeof(GpuParticle),
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                 VMA_MEMORY_USAGE_AUTO, 0, "particlePool");
@@ -4105,9 +4105,8 @@ void Renderer::createParticleResources() {
 
     // Sized for the worst frame there is -- every free slot filled at once -- so nothing
     // downstream needs a cap on births per frame.
-    const VkDeviceSize spawnBytes = static_cast<VkDeviceSize>(particleCapacity) * sizeof(scene::GpuSpawn);
-    const VkDeviceSize emitterBytes =
-        std::max<VkDeviceSize>(particles->emitters().size(), 1) * sizeof(scene::GpuEmitter);
+    const VkDeviceSize spawnBytes = static_cast<VkDeviceSize>(particleCapacity) * sizeof(GpuSpawn);
+    const VkDeviceSize emitterBytes = std::max<VkDeviceSize>(particleEmitterCount, 1) * sizeof(GpuEmitter);
 
     for (uint32_t i = 0; i < kFramesInFlight; ++i) {
         particleEmitterBuffers[i] =
@@ -4155,7 +4154,7 @@ void Renderer::destroyParticleResources() {
 void Renderer::destroyParticleResourcesKeepingPool() {
     if (ctx == nullptr) return;
 
-    // The buffers may still be in flight: this runs from setParticles(), which a game
+    // The buffers may still be in flight: this runs from setParticleCapacity(), which a game
     // could call between frames, and from shutdown().
     vkDeviceWaitIdle(ctx->device);
 
@@ -4231,25 +4230,24 @@ void Renderer::destroyParticlePipelines() {
 
 void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("Particles");
-    if (!particlesEnabled || particles == nullptr || particleCapacity == 0) return;
+    if (!particlesEnabled || particleCapacity == 0) return;
     if (particleSimulatePipeline == VK_NULL_HANDLE) return;
 
     GpuScope zone(gpuProfiler, cmd, slot, "Particles");
 
     // Written into mapped memory during recording: this slot's fence was waited on at the
     // top of drawFrame, so nothing in flight is reading them.
-    const std::vector<scene::ParticleEmitter>& emitterList = particles->emitters();
-    if (particleEmitterBuffers[slot].mapped != nullptr && !emitterList.empty()) {
-        particles->writeGpuEmitters(static_cast<scene::GpuEmitter*>(particleEmitterBuffers[slot].mapped));
+    if (particleEmitterBuffers[slot].mapped != nullptr && particleFrame.emitterCount != 0) {
+        particleFrame.writeEmitters(static_cast<GpuEmitter*>(particleEmitterBuffers[slot].mapped));
     }
 
-    const std::vector<scene::GpuSpawn>& spawns = particles->spawns();
+    const std::span<const GpuSpawn> spawns = particleFrame.spawns;
     if (!spawns.empty() && particleSpawnBuffers[slot].mapped != nullptr) {
-        std::memcpy(particleSpawnBuffers[slot].mapped, spawns.data(), spawns.size() * sizeof(scene::GpuSpawn));
+        std::memcpy(particleSpawnBuffers[slot].mapped, spawns.data(), spawns.size() * sizeof(GpuSpawn));
     }
 
-    if (particles->droppedSpawns() != reportedParticleDrops) {
-        reportedParticleDrops = particles->droppedSpawns();
+    if (particleFrame.dropped != reportedParticleDrops) {
+        reportedParticleDrops = particleFrame.dropped;
         core::Logger::warn(core::LogCategory::Render,
                      "Particles: %u spawns refused since load -- the %u-slot pool is full (raise "
                      "render.particleBudget or lower the emitter rates)",
@@ -4269,8 +4267,8 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
 
     {
         ParticleSimPush push{};
-        push.dt = particles->step();
-        push.now = particles->time();
+        push.dt = particleFrame.dt;
+        push.now = particleFrame.now;
         push.sortRange = particleSortRange;
         push.collisionThickness = particleCollisionThickness;
         push.texel = glm::vec2(1.0f / static_cast<float>(view.renderExtent.width),
@@ -4292,7 +4290,7 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
         push.spawnCount = static_cast<uint32_t>(spawns.size());
         push.indexBits = particleIndexBits;
         push.sortRange = particleSortRange;
-        push.now = particles->time();
+        push.now = particleFrame.now;
 
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, particleEmitPipeline);
         vkCmdPushConstants(cmd, particleComputeLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
@@ -4338,7 +4336,7 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
         }
     }
 
-    const uint32_t aliveCount = particles->aliveCount();
+    const uint32_t aliveCount = particleFrame.alive;
     if (aliveCount == 0) return;
 
     bufferBarrier(cmd, {particlePool.buffer, particleKeys.buffer}, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -4377,7 +4375,7 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, particleDrawLayout, 0, 3, drawSets, 0, nullptr);
 
     ParticleDrawPush push{};
-    push.now = particles->time();
+    push.now = particleFrame.now;
     push.indexBits = particleIndexBits;
     vkCmdPushConstants(cmd, particleDrawLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
 

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine.h"
+#include "particles/ParticlesModule.h"
 
 #include <glm/glm.hpp>
 

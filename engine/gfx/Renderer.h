@@ -12,6 +12,7 @@
 #include "gfx/Light.h"
 #include "gfx/Presentation.h"
 #include "gfx/Resources.h"
+#include "gfx/Particle.h"
 #include "gfx/ShaderVariant.h"
 #include "gfx/Swapchain.h"
 #include "gfx/ViewTable.h"
@@ -20,7 +21,6 @@
 #include "scene/Camera.h"
 #include "scene/Cloth.h"
 #include "scene/InstanceTable.h"
-#include "scene/ParticleSystem.h"
 #include "scene/SceneTypes.h"
 #include "scene/SpriteTable.h"
 #include "ui/Font.h"
@@ -262,18 +262,23 @@ class Renderer {
     /// named after it has nowhere to write.
     void setCloth(const scene::ClothSystem* cloth) { clothSystem = cloth; }
 
-    /// @brief The scene's particle emitters, and the pool sized for them.
+    /// @brief Allocate the pool for `capacity` particles and `emitterCount` emitters.
     ///
-    /// Sizes every particle buffer from `system->capacity()`; a capacity of zero allocates
-    /// nothing. **Must be called after `setScene`** -- the draw pipeline binds the scene's
-    /// bindless texture array.
-    void setParticles(const scene::ParticleSystem* system);
+    /// A capacity of zero allocates nothing and records no particle pass. **Must be called
+    /// after `setScene`** -- the draw pipeline binds the scene's bindless texture array.
+    void setParticleCapacity(uint32_t capacity, uint32_t emitterCount);
 
-    /// Re-allocate the pool buffers at the system's current `capacity()`, carrying the
-    /// particles in flight across. Paired with `ParticleSystem::grow` by
-    /// `Engine::growParticles`: growing one without the other emits into storage the device
-    /// does not have.
-    void resizeParticlePool();
+    /// Re-allocate the pool buffers at a new capacity, carrying the particles in flight
+    /// across. Paired with `particles::ParticleSystem::grow` by `Engine::growParticles`:
+    /// growing one without the other emits into storage the device does not have.
+    void resizeParticlePool(uint32_t capacity, uint32_t emitterCount);
+
+    /// @brief What the particle passes read, for the frame about to be recorded.
+    ///
+    /// Pushed every frame, and a frame not pushed is a pass running on the default -- see
+    /// `gfx::ParticleFrame`. Held by value, except for `spawns`, which must stay valid
+    /// until `drawFrame` returns.
+    void setParticleFrame(const ParticleFrame& frame) { particleFrame = frame; }
 
     /// @brief The sprites a game has created, drawn by `recordSprites`.
     ///
@@ -1006,8 +1011,13 @@ class Renderer {
     /// Said once, not once per frame: a material naming a variant nobody registered.
     bool reportedVariantOverflow = false;
 
-    /// Not owned. Null, or a capacity of zero, records no particle pass at all.
-    const scene::ParticleSystem* particles = nullptr;
+    /// What `recordParticles` reads, replaced whole once a frame. A capacity of zero
+    /// records no particle pass at all, whatever is in here.
+    ParticleFrame particleFrame;
+    /// Emitters `particleEmitterBuffers` was sized for. More emitters than this in a
+    /// `ParticleFrame` would write past the end of a mapped allocation, so the buffers are
+    /// re-created from it rather than trusting the frame.
+    uint32_t particleEmitterCount = 0;
     /// Slots the pool holds. **Always a power of two** -- a bitonic network sorts a power
     /// of two or nothing, and its domain is the whole pool.
     uint32_t particleCapacity = 0;

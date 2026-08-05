@@ -1,11 +1,11 @@
 #pragma once
 
 #include "core/Handle.h"
+#include "core/Slot.h"
 #include "gfx/Light.h"
 #include "scene/Audio.h"
 #include "scene/InstanceTable.h"
 #include "scene/Node.h"
-#include "scene/ParticleSystem.h"
 #include "scene/Physics.h"
 
 #include <glm/glm.hpp>
@@ -93,15 +93,19 @@ struct Attachments {
 /**
  * @brief Where a sweep writes what it computed.
  *
- * Pointers because none of these is the scene's to own. Any may be null, which is what a
- * headless test passes and what a game with no audio gets.
+ * Pointers because none of these is the scene's to own. Any may be left unset, which is
+ * what a headless test passes and what a game with no audio gets.
  */
 struct SceneTargets {
     InstanceTable* instances = nullptr;
     std::vector<gfx::GpuLight>* lights = nullptr;
     AudioEngine* audio = nullptr;
     PhysicsWorld* physics = nullptr;
-    ParticleSystem* particles = nullptr;
+    /// Where an emitter attached to a node has its world transform written, by emitter
+    /// index. A slot and not a pointer because the system that owns the emitters is a
+    /// module, which nothing here may name; unbound it does nothing, which is what a
+    /// headless test and a game with no particles both get.
+    core::Slot<void(uint32_t, const glm::mat4&)> emitterTransform;
     /// Where between the last two simulation steps the frame is being drawn, in [0, 1].
     /// Read by the upstream pull only; 1.0 snaps a drawn body to the last step.
     float alpha = 1.0f;
