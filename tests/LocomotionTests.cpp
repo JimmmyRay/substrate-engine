@@ -1,7 +1,7 @@
-#include "scene/Locomotion.h"
+#include "anim/Locomotion.h"
 
+#include "anim/SceneAnimator.h"
 #include "core/Input.h"
-#include "scene/Animation.h"
 #include "scene/Physics.h"
 
 #include <gtest/gtest.h>
@@ -10,14 +10,17 @@
 
 #include <vector>
 
+using namespace core;
 using namespace scene;
+
+using namespace anim;
 
 /**
  * @file tests/LocomotionTests.cpp
  * @brief The driver between the character controller and the state machine.
  *
- * `Physics.cpp` and `Animation.cpp` are both hosted, so the pairing and every parameter it
- * writes are checkable without a device — including the case this row is really about,
+ * `Physics.cpp` and `SceneAnimator.cpp` both link with no device, so the pairing and every
+ * parameter it writes are checkable without one — including the case this row is really about,
  * which is **two characters on two machines fed from two colliders**. A driver that worked
  * for one rig is what the row replaced, and one rig is exactly what a demo can demonstrate.
  *
@@ -97,10 +100,10 @@ void addFloor(PhysicsWorld& world) {
 
 /// Step the world and then the driver, which is the order `Engine::simulate` uses and the
 /// one the driver's contract names.
-void stepBoth(PhysicsWorld& world, SceneAnimator& anim, LocomotionDriver& driver, int steps) {
+void stepBoth(PhysicsWorld& world, SceneAnimator& animator, LocomotionDriver& driver, int steps) {
     for (int i = 0; i < steps; ++i) {
         world.step(kStep);
-        driver.update(world, anim);
+        driver.update(characterMotionSource(world), animator);
     }
 }
 

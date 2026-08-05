@@ -1,4 +1,4 @@
-#include "scene/Animation.h"
+#include "anim/SceneAnimator.h"
 #include "scene/InstanceTable.h"
 #include "scene/SceneTypes.h"
 
@@ -644,7 +644,7 @@ struct MorphAddress {
     uint32_t weightBase = 0;
 };
 
-MorphAddress addressOf(const InstanceTable& table, const scene::SceneAnimator& anim, InstanceId id) {
+MorphAddress addressOf(const InstanceTable& table, const anim::SceneAnimator& anim, InstanceId id) {
     const InstanceTable::DrawRange& r = table.drawRanges()[id.index];
     const uint32_t character = table.characterOf(id.index);
     const bool posed = character < anim.characterCount();
@@ -670,7 +670,7 @@ glm::vec3 morphedPosition(const std::vector<scene::Vertex>& source, const std::v
 
 /// The whole weight region, assembled the way the renderer assembles it: every character's
 /// run memcpy'd to its own base.
-std::vector<float> flatWeights(const scene::SceneAnimator& anim) {
+std::vector<float> flatWeights(const anim::SceneAnimator& anim) {
     std::vector<float> out(anim.totalWeights(), 0.0f);
     for (uint32_t c = 0; c < anim.characterCount(); ++c) {
         const std::vector<float>& w = anim.morphWeights(c);
@@ -692,7 +692,7 @@ constexpr uint32_t kMorphVerts = 3;
 struct MorphScene {
     std::vector<scene::Vertex> vertices;
     std::vector<scene::MorphDelta> deltas;
-    scene::SceneAnimator animator;
+    anim::SceneAnimator animator;
     InstanceTable table;
     InstanceId fromFile;
     InstanceId fromCode;

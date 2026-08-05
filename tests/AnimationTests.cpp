@@ -1,4 +1,4 @@
-#include "scene/Animation.h"
+#include "anim/SceneAnimator.h"
 
 #include <glm/gtc/matrix_transform.hpp>
 #include <glm/gtx/quaternion.hpp>
@@ -12,6 +12,8 @@
 using namespace core;
 
 using namespace scene;
+
+using namespace anim;
 
 /**
  * @file tests/AnimationTests.cpp

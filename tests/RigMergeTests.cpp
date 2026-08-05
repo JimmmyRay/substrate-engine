@@ -1,4 +1,4 @@
-#include "scene/Animation.h"
+#include "anim/SceneAnimator.h"
 
 #include <gtest/gtest.h>
 
@@ -8,6 +8,8 @@
 #include <vector>
 
 using namespace scene;
+
+using namespace anim;
 
 /**
  * @file tests/RigMergeTests.cpp

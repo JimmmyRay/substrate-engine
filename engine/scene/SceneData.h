@@ -1,6 +1,6 @@
 #pragma once
 
-#include "scene/Animation.h"
+#include "scene/AnimationRig.h"
 #include "scene/AudioSource.h"
 #include "scene/Collider.h"
 #include "scene/SceneTypes.h"

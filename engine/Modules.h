@@ -2,7 +2,10 @@
 
 #include "core/Slot.h"
 #include "gfx/Particle.h"
+#include "gfx/Skin.h"
+#include "scene/AnimationRig.h"
 #include "scene/AudioSource.h"
+#include "scene/CharacterMotion.h"
 #include "scene/Collider.h"
 #include "scene/ParticleEmitter.h"
 #include "scene/Physics.h"
@@ -179,5 +182,68 @@ struct Audio {
 
 inline Audio Audio::empty;
 inline Audio* audio = &Audio::empty;
+
+/// @brief Animation: the characters a rig drives, and the joint matrices they produce.
+struct Anim {
+    virtual ~Anim() = default;
+
+    /// Every readout the startup summary, the two placement gates and the renderer's
+    /// buffer sizing take, in one call.
+    struct Stats {
+        /// Slots, not live characters: what `GpuInstance::meta.w` indexes.
+        uint32_t characters = 0;
+        uint32_t clips = 0;
+        /// Joints and morph weights across every slot -- what the instance buffer's two
+        /// regions have to hold, and never a sum over the live ones: a retired slot keeps
+        /// its block so a stale instance draws a bind pose rather than another skeleton.
+        uint32_t joints = 0;
+        uint32_t weights = 0;
+        /// No clips and no skins at all, which is the gate on placing anything on a node.
+        bool empty = true;
+    };
+
+    /// Adopt the scene's rig. **Replaces every character already animating**, which is what
+    /// `merge` exists not to do.
+    virtual void init(scene::AnimationRig) {}
+
+    /// Append a second rig, keeping every character already playing.
+    /// @return the index the first appended skin landed at, or `scene::kNoSkin` for a rig
+    ///         that brought none.
+    virtual uint32_t merge(const scene::AnimationRig&) { return scene::kNoSkin; }
+
+    /// Another character driven by `skin`, for a scene asked to stand more than one copy.
+    virtual scene::AnimatorId create(uint32_t) { return {}; }
+    /// A character with no skeleton whose morph weights are the caller's to write.
+    virtual scene::AnimatorId createMorphed(uint32_t) { return {}; }
+    /// Retire a character. Its block stays, filled with identity.
+    virtual void destroy(scene::AnimatorId) {}
+
+    [[nodiscard]] virtual Stats stats() const { return {}; }
+
+    /// Pair the controller `core::packHandle` produced with the character in slot `slot`.
+    /// A slot out of range or holding no live character pairs nothing.
+    virtual void pairController(uint64_t, uint32_t) {}
+
+    /// Advance every character by the fixed step and rebuild every joint matrix.
+    virtual void update(float) {}
+
+    /// Write every paired rig's parameters from what its controller did. **After the solver
+    /// has stepped, never before** -- see `anim::LocomotionDriver::update`.
+    virtual void updateLocomotion(const core::Slot<bool(uint64_t, scene::CharacterMotion*)>&) {}
+
+    /// Where every sweep that places something on an animated node reads that node's world
+    /// transform, and whether the character animating it had one.
+    [[nodiscard]] virtual core::Slot<bool(uint32_t, glm::mat4*)> poses() { return {}; }
+
+    /// The deforming characters, in slot order. **Valid until the next create or destroy**
+    /// and re-taken by the renderer at each -- see `gfx::SkinCharacter`.
+    [[nodiscard]] virtual std::span<const gfx::SkinCharacter> skinCharacters() const { return {}; }
+
+    /// The do-nothing implementation `modules::anim` aims at until a module is linked.
+    static Anim empty;
+};
+
+inline Anim Anim::empty;
+inline Anim* anim = &Anim::empty;
 
 } // namespace modules

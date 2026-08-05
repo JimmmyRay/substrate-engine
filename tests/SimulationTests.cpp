@@ -1,5 +1,7 @@
 #include "scene/Simulation.h"
 
+#include "Modules.h"
+
 #include <gtest/gtest.h>
 
 #include <glm/gtc/matrix_transform.hpp>
@@ -127,7 +129,9 @@ TEST(Simulation, AnEmptyWorldStepsAndCostsNothing) {
 
     EXPECT_EQ(sim.physics.bodyCount(), 0u);
     EXPECT_EQ(sim.physics.characterCount(), 0u);
-    EXPECT_TRUE(sim.animator.empty());
+    // The step ran against `modules::Anim::empty` -- this binary links no animation module,
+    // and that is the arrangement a headless server without one is in.
+    EXPECT_TRUE(modules::anim->stats().empty);
 }
 
 TEST(Simulation, TheStepIsFixedAndTwoRunsOfItAgree) {

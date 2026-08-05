@@ -374,7 +374,7 @@ Three arrays have to move together and none of them is the delta array alone:
   sample**, because a rig-driven pose is rebuilt from the bind pose each step and would
   otherwise resize a block belonging to no node of the rig out of existence.
   `setMorphWeight` is the only writer; no clip and no state machine reaches these targets.
-- **The renderer's sizing.** `Renderer::setAnimator` reads `totalWeights()`, the delta
+- **The renderer's sizing.** `Renderer::setSkinCharacters` reads the weight total, the delta
   array and one output range per deformed instance, all as they stand when it is called —
   so `Engine::createMesh` calls it again for a mesh that deforms, and only for one.
 - **The CPU index copy.** `buildSceneAccelStruct` rebases a deformed primitive's indices
@@ -495,8 +495,8 @@ part of what an instance indexes.
 
 `ParticleEmitter::node` and `AudioSourceDesc::node` are indices into the merged rig and carry
 no rig of their own — the glTF `extras` schemas have nowhere to put one — so with two rigs in a
-scene the index alone is ambiguous. `SceneAnimator::characterForNode` resolves it, and
-`Engine::poseFor` is the one place both attachment sweeps ask.
+scene the index alone is ambiguous. `anim::SceneAnimator::characterForNode` resolves it, and
+`modules::Anim::poses` is the one slot both attachment sweeps ask through.
 
 The map is rebuilt at the top of every `update`, in two passes, and the order of the passes is
 the design. **Skins first**: a node a skin lists as a joint belongs to a character on that skin.
@@ -548,7 +548,7 @@ own rig. That seam is left visible rather than papered over.
 
 ### The engine writes the parameters (G15)
 
-`scene::LocomotionDriver` maps a `PhysicsCharacterId` to an `AnimatorId` and writes what that
+`anim::LocomotionDriver` maps a `PhysicsCharacterId` to an `AnimatorId` and writes what that
 pairing implies — `speed`, `airborne` and a `jump` trigger — from `Engine::simulate`, after
 `PhysicsWorld::step`. The pairing is derived rather than declared: a `CharacterVirtual` is a
 capsule with no rig and an animator character is a pose with no collider, and what joins them

@@ -2,6 +2,7 @@
 
 #include "Engine.h"
 #include "Entry.h"
+#include "anim/AnimModule.h"
 #include "audio/AudioModule.h"
 #include "particles/ParticlesModule.h"
 
@@ -32,6 +33,21 @@ void placeLights(gfx::Renderer& renderer, const glm::vec3& boundsMin, const glm:
     renderer.lights.push_back(gfx::makeSpotLight({centre.x, boundsMin.y + extent.y * 0.8f, centre.z},
                                                  {0.0f, -1.0f, 0.15f}, radius * 1.5f, glm::radians(18.0f),
                                                  glm::radians(32.0f), pale, intensity * 2.5f));
+}
+
+/**
+ * @brief Name every module the golden set runs through, which is what links them.
+ *
+ * **An include links nothing; calling the accessor is the undefined symbol that pulls the
+ * archive member.** Every failure this prevents is silent and none of them fails a build:
+ * emitters spawning into a pool of zero, `configure`'s buses never created under
+ * `--audio-null`, a skinned mesh held in its bind pose. Every golden case is a viewer run,
+ * so a line deleted here is a reference image that renders something else.
+ */
+void linkModules(Engine& e) {
+    (void)e.animator();
+    (void)e.audio();
+    (void)e.particles();
 }
 
 } // namespace
@@ -65,16 +81,7 @@ void ViewerGame::init(Engine& e) {
         placeLights(e.renderer(), e.gltfScene().boundsMin, e.gltfScene().boundsMax);
     }
 
-    // A module is linked by a game naming it and by nothing else, and the golden set's
-    // `particles` case is a viewer run: delete this and a scene's emitters spawn nothing,
-    // in a build that reports no error.
-    (void)e.particles();
-
-    // The same mechanism, for the same kind of silence: every golden case runs
-    // `--audio-null`, which is the whole audio path with the mix going nowhere, and that is
-    // what covers it. Delete this and `configure`'s three buses are never created, nothing
-    // decodes, and no build or baseline says so.
-    (void)e.audio();
+    linkModules(e);
 }
 
 void ViewerGame::frameUpdate(Engine& e, float /*dt*/) {

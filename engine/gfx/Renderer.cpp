@@ -3694,8 +3694,9 @@ void Renderer::ensureInstanceCapacity(uint32_t slots) {
     instanceCapacity = grown;
 }
 
-void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene* s) {
-    animator = a;
+void Renderer::setSkinCharacters(std::span<const gfx::SkinCharacter> characters, uint32_t totalJoints,
+                                 uint32_t totalWeights, const scene::GltfScene* s) {
+    skinCharacters = characters;
     destroySkinResources();
     skinBatches.clear();
     skinDestBase.clear();
@@ -3704,19 +3705,19 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
     weightCapacity = 0;
 
     // The gate is "does anything deform", not "is there a skeleton": a scene whose only
-    // moving geometry is a curtain has no rig, so `animator` is allowed to be null the
-    // whole way down from here.
+    // moving geometry is a curtain has no rig, so `skinCharacters` is allowed to be empty
+    // the whole way down from here.
     const bool hasCloth = clothSystem != nullptr && !clothSystem->empty();
-    const bool posed = animator != nullptr && (!s->skinVertices().empty() || !s->morphDeltas().empty());
+    const bool posed = !skinCharacters.empty() && (!s->skinVertices().empty() || !s->morphDeltas().empty());
     if (instances == nullptr || s == nullptr || (!posed && !hasCloth)) {
-        animator = nullptr;
+        skinCharacters = {};
         clothDestBase.clear();
         return;
     }
-    if (!posed) animator = nullptr;
+    if (!posed) skinCharacters = {};
 
-    jointCapacity = animator != nullptr ? std::max(animator->totalJoints(), 1u) : 1u;
-    weightCapacity = animator != nullptr ? std::max(animator->totalWeights(), 1u) : 1u;
+    jointCapacity = skinCharacters.empty() ? 1u : std::max(totalJoints, 1u);
+    weightCapacity = skinCharacters.empty() ? 1u : std::max(totalWeights, 1u);
 
     // One output range per deformed *instance*, in slot order: two copies of the same
     // skinned mesh are two poses and cannot share vertices, which is also why these
@@ -3728,7 +3729,7 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
         skinnedVertexCount += instances->drawRanges()[slot].vertexCount;
     }
     if (skinnedVertexCount == 0) {
-        animator = nullptr;
+        skinCharacters = {};
         clothDestBase.clear();
         return;
     }
@@ -3800,9 +3801,9 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
 
     core::Logger::status(core::LogCategory::Render,
                    "Deformation: %u vertices, %u joints and %u morph weights across %u characters, %u cloths",
-                   skinnedVertexCount, animator != nullptr ? animator->totalJoints() : 0u,
-                   animator != nullptr ? animator->totalWeights() : 0u,
-                   animator != nullptr ? animator->characterCount() : 0u,
+                   skinnedVertexCount, skinCharacters.empty() ? 0u : totalJoints,
+                   skinCharacters.empty() ? 0u : totalWeights,
+                   static_cast<uint32_t>(skinCharacters.size()),
                    hasCloth ? clothSystem->count() : 0u);
 
     // The acceleration structure's dynamic tier is built over the buffer created above,
@@ -4616,15 +4617,17 @@ void Renderer::updateInstances(uint32_t slot) {
     // Joint matrices, every frame and before the revision check below: a rig that is
     // animating changes these without changing the table, and a table that never
     // changes is exactly the case a revision test would skip.
-    if (animator != nullptr && jointCapacity > 0) {
+    if (!skinCharacters.empty() && jointCapacity > 0) {
         auto* mapped = static_cast<std::byte*>(f.instanceStaging.mapped);
         auto* joints = reinterpret_cast<glm::mat4*>(mapped + jointRegion);
         auto* weights = reinterpret_cast<float*>(mapped + weightRegion);
-        for (uint32_t c = 0; c < animator->characterCount(); ++c) {
-            const auto& m = animator->jointMatrices(c);
-            if (!m.empty()) std::memcpy(joints + animator->jointOffset(c), m.data(), m.size() * sizeof(glm::mat4));
-            const auto& w = animator->morphWeights(c);
-            if (!w.empty()) std::memcpy(weights + animator->weightOffset(c), w.data(), w.size() * sizeof(float));
+        for (const gfx::SkinCharacter& c : skinCharacters) {
+            if (!c.joints.empty()) {
+                std::memcpy(joints + c.jointOffset, c.joints.data(), c.joints.size() * sizeof(glm::mat4));
+            }
+            if (!c.weights.empty()) {
+                std::memcpy(weights + c.weightOffset, c.weights.data(), c.weights.size() * sizeof(float));
+            }
         }
         f.instanceUploadPending = true;
     }
@@ -4776,15 +4779,15 @@ void Renderer::updateInstances(uint32_t slot) {
                     if ((inst.meta.z & scene::kInstanceCloth) != 0u) continue;
 
                     const uint32_t character = inst.meta.w;
-                    const bool posed = animator != nullptr && character < animator->characterCount();
+                    const bool posed = character < skinCharacters.size();
                     skinBatches.push_back(
                         {ranges[s].baseVertex, dest, ranges[s].skinOffset,
-                         posed ? animator->jointOffset(character) : 0u, ranges[s].vertexCount,
+                         posed ? skinCharacters[character].jointOffset : 0u, ranges[s].vertexCount,
                          ranges[s].morphOffset, ranges[s].morphTargets,
                          // The placement's own weight run, offset by where this character's
                          // copy of the pose starts. Two characters over one node therefore
                          // read two different expressions out of one flat buffer.
-                         (posed ? animator->weightOffset(character) : 0u) + ranges[s].morphWeightOffset});
+                         (posed ? skinCharacters[character].weightOffset : 0u) + ranges[s].morphWeightOffset});
                 } else if (count > groupStart && cmds[count - 1].firstIndex == ranges[s].firstIndex &&
                            cmds[count - 1].indexCount == ranges[s].indexCount &&
                            cmds[count - 1].firstInstance + cmds[count - 1].instanceCount == s &&
@@ -4829,8 +4832,8 @@ void Renderer::updateInstances(uint32_t slot) {
     f.staticCommandCount = count;
     const auto staticRangeCount = static_cast<ptrdiff_t>(f.opaqueRanges.size());
 
-    // `deforms()`, not `animator != nullptr`: cloth is a deformed instance with no rig
-    // behind it, and testing the animator draws it out of the scene's vertex buffer.
+    // `deforms()`, not `skinCharacters` alone: cloth is a deformed instance with no rig
+    // behind it, and testing the characters draws it out of the scene's vertex buffer.
     if (deforms()) {
         for (uint32_t variant = 0; variant < variants.size(); ++variant) {
             if (variantsPresent[variant] != 0u) sweep(variant, true);

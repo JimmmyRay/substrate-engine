@@ -45,9 +45,8 @@ void onGlfwError(int code, const char* description) {
  * Spread along Z because `Camera::frameBounds` aims down the longest horizontal axis, so a
  * row across it is one the default camera can see end to end.
  */
-uint32_t spawnExtraCharacters(const scene::GltfScene& scene, scene::InstanceTable& instances, scene::SceneAnimator& animator,
-                              uint32_t count) {
-    if (count <= 1 || animator.characterCount() == 0) return 0;
+uint32_t spawnExtraCharacters(const scene::GltfScene& scene, scene::InstanceTable& instances, uint32_t count) {
+    if (count <= 1 || modules::anim->stats().characters == 0) return 0;
 
     // The first skinned placement is the template. Every copy shares its primitive, its
     // influences and its skin, and differs in exactly two things: where it stands and
@@ -77,7 +76,7 @@ uint32_t spawnExtraCharacters(const scene::GltfScene& scene, scene::InstanceTabl
     uint32_t created = 0;
 
     for (uint32_t i = 1; i < count; ++i) {
-        const scene::AnimatorId character = animator.create(templatePlacement->skin);
+        const scene::AnimatorId character = modules::anim->create(templatePlacement->skin);
         if (!character.valid()) break;
         ++created;
 
@@ -104,7 +103,7 @@ uint32_t spawnExtraCharacters(const scene::GltfScene& scene, scene::InstanceTabl
             // The slot, not the handle. `InstanceDesc::character` becomes
             // `GpuInstance::meta.w`, which the skinning dispatch indexes -- a generation
             // cannot cross to the GPU, so this is the boundary where a handle becomes a
-            // bare index again. `SceneAnimator::destroy` is written around that fact.
+            // bare index again. `anim::SceneAnimator::destroy` is written around that fact.
             d.character = character.index;
             d.localMin = prim.localMin;
             d.localMax = prim.localMax;
@@ -458,20 +457,19 @@ void Engine::loadScene() {
 
     // The spawn runs *before* `setInstances` below: spawning characters adds slots, and the
     // renderer sizes its buffers from the count it is handed.
-    sceneAnimator.init(std::move(sceneData.rig()));
-    const uint32_t extraCharacters =
-        spawnExtraCharacters(sceneData, instanceTable, sceneAnimator, configData.scene.characters);
+    modules::anim->init(std::move(sceneData.rig()));
+    const uint32_t extraCharacters = spawnExtraCharacters(sceneData, instanceTable, configData.scene.characters);
 
     core::Logger::status(core::LogCategory::Scene, "Instances: %u live (%u blended) in %u slots", instanceTable.liveCount(),
                    instanceTable.blendedCount(), instanceTable.slotCount());
-    if (sceneAnimator.characterCount() > 0 && !sceneAnimator.empty()) {
-        core::Logger::status(core::LogCategory::Scene, "Animation: %u characters, %zu clips (%u spawned by --characters)",
-                       sceneAnimator.characterCount(), sceneAnimator.clipCount(), extraCharacters);
+    if (const modules::Anim::Stats a = modules::anim->stats(); a.characters > 0 && !a.empty) {
+        core::Logger::status(core::LogCategory::Scene, "Animation: %u characters, %u clips (%u spawned by --characters)",
+                       a.characters, a.clips, extraCharacters);
     }
 
     render.setScene(&sceneData);
     render.setInstances(&instanceTable);
-    render.setAnimator(&sceneAnimator, &sceneData);
+    refreshSkinCharacters();
 
     modules::particles->setEmitters(std::move(sceneData.emitters()), 0);
     const modules::Particles::Pool pool = modules::particles->pool();
@@ -507,11 +505,11 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
     //
     // Taken before the merge, which moves both numberings -- the remap below is the only
     // thing that can still tell them apart.
-    const uint32_t characterBase = sceneAnimator.characterCount();
+    const uint32_t characterBase = modules::anim->stats().characters;
     uint32_t skinBase = scene::GltfScene::kNoRig;
     {
         scene::AnimationRig imported = sceneData.takeAppendedRig(id);
-        skinBase = imported.bind.nodes.empty() ? scene::GltfScene::kNoRig : sceneAnimator.merge(imported);
+        skinBase = imported.bind.nodes.empty() ? scene::GltfScene::kNoRig : modules::anim->merge(imported);
         sceneData.rebaseAppendedSkins(id, skinBase);
     }
 
@@ -520,18 +518,18 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
     /**
      * **A skin index is not a character index**, and `addPlacementInstances` writes only the
      * first -- `Placement::skin` into `GpuInstance::meta.w`, which the skinning dispatch
-     * reads as a character. The two agree only for a scene `SceneAnimator::init` built; a
+     * reads as a character. The two agree only for a scene `modules::Anim::init` built; a
      * scene with no skin still gets `init`'s lone character, and `GameSetup::characters`
      * shifts every later skin by the copies it made.
      *
      * Skip this correction and an imported rig is deformed by the joint block of whatever
      * came before it, with the first standing in its bind pose.
      */
-    if (skinBase != scene::GltfScene::kNoRig && sceneAnimator.characterCount() != characterBase) {
+    if (skinBase != scene::GltfScene::kNoRig && modules::anim->stats().characters != characterBase) {
         for (const scene::InstanceId instance : modelInstances[id]) {
             // Skinned only. A morph-only placement is given character 0 deliberately, and an
             // unskinned one is given none at all.
-            if (instanceTable.drawRanges()[instance.index].skinOffset == scene::SceneAnimator::kNoSkin) continue;
+            if (instanceTable.drawRanges()[instance.index].skinOffset == scene::kNoSkin) continue;
             const uint32_t skin = instanceTable.characterOf(instance.index);
             if (skin < skinBase) continue;
             instanceTable.setCharacter(instance, skin - skinBase + characterBase);
@@ -592,7 +590,7 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
     if (m.colliderCount > 0) modules::nav->rebuild(sceneData.colliders());
 
     if (m.skinCount > 0 || !sceneData.skinVertices().empty() || !sceneData.morphDeltas().empty()) {
-        render.setAnimator(&sceneAnimator, &sceneData);
+        refreshSkinCharacters();
     }
     sceneIndex.build(instanceTable);
     ++indexRevision;
@@ -667,11 +665,11 @@ scene::GltfScene::ModelId Engine::createMesh(scene::MeshData data) {
 
     // `addPlacementInstances` defaults a morphed placement to character 0, which is right for
     // a glTF whose rig owns every weight and wrong for a code-made mesh. Repointed before
-    // `setAnimator`, which sizes the weight region and lays out one output range per
-    // deformed instance off the state as it stands when it is called.
+    // `refreshSkinCharacters`, which sizes the weight region and lays out one output range
+    // per deformed instance off the state as it stands when it is called.
     if (targets > 0) {
         if (modelCharacters.size() <= id) modelCharacters.resize(id + 1);
-        modelCharacters[id] = sceneAnimator.createMorphed(targets);
+        modelCharacters[id] = modules::anim->createMorphed(targets);
         for (const scene::InstanceId instance : modelInstances[id]) {
             instanceTable.setCharacter(instance, modelCharacters[id].index);
         }
@@ -681,8 +679,8 @@ scene::GltfScene::ModelId Engine::createMesh(scene::MeshData data) {
     render.setInstances(&instanceTable);
     // Only for a mesh that deforms: this tears down and rebuilds the deformed vertex buffer,
     // the delta buffer and the acceleration structures over them, and calling it for a scene
-    // with nothing to deform sets `animator` back to null on every prop a game makes.
-    if (targets > 0) render.setAnimator(&sceneAnimator, &sceneData);
+    // with nothing to deform empties the character list on every prop a game makes.
+    if (targets > 0) refreshSkinCharacters();
     sceneIndex.build(instanceTable);
     ++indexRevision;
     return id;
@@ -694,9 +692,7 @@ void Engine::pairLocomotion(scene::PhysicsCharacterId character, scene::Instance
     // **The instance is the only thing that knows the pairing.** A `CharacterVirtual` is a
     // capsule with no rig and an animator character is a pose with no collider; the skinned
     // mesh bound to this collider's node is what joins them.
-    const uint32_t index = instanceTable.characterOf(instance.index);
-    if (index == scene::kNoNode || index >= sceneAnimator.characterCount()) return;
-    locomotionDriver.pair(character, sceneAnimator.characterAt(index));
+    modules::anim->pairController(core::packHandle(character), instanceTable.characterOf(instance.index));
 }
 
 scene::InstanceId Engine::addInstance(scene::GltfScene::ModelId model, uint32_t material,
@@ -764,7 +760,7 @@ void Engine::removeModel(scene::GltfScene::ModelId id) {
     // instance that still refers to one after it. The mesh's morph deltas stay in the
     // scene's array for the same reason; see `GltfScene::createMesh`.
     if (id < modelCharacters.size() && modelCharacters[id].valid()) {
-        sceneAnimator.destroy(modelCharacters[id]);
+        modules::anim->destroy(modelCharacters[id]);
         modelCharacters[id] = {};
     }
     sceneData.unloadModel(ctx, id);
@@ -891,7 +887,7 @@ void Engine::applyPendingScene() {
     // **This path does not re-init the animator** -- a streamed scene keeps the rig the first
     // one brought -- so without this a weight block belonging to geometry that no longer
     // exists is uploaded every frame for the rest of the session.
-    for (const scene::AnimatorId character : modelCharacters) sceneAnimator.destroy(character);
+    for (const scene::AnimatorId character : modelCharacters) modules::anim->destroy(character);
     modelCharacters.clear();
     scene::addSceneInstances(sceneData, instanceTable);
     render.setScene(&sceneData);
@@ -1085,7 +1081,7 @@ void Engine::initCloth() {
     // The deformed vertex buffer is sized from what deforms, and nothing knew a curtain did
     // until now. Without the re-run it stays sized for the skinned meshes alone.
     render.setCloth(&clothSystem);
-    render.setAnimator(&sceneAnimator, &sceneData);
+    refreshSkinCharacters();
 }
 
 void Engine::createColliderBodies(uint32_t firstCollider, uint32_t colliderCount, std::vector<DrivenBody>& out) {
@@ -1654,7 +1650,10 @@ ui::Context& Engine::ui() {
 
 bool Engine::consumeStep() { return simClock.consume(); }
 
-const std::vector<glm::mat4>& Engine::poseFor(uint32_t node) const { return sim.poseFor(node); }
+void Engine::refreshSkinCharacters() {
+    const modules::Anim::Stats a = modules::anim->stats();
+    render.setSkinCharacters(modules::anim->skinCharacters(), a.joints, a.weights, &sceneData);
+}
 
 void Engine::simulate(float stepSeconds) {
     // The order of a step lives in `scene/Simulation.cpp`, which links with no device.
@@ -1694,28 +1693,21 @@ void Engine::endFrame() {
         auto s = core::Profiler::scope("writeback");
         const float alpha = simClock.alpha();
 
-        // The pose is the one animating *this* node, from `poseFor`, not the first
-        // character's. Skinned instances are skipped: their vertices already carry the pose,
-        // so applying the node transform as well moves the character twice.
-        if (!sceneAnimator.empty()) {
+        // The pose is the one animating *this* node, resolved per node by the module rather
+        // than the first character's. Skinned instances are skipped: their vertices already
+        // carry the pose, so applying the node transform as well moves the character twice.
+        if (!modules::anim->stats().empty) {
+            const core::Slot<bool(uint32_t, glm::mat4*)> poseOf = modules::anim->poses();
             for (size_t i = 0, slot = 0; i < sceneData.placements().size(); ++i) {
                 const scene::Placement& p = sceneData.placements()[i];
                 if (sceneData.primitives()[p.primitive].indexCount == 0) continue;
                 const scene::InstanceId id{static_cast<uint32_t>(slot), 0};
                 ++slot;
-                if (p.skin != 0xFFFFFFFFu) continue;
-                const std::vector<glm::mat4>& world = poseFor(p.node);
-                if (p.node < world.size()) instanceTable.setTransform(id, world[p.node]);
+                if (p.skin != scene::kNoSkin) continue;
+                if (glm::mat4 world(1.0f); poseOf(p.node, &world)) instanceTable.setTransform(id, world);
             }
 
-            modules::particles->placeEmitters(core::Slot<bool(uint32_t, glm::mat4*)>(
-                [](void* ctx, uint32_t node, glm::mat4* out) {
-                    const std::vector<glm::mat4>& world = static_cast<const Engine*>(ctx)->poseFor(node);
-                    if (node >= world.size()) return false;
-                    *out = world[node];
-                    return true;
-                },
-                this));
+            modules::particles->placeEmitters(poseOf);
         }
 
         // *After* the animation loop above: a node with both a clip and a collider is one the
@@ -1962,7 +1954,7 @@ int Engine::run(Game& game) {
                                                                          .first = 0,
                                                                          .count = 4,
                                                                          .fps = configData.benchmark.readbackSheetFps,
-                                                                         .loop = scene::LoopMode::Loop});
+                                                                         .loop = core::LoopMode::Loop});
                 if (clip == scene::SpriteTable::kNoClip) return 1;
             }
 

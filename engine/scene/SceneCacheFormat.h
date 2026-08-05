@@ -261,7 +261,7 @@ inline void get(Reader& r, AnimationSampler& v) {
 inline void put(Writer& w, const AnimationClip& v) {
     w.text(v.name);
     w.count(v.events.size());
-    for (const AnimationEvent& e : v.events) {
+    for (const core::AnimationEvent& e : v.events) {
         w.pod(e.time);
         w.text(e.name);
     }
@@ -278,7 +278,7 @@ inline void get(Reader& r, AnimationClip& v) {
     const size_t events = r.count(1);
     if (!r.ok) return;
     v.events.resize(events);
-    for (AnimationEvent& e : v.events) {
+    for (core::AnimationEvent& e : v.events) {
         e.time = r.pod<float>();
         r.text(e.name);
     }

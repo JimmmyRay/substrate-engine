@@ -310,5 +310,5 @@ class DemoGame : public Game {
      * `LocomotionTrace::poseDrift` measures this node and a measurement that disappears with
      * the fix cannot fail without it.
      */
-    uint32_t rootJoint = scene::SceneAnimator::kNoNode;
+    uint32_t rootJoint = anim::SceneAnimator::kNoNode;
 };

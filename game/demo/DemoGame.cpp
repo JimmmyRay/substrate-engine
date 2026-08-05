@@ -51,26 +51,26 @@ std::string nextCapturePath() {
  * something*. Spelled the other way round, a scene whose characters run off the fixed step
  * rather than off a controller falls through the floor of the machine on the first frame.
  */
-scene::AnimationStateMachine locomotionMachine(const scene::SceneAnimator& animator) {
+scene::AnimationStateMachine locomotionMachine(const anim::SceneAnimator& animator) {
     // Several spellings per state: Mixamo, Khronos and Blender each name these
     // differently, and the alternative is one machine per exporter.
     struct Candidate {
         const char* state;
         std::initializer_list<const char*> clips;
-        scene::LoopMode loop;
+        core::LoopMode loop;
     };
     const Candidate candidates[] = {
-        {"idle", {"idle", "Idle", "Survey", "idle (2)"}, scene::LoopMode::Loop},
-        {"walk", {"walking", "walk", "Walk", "left strafe walking"}, scene::LoopMode::Loop},
-        {"run", {"running", "run", "Run"}, scene::LoopMode::Loop},
+        {"idle", {"idle", "Idle", "Survey", "idle (2)"}, core::LoopMode::Loop},
+        {"walk", {"walking", "walk", "Walk", "left strafe walking"}, core::LoopMode::Loop},
+        {"run", {"running", "run", "Run"}, core::LoopMode::Loop},
         // `jumping up` ahead of `jump`, and the order is not cosmetic. On this rig `jump`
         // is the *whole* 2.17 s leap -- crouch, launch, hang and landing -- while
         // `jumping up` is the 0.25 s launch alone. With `fall` and `land` as states of
         // their own, preferring `jump` plays its own landing over theirs, a second and a
         // half early.
-        {"jump", {"jumping up", "jump", "Jump"}, scene::LoopMode::ClampToEnd},
-        {"fall", {"falling idle", "fall", "Fall", "falling"}, scene::LoopMode::Loop},
-        {"land", {"hard landing", "land", "Land", "landing"}, scene::LoopMode::ClampToEnd},
+        {"jump", {"jumping up", "jump", "Jump"}, core::LoopMode::ClampToEnd},
+        {"fall", {"falling idle", "fall", "Fall", "falling"}, core::LoopMode::Loop},
+        {"land", {"hard landing", "land", "Land", "landing"}, core::LoopMode::ClampToEnd},
     };
 
     scene::AnimationStateMachine m;
@@ -78,7 +78,7 @@ scene::AnimationStateMachine locomotionMachine(const scene::SceneAnimator& anima
     for (const Candidate& c : candidates) {
         for (const char* name : c.clips) {
             const uint32_t clip = animator.findClip(name);
-            if (clip == scene::SceneAnimator::kNoClip) continue;
+            if (clip == anim::SceneAnimator::kNoClip) continue;
             m.states.push_back({c.state, clip, c.loop, 1.0f});
             found.emplace_back(c.state);
             break;
@@ -174,7 +174,7 @@ scene::AnimationStateMachine locomotionMachine(const scene::SceneAnimator& anima
  * same image on every run. Characters are offset from each other by their own index --
  * five identical characters mid-transition look like one, and no cross-fade is visible.
  */
-void driveCharacters(scene::SceneAnimator& animator, uint64_t stepIndex, float step) {
+void driveCharacters(anim::SceneAnimator& animator, uint64_t stepIndex, float step) {
     const uint32_t speed = animator.stateMachine().findParameter("speed");
     if (speed == scene::kAnyState) return;
     const uint32_t jump = animator.stateMachine().findParameter("jump");
@@ -1072,7 +1072,7 @@ void DemoGame::fixedUpdate(Engine& e, float step) {
 
     stepDemoWorld(e, world, step);
 
-    scene::SceneAnimator& animator = e.animator();
+    anim::SceneAnimator& animator = e.animator();
     if (animator.empty()) return;
 
     // A controller drives the gait from where the character actually is; a scene with an
@@ -1087,7 +1087,7 @@ void DemoGame::fixedUpdate(Engine& e, float step) {
 
 void DemoGame::driveLocomotion(Engine& e, float step) {
     auto s = core::Profiler::scope("DemoGame::driveLocomotion");
-    scene::SceneAnimator& animator = e.animator();
+    anim::SceneAnimator& animator = e.animator();
     const scene::AnimationStateMachine& machine = animator.stateMachine();
 
     // The showcase clips are not authored in place: `walking` moves `Hips` 1.80 m down its
@@ -1102,8 +1102,8 @@ void DemoGame::driveLocomotion(Engine& e, float step) {
     // Set here rather than in `init` because rebuilding the animator under `X` returns this
     // to `kNoNode`. Guarded, because `setRootNode` restarts every character's measurement
     // and calling it every step reports a delta of zero forever.
-    if (rootJoint == scene::SceneAnimator::kNoNode) rootJoint = animator.findNode("Hips");
-    if (rootJoint != scene::SceneAnimator::kNoNode && animator.rootNode() != rootJoint) {
+    if (rootJoint == anim::SceneAnimator::kNoNode) rootJoint = animator.findNode("Hips");
+    if (rootJoint != anim::SceneAnimator::kNoNode && animator.rootNode() != rootJoint) {
         animator.setRootNode(rootJoint);
         core::Logger::status(core::LogCategory::Scene, "Root motion: held at node %u (Hips)", rootJoint);
     }
@@ -1239,7 +1239,7 @@ void DemoGame::driveLocomotion(Engine& e, float step) {
     // Read out of the animator's resolved transforms rather than off the clip, so it says
     // the hold *took* rather than that the engine was asked for one. `worldTransforms` is
     // model space, so a held root is a constant here.
-    if (rootJoint != scene::SceneAnimator::kNoNode) {
+    if (rootJoint != anim::SceneAnimator::kNoNode) {
         const std::vector<glm::mat4>& pose = animator.worldTransforms(world.playerRig());
         if (rootJoint < pose.size()) {
             const glm::vec3 here(pose[rootJoint][3]);

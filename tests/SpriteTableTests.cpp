@@ -7,6 +7,7 @@
 #include <fstream>
 #include <string>
 
+using namespace core;
 using namespace scene;
 
 namespace fs = std::filesystem;

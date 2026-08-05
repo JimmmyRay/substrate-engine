@@ -5,25 +5,13 @@
 
 namespace scene {
 
-const std::vector<glm::mat4>& Simulation::poseFor(uint32_t node) const {
-    const AnimatorId owner = animator.characterForNode(node);
-    return animator.worldTransforms(owner.valid() ? owner : animator.characterAt(0));
-}
-
-bool Simulation::poseOf(uint32_t node, glm::mat4* out) const {
-    const std::vector<glm::mat4>& world = poseFor(node);
-    if (node >= world.size()) return false;
-    *out = world[node];
-    return true;
-}
-
 void Simulation::step(float stepSeconds) {
     auto s = core::Profiler::scope("simulate");
 
     // The four movers are called unconditionally; each already returns early on an empty
     // world. Re-adding an `!empty()` guard here deletes the profiler row instead of zeroing
     // it, and a missing row is indistinguishable from a system that cost nothing.
-    animator.update(stepSeconds);
+    modules::anim->update(stepSeconds);
 
     // `update` clears the fired-event list, so skipping it hands a game that reads
     // `firedEvents()` after a quiet step the previous step's list.
@@ -40,7 +28,7 @@ void Simulation::step(float stepSeconds) {
     // the *next* step, so every parameter carries one step of latency uniformly.
     {
         auto ls = core::Profiler::scope("LocomotionDriver::update");
-        locomotion.update(physics, animator);
+        modules::anim->updateLocomotion(characterMotionSource(physics));
     }
 
     // Audio runs on the fixed step like the other movers; a mixer advanced by wall-clock
@@ -52,9 +40,7 @@ void Simulation::step(float stepSeconds) {
     {
         auto sa = core::Profiler::scope("audioSources");
 
-        if (!animator.empty()) {
-            modules::audio->placeSources(core::Slot<bool(uint32_t, glm::mat4*)>::bind<&Simulation::poseOf>(this));
-        }
+        if (!modules::anim->stats().empty) modules::audio->placeSources(modules::anim->poses());
     }
 
     // A source on a body is moved by the scene tree in `endFrame`, at the frame's alpha --

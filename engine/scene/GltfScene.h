@@ -3,7 +3,7 @@
 #include "core/RangeAllocator.h"
 #include "gfx/Light.h"
 #include "gfx/Resources.h"
-#include "scene/Animation.h"
+#include "scene/AnimationRig.h"
 #include "scene/AudioSource.h"
 #include "scene/Collider.h"
 #include "scene/InstanceTable.h"

@@ -1,16 +1,12 @@
-#include "scene/Locomotion.h"
+#include "anim/Locomotion.h"
 
 #include <algorithm>
 #include <utility>
 
-namespace scene {
+namespace anim {
 
-void LocomotionDriver::pair(PhysicsCharacterId controller, AnimatorId rig) {
-    pair(controller, rig, defaultNames);
-}
-
-void LocomotionDriver::pair(PhysicsCharacterId controller, AnimatorId rig, Parameters names) {
-    if (!controller.valid() || !rig.valid()) return;
+void LocomotionDriver::pairKeyed(uint64_t controller, scene::AnimatorId rig, Parameters names) {
+    if (!rig.valid()) return;
     for (Pair& p : pairs) {
         if (p.rig == rig) {
             // Controller only: also assigning `names` here would silently move a re-paired
@@ -22,7 +18,7 @@ void LocomotionDriver::pair(PhysicsCharacterId controller, AnimatorId rig, Param
     pairs.push_back({controller, rig, std::move(names)});
 }
 
-const LocomotionDriver::Parameters& LocomotionDriver::parameters(AnimatorId rig) const {
+const LocomotionDriver::Parameters& LocomotionDriver::parameters(scene::AnimatorId rig) const {
     for (const Pair& p : pairs) {
         if (p.rig == rig) return p.names;
     }
@@ -34,7 +30,7 @@ void LocomotionDriver::setParameters(Parameters p) {
     for (Pair& pair : pairs) pair.names = defaultNames;
 }
 
-void LocomotionDriver::setParameters(AnimatorId rig, Parameters p) {
+void LocomotionDriver::setParameters(scene::AnimatorId rig, Parameters p) {
     for (Pair& pair : pairs) {
         if (pair.rig == rig) {
             pair.names = std::move(p);
@@ -43,37 +39,37 @@ void LocomotionDriver::setParameters(AnimatorId rig, Parameters p) {
     }
 }
 
-void LocomotionDriver::unpair(AnimatorId rig) {
+void LocomotionDriver::unpair(scene::AnimatorId rig) {
     pairs.erase(std::remove_if(pairs.begin(), pairs.end(), [rig](const Pair& p) { return p.rig == rig; }),
                 pairs.end());
 }
 
-void LocomotionDriver::update(const PhysicsWorld& physics, SceneAnimator& animator) {
+void LocomotionDriver::update(const MotionSlot& motion, SceneAnimator& animator) {
     size_t live = 0;
     for (Pair& p : pairs) {
-        if (!physics.valid(p.controller) || !animator.valid(p.rig)) continue;
+        scene::CharacterMotion moved;
+        if (!motion(p.controller, &moved) || !animator.valid(p.rig)) continue;
         pairs[live++] = p;
 
         // Looked up per step, not cached at `pair` time: `setStateMachine` may run after a
         // pairing, and a cached index would then name a parameter of a machine that is gone.
-        const AnimationStateMachine& machine = animator.stateMachine(p.rig);
+        const scene::AnimationStateMachine& machine = animator.stateMachine(p.rig);
         const uint32_t speed = machine.findParameter(p.names.speed);
         const uint32_t airborne = machine.findParameter(p.names.airborne);
         const uint32_t jump = machine.findParameter(p.names.jump);
 
-        if (speed != kAnyState) {
+        if (speed != scene::kAnyState) {
             // The divisor is the collider's top speed, not a constant: a literal here would
             // pin every rig's blend thresholds to one collider's tuning.
-            const float top = physics.characterMoveSpeed(p.controller);
-            const float carried = physics.characterSpeed(p.controller);
-            animator.setParameter(p.rig, speed, top > 0.0f ? std::min(carried / top, 1.0f) : 0.0f);
+            animator.setParameter(p.rig, speed,
+                                  moved.topSpeed > 0.0f ? std::min(moved.speed / moved.topSpeed, 1.0f) : 0.0f);
         }
-        if (airborne != kAnyState) {
-            animator.setParameter(p.rig, airborne, physics.characterOnGround(p.controller) ? 0.0f : 1.0f);
+        if (airborne != scene::kAnyState) {
+            animator.setParameter(p.rig, airborne, moved.onGround ? 0.0f : 1.0f);
         }
-        if (jump != kAnyState && physics.characterJumped(p.controller)) animator.fire(p.rig, jump);
+        if (jump != scene::kAnyState && moved.jumped) animator.fire(p.rig, jump);
     }
     pairs.resize(live);
 }
 
-} // namespace scene
+} // namespace anim

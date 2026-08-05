@@ -39,4 +39,21 @@ struct Handle {
     bool operator!=(const Handle& o) const { return !(*this == o); }
 };
 
+/**
+ * @brief Flatten a handle into the one integer a `core::Slot` can carry across a boundary
+ *        where neither side may name the other's tag.
+ *
+ * `unpackHandle` is the only way back, and the two are one contract: pack the index high and
+ * read it low and a stale handle comes back live, naming a slot that exists.
+ */
+template <typename Tag>
+[[nodiscard]] constexpr uint64_t packHandle(Handle<Tag> h) {
+    return (static_cast<uint64_t>(h.index) << 32) | h.generation;
+}
+
+template <typename Tag>
+[[nodiscard]] constexpr Handle<Tag> unpackHandle(uint64_t key) {
+    return Handle<Tag>{static_cast<uint32_t>(key >> 32), static_cast<uint32_t>(key)};
+}
+
 } // namespace core

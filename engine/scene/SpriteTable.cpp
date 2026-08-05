@@ -60,7 +60,7 @@ uint32_t clipFrame(const SpriteClip& c, float time) {
 /// The clip a bad handle or a bad index resolves to, so every accessor answers "nothing
 /// plays" rather than indexing past the end.
 const SpriteClip& noClip() {
-    static const SpriteClip empty{.name = {}, .first = 0, .count = 0, .fps = 0.0f, .loop = LoopMode::Loop, .events = {}};
+    static const SpriteClip empty{.name = {}, .first = 0, .count = 0, .fps = 0.0f, .loop = core::LoopMode::Loop, .events = {}};
     return empty;
 }
 
@@ -427,7 +427,7 @@ void SpriteTable::play(SpriteId id, SpriteSheetId sheet, uint32_t clipIndex, flo
     // The loop mode comes off the clip rather than off this call: for a flipbook, whether
     // it repeats is a property of the animation an artist drew, not of the moment a game
     // started it.
-    r.playback = ClipPlayback{.clip = clipIndex,
+    r.playback = core::ClipPlayback{.clip = clipIndex,
                               .time = 0.0f,
                               .speed = speed,
                               .loop = sheets[sheet.index].clips[clipIndex].loop,

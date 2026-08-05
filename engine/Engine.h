@@ -7,13 +7,12 @@
 #include "gfx/Renderer.h"
 #include "gfx/Resources.h"
 #include "gfx/VulkanContext.h"
-#include "scene/Animation.h"
+#include "scene/AnimationRig.h"
 #include "scene/Camera.h"
 #include "scene/GltfScene.h"
 #include "scene/SceneLoader.h"
 #include "scene/InstanceTable.h"
 #include "scene/LitSprite.h"
-#include "scene/Locomotion.h"
 #include "scene/SpatialIndex.h"
 #include "scene/Physics.h"
 #include "scene/Scene.h"
@@ -54,6 +53,11 @@ class ParticleSystem;
 namespace audio {
 class AudioEngine;
 } // namespace audio
+
+namespace anim {
+class SceneAnimator;
+class LocomotionDriver;
+} // namespace anim
 
 class Engine {
   public:
@@ -333,15 +337,22 @@ class Engine {
     /// The version of the `engine` section this build writes and reads. A save carrying a
     /// higher number is refused; a lower one is read in the shape that number described.
     static constexpr uint32_t kEngineSaveVersion = 1;
-    scene::SceneAnimator& animator() { return sceneAnimator; }
+    /// The rig a scene brought, and the characters driven over it.
+    ///
+    /// **Defined in `anim/AnimModule.cpp`, and naming it is what links animation** -- a game
+    /// that never calls this or `locomotion()` steps no clip. See that header.
+    ::anim::SceneAnimator& animator();
 
     /**
      * @brief The controller-to-rig wiring the engine drives every step.
      *
      * A `CharacterVirtual` the scene authored is paired automatically. One a game spawned
      * itself is not, and stays unpaired until the game calls `pair()`.
+     *
+     * **Defined in `anim/AnimModule.cpp`**, like `animator()`, and linking animation the
+     * same way.
      */
-    scene::LocomotionDriver& locomotion() { return locomotionDriver; }
+    ::anim::LocomotionDriver& locomotion();
     /// The pool a game spawns effects into.
     ///
     /// **Defined in `particles/ParticlesModule.cpp`, and naming it is what links
@@ -530,6 +541,11 @@ class Engine {
     /// Pair a controller with the animator character its bound skinned mesh names.
     /// A no-op for an instance that no character deforms, which is most of them.
     void pairLocomotion(scene::PhysicsCharacterId character, scene::InstanceId instance);
+
+    /// Re-hand the renderer the character blocks and size its deformed buffers from them.
+    /// **After every create, destroy and merge**: the spans are the animator's own storage,
+    /// so one left over a create uploads freed memory as a pose.
+    void refreshSkinCharacters();
     /// Build a soft body for every `FABRIC_` placement. Called from inside `initPhysics`,
     /// not after it -- a cloth built outside the world it collides with falls through it.
     void initCloth();
@@ -541,10 +557,6 @@ class Engine {
     void applyCameraConfig();
     void initInput();
     void teardown();
-
-    /// The pose an attachment on `node` follows -- the rig that animates it, and character 0
-    /// for a node nothing animates.
-    [[nodiscard]] const std::vector<glm::mat4>& poseFor(uint32_t node) const;
 
     static void onFramebufferResize(GLFWwindow* window, int w, int h);
     static void onKey(GLFWwindow* window, int key, int scancode, int action, int mods);
@@ -581,8 +593,6 @@ class Engine {
      */
     scene::Simulation sim;
     scene::SpriteTable& spriteTable = sim.sprites;
-    scene::SceneAnimator& sceneAnimator = sim.animator;
-    scene::LocomotionDriver& locomotionDriver = sim.locomotion;
     scene::PhysicsWorld& physicsWorld = sim.physics;
     scene::ClothSystem& clothSystem = sim.cloth;
     scene::FixedClock& simClock = sim.clock;

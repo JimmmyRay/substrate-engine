@@ -1,7 +1,9 @@
 #pragma once
 
 #include "core/Handle.h"
+#include "core/Slot.h"
 #include "gfx/DebugLines.h"
+#include "scene/CharacterMotion.h"
 #include "scene/Cloth.h"
 #include "scene/Collider.h"
 
@@ -376,6 +378,17 @@ class PhysicsWorld {
     [[nodiscard]] bool characterJumped(PhysicsCharacterId id) const;
 
     /**
+     * @brief The four readouts above, for a controller named by `core::packHandle`.
+     *
+     * @return false for a handle this world does not hold, which is what retires a pairing
+     *         whose controller has been destroyed.
+     *
+     * A packed key rather than a `PhysicsCharacterId` because the only caller reaches this
+     * through a `core::Slot`, from a directory that may not name this one.
+     */
+    [[nodiscard]] bool characterMotion(uint64_t controller, CharacterMotion* out) const;
+
+    /**
      * @brief What a query hit, or a falsy value for a miss.
      *
      * The boolean conversion tests `distance`, never `body`: a query can strike geometry this
@@ -640,5 +653,15 @@ class PhysicsWorld {
     struct Impl;
     std::unique_ptr<Impl> impl;
 };
+
+/**
+ * @brief `world` in the shape a locomotion driver reads it, keyed by packed controller.
+ *
+ * The slot holds a bare pointer, so `world` has to outlive every step that uses it. Taking
+ * it fresh each step, as `Simulation` does, is what makes that true by construction.
+ */
+[[nodiscard]] inline core::Slot<bool(uint64_t, CharacterMotion*)> characterMotionSource(PhysicsWorld& world) {
+    return core::Slot<bool(uint64_t, CharacterMotion*)>::bind<&PhysicsWorld::characterMotion>(&world);
+}
 
 } // namespace scene

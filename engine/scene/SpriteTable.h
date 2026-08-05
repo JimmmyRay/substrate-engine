@@ -1,8 +1,8 @@
 #pragma once
 
+#include "core/Clip.h"
 #include "core/Handle.h"
 #include "gfx/ImageTable.h"
-#include "scene/Animation.h"
 
 #include <glm/glm.hpp>
 
@@ -30,8 +30,9 @@ using SpriteSheetId = core::Handle<struct SpriteSheetTag>;
  * `Renderer` binds `draws()` and issues one `vkCmdDraw`.
  *
  * `LoopMode`, `ClipPlayback`, `AnimationEvent` and `advance`/`crossedEvents` come from
- * `Animation.h` and mean what they mean for a skeleton. Timing runs off the fixed step via
- * `Engine::simulate`, so a paused game has paused sprites and a time scale slows them.
+ * `core/Clip.h`, which is where a flipbook and a skeleton can share them without either
+ * naming the other. Timing runs off the fixed step via `Engine::simulate`, so a paused game
+ * has paused sprites and a time scale slows them.
  *
  * See systems.md, "Sprites", for what a sheet deliberately cannot express.
  */
@@ -135,12 +136,12 @@ struct SpriteClip {
     /// Cells per second. Non-positive holds `first`, for the same reason.
     float fps = 12.0f;
     /// `Loop` wraps, `ClampToEnd` holds the last cell.
-    LoopMode loop = LoopMode::Loop;
+    core::LoopMode loop = core::LoopMode::Loop;
     /// Instants a game may react to, **in ascending time order** -- the contract
     /// `crossedEvents` is written against. `time` is seconds from the start of the clip
     /// rather than a frame index (cell *f* begins at `f / fps`), so an event keeps its
     /// place in the motion when the clip is retimed.
-    std::vector<AnimationEvent> events;
+    std::vector<core::AnimationEvent> events;
 };
 
 /// One event a sprite's playback crossed this step, reported by `firedEvents()`. A list
@@ -346,7 +347,7 @@ class SpriteTable {
         uint32_t animIndex = kNotAnimating;
         SpriteSheetId sheet;
         /// `clip` indexes the sheet's clips.
-        ClipPlayback playback;
+        core::ClipPlayback playback;
         /// The sheet frame the `uvRect` currently holds, so `update` writes only when it
         /// moves. `kNoFrame` forces the next write.
         uint32_t frame = kNoFrame;

@@ -1458,6 +1458,16 @@ bool PhysicsWorld::characterJumped(PhysicsCharacterId id) const {
     return valid(id) && characters[id.index].launched;
 }
 
+bool PhysicsWorld::characterMotion(uint64_t controller, CharacterMotion* out) const {
+    const PhysicsCharacterId id = core::unpackHandle<PhysicsCharacterTag>(controller);
+    if (!valid(id)) return false;
+    out->speed = characterSpeed(id);
+    out->topSpeed = characterMoveSpeed(id);
+    out->onGround = characterOnGround(id);
+    out->jumped = characterJumped(id);
+    return true;
+}
+
 BodyId PhysicsWorld::handleFor(uint32_t joltRawId) const {
     const auto it = impl->bodyIndexById.find(joltRawId);
     if (it == impl->bodyIndexById.end()) return {};

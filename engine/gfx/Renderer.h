@@ -14,10 +14,10 @@
 #include "gfx/Resources.h"
 #include "gfx/Particle.h"
 #include "gfx/ShaderVariant.h"
+#include "gfx/Skin.h"
 #include "gfx/Swapchain.h"
 #include "gfx/ViewTable.h"
 #include "gfx/VulkanContext.h"
-#include "scene/Animation.h"
 #include "scene/Camera.h"
 #include "scene/Cloth.h"
 #include "scene/InstanceTable.h"
@@ -251,15 +251,19 @@ class Renderer {
     /// `create` was given -- a shadow and a reflection of geometry that is not there.
     void rebuildAccelIfStale();
 
-    /// @brief The rig driving this scene, if it has one.
+    /// @brief The characters deforming this scene, in slot order, and the flat numbering
+    ///        their blocks are laid out in.
     ///
-    /// **Must be called after `setInstances`**; it sizes buffers from both.
-    void setAnimator(const scene::SceneAnimator* animator, const scene::GltfScene* scene);
+    /// **Must be called after `setInstances`**; it sizes buffers from both. And again after
+    /// **every** character created or destroyed: `characters` is a span over storage the
+    /// animator owns, so one held across a create uploads freed memory as a pose.
+    void setSkinCharacters(std::span<const gfx::SkinCharacter> characters, uint32_t totalJoints,
+                           uint32_t totalWeights, const scene::GltfScene* scene);
 
-    /// @brief Name the scene's cloth, before `setAnimator` sizes the deformed buffer.
+    /// @brief Name the scene's cloth, before `setSkinCharacters` sizes the deformed buffer.
     ///
-    /// `setAnimator` allocates `skinnedVertices` and resolves `clothDestBase`, so a cloth
-    /// named after it has nowhere to write.
+    /// `setSkinCharacters` allocates `skinnedVertices` and resolves `clothDestBase`, so a
+    /// cloth named after it has nowhere to write.
     void setCloth(const scene::ClothSystem* cloth) { clothSystem = cloth; }
 
     /// @brief Allocate the pool for `capacity` particles and `emitterCount` emitters.
@@ -682,7 +686,7 @@ class Renderer {
         GpuBuffer overlayVertices;
         /// Allocated only when something asks for lines.
         GpuBuffer debugLineVertices;
-        /// Sized from the scene by `setAnimator`, and absent for a scene with no fabric.
+        /// Sized from the scene by `setSkinCharacters`, and absent for a scene with no fabric.
         GpuBuffer clothStaging;
         /// Sized by `ensureSpriteCapacity`, and null until a game creates its first sprite.
         GpuBuffer spriteBuffer;
@@ -917,8 +921,8 @@ class Renderer {
     VkDeviceSize stagedBytes = 0;     ///< prefix of instanceData the CPU writes
     VkDeviceSize instanceDataBytes = 0;
 
-    /// Not owned.
-    const scene::SceneAnimator* animator = nullptr;
+    /// Not owned, and empty for a scene whose only deforming geometry is cloth.
+    std::span<const gfx::SkinCharacter> skinCharacters;
     /// Joints across every character. Sizes the joint region; zero when there is no rig.
     uint32_t jointCapacity = 0;
     /// Morph weights across every character. Sizes the weight region.
@@ -948,7 +952,7 @@ class Renderer {
     /// Not owned, and null for every scene that authors no `FABRIC_` mesh.
     const scene::ClothSystem* clothSystem = nullptr;
     /// Where cloth `i`'s vertices start in `skinnedVertices`, in vertices, or UINT32_MAX.
-    /// Resolved once in `setAnimator`.
+    /// Resolved once in `setSkinCharacters`.
     std::vector<uint32_t> clothDestBase;
     /// This frame's copy regions, one per cloth.
     std::vector<VkBufferCopy> clothCopies;
@@ -965,9 +969,9 @@ class Renderer {
     /// copy regions. True when there is something to copy.
     bool recordClothUpload(uint32_t slot);
     /// Does anything in this scene write into `skinnedVertices`? The test every deformed
-    /// command sweep uses, and **not `animator != nullptr`**: cloth deforms with no rig.
+    /// command sweep uses, and **not `skinCharacters` alone**: cloth deforms with no rig.
     [[nodiscard]] bool deforms() const {
-        return animator != nullptr || (clothSystem != nullptr && !clothSystem->empty());
+        return !skinCharacters.empty() || (clothSystem != nullptr && !clothSystem->empty());
     }
     /// Submit view `view`'s commands, one indirect draw per variant group: the static half
     /// from the scene's vertex buffer, the skinned half from `skinnedVertices`.
@@ -1633,7 +1637,7 @@ class Renderer {
     /// frame, under a TLAS rebuilt every frame. See AccelStruct.h.
     SceneAccelStruct accel;
     /// Rebuild both tiers from the current scene, instance table and deformed vertex buffer.
-    /// **Called from `setScene`, and again from `setAnimator`** -- the dynamic tier is built
+    /// **Called from `setScene`, and again from `setSkinCharacters`** -- the dynamic tier is built
     /// over the deformed buffer, which does not exist the first time.
     void buildAccelerationStructures();
 

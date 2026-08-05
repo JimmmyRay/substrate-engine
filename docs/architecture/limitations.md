@@ -887,7 +887,7 @@ blended surface to leave out, not because leaving it out preserves them.
 
 ### Creating a morphed mesh rebuilds every acceleration structure in the scene
 
-`Renderer::setAnimator` reads the delta array, `totalWeights()` and one output range per
+`Renderer::setSkinCharacters` reads the delta array, the weight total and one output range per
 deformed instance all as they stand when it is called, so `Engine::createMesh` calls it
 again for a mesh that deforms — which tears down and rebuilds the deformed vertex buffer,
 the delta buffer, both BLAS tiers and the TLAS. That is on top of the device drain and the
