@@ -1,7 +1,6 @@
 #pragma once
 
 #include "scene/Animation.h"
-#include "scene/Audio.h"
 #include "scene/Cloth.h"
 #include "scene/Locomotion.h"
 #include "scene/Physics.h"
@@ -48,21 +47,15 @@ class Simulation {
     LocomotionDriver locomotion;
     PhysicsWorld physics;
     ClothSystem cloth;
-    AudioEngine audio;
     FixedClock clock;
 
     /// The hierarchy: a body drives a node, and whatever hangs off that node follows.
     Scene tree;
 
-    /// The body each source is attached to, or an invalid handle; the occlusion ray ignores
-    /// it. Must include static bodies -- a hum on a bolted-down generator has no transform to
-    /// drive and still occludes itself.
-    std::vector<BodyId> sourceBody;
-
-    /// Whether the occlusion sweep runs, and how far short of each end its ray stops, in
-    /// metres.
-    bool occlusion = false;
-    float occlusionMargin = 0.0f;
+  private:
+    /// `poseFor` in the shape the audio module's placement slot takes, false for a node the
+    /// rig it resolved to does not reach.
+    [[nodiscard]] bool poseOf(uint32_t node, glm::mat4* out) const;
 };
 
 } // namespace scene

@@ -1,5 +1,7 @@
 #pragma once
 
+#include "core/AudioBackend.h"
+#include "core/Handle.h"
 #include "scene/Node.h"
 #include <rapidjson/fwd.h>
 #include <glm/glm.hpp>
@@ -13,11 +15,13 @@ namespace scene {
 
 /**
  * @file AudioSource.h
- * @brief What a glTF file says about sound, before any mixer sees it.
+ * @brief What a document, a config and a game say about sound, before any mixer sees it.
  *
  * The schema, free of miniaudio so that `GltfScene` can place a source by its node's
- * world transform without knowing what a `ma_sound` is. The device lives in `Audio.h`.
- * The extras key is `nodes[i].extras.substrate_audio`.
+ * world transform without knowing what a `ma_sound` is. The mixer lives in
+ * `engine/audio/Audio.h`, which is a module: everything here is what the engine and that
+ * module both have to name, so moving any of it up puts `scene/` and `Modules.h` on the
+ * wrong side of the layer guard. The extras key is `nodes[i].extras.substrate_audio`.
  */
 
 /// How a source's samples reach the mixer.
@@ -104,6 +108,89 @@ struct AudioSourceDesc {
     /// Test the line to the listener against the scene's colliders and filter when it is
     /// blocked. Skipped for a bed, so this is not a second spelling of `spatial`.
     bool occlusion = true;
+};
+
+/// Tag for a playing sound. Declared, never defined -- see `core/Handle.h`.
+struct SoundTag;
+/// A source keeps the slot it was created in for as long as the mixer lives; nothing
+/// compacts or reorders, so a slot index taken one frame is still that source the next.
+using SoundId = core::Handle<SoundTag>;
+
+/// One volume group: a named gain stage, plus the ducking that makes it more than a
+/// multiply.
+struct AudioBusDesc {
+    std::string name;
+    /// Linear gain the bus sits at when nothing is ducking it.
+    float volume = 1.0f;
+
+    /// Bus whose playing voices duck this one, by name, or empty for none. A name no bus
+    /// claims is warned about and ignored.
+    std::string duckedBy;
+    /// Gain multiplier applied while the trigger bus has a voice playing. 1.0, the
+    /// default, is no ducking at all.
+    float duckAmount = 1.0f;
+    /// Seconds to reach the ducked gain, and seconds to come back. Asymmetric on purpose:
+    /// ducking late is audible as the first syllable of the thing you ducked for, and
+    /// recovering early is audible as a pump.
+    float duckAttack = 0.05f;
+    float duckRelease = 0.4f;
+};
+
+/// Everything the mixer needs to exist.
+struct AudioConfig {
+    /// Off skips the device, the decode and every source.
+    bool enabled = true;
+
+    /// Where the mix goes. `Config` refuses a name that is not one of these, so what
+    /// arrives here is already a value rather than a string to re-validate.
+    core::AudioBackend backend = core::AudioBackend::Auto;
+
+    /// The mix format. Everything the resource manager decodes is converted to this once,
+    /// so a scene of 44.1 kHz and 48 kHz assets resamples at load rather than per buffer.
+    uint32_t sampleRate = 48000;
+    uint32_t channels = 2;
+    /// Pairs of ears, clamped to [1, 4] -- miniaudio's own maximum. Fixed at `init`,
+    /// because miniaudio sizes the spatializer's listener array once and growing it means
+    /// rebuilding the engine under every playing voice.
+    uint32_t listeners = 1;
+
+    float masterVolume = 1.0f;
+
+    /// Assets longer than this stream; shorter ones decode. See `audioShouldStream` for
+    /// why it is a threshold on duration and `docs/architecture/systems.md` for the
+    /// measurement the default came from.
+    float streamThresholdSeconds = 5.0f;
+    /// Ceiling on what decoding may cost, in bytes, across every source in the scene.
+    /// Binds after `streamThresholdSeconds` and only ever forces a source onto the
+    /// streaming path -- counted by `budgetForcedStreams()`, never silent. Zero is
+    /// unbounded.
+    uint64_t decodeBudgetBytes = 64u * 1024u * 1024u;
+
+    /// Master switch for the raycast, the filter and the slew.
+    bool occlusion = true;
+    /// Cutoff a fully occluded source is filtered to, in Hz. A wall passes low
+    /// frequencies, so the filter is what keeps occlusion from sounding like a volume
+    /// knob.
+    float occlusionCutoffHz = 700.0f;
+    /// Gain a fully occluded source is held at, on top of the filter.
+    float occlusionGain = 0.45f;
+    /// Seconds to reach full occlusion and to come out of it. Zero steps the cutoff in
+    /// one frame, which is an audible click per frame for a listener walking past a
+    /// doorway.
+    float occlusionAttack = 0.08f;
+    float occlusionRelease = 0.25f;
+    /// How far short of each end the occlusion ray stops, in metres. The listener stands
+    /// inside its own character's capsule and a source usually sits at the centre of the
+    /// body it is attached to, so a ray drawn all the way to both reports every source as
+    /// occluded by the thing it is bolted to.
+    float occlusionRayMargin = 0.3f;
+
+    /// Voices the engine will hold. A source past it is refused, counted and reported.
+    uint32_t voiceBudget = 64;
+
+    /// Named gain stages, in file order. Empty gets the defaults `AudioEngine::init`
+    /// creates.
+    std::vector<AudioBusDesc> buses;
 };
 
 /**

@@ -1,6 +1,7 @@
 #pragma once
 
 #include "Engine.h"
+#include "audio/AudioModule.h"
 #include "particles/ParticlesModule.h"
 
 #include <glm/glm.hpp>

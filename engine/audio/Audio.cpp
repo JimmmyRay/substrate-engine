@@ -1,4 +1,4 @@
-#include "scene/Audio.h"
+#include "audio/Audio.h"
 
 #include "core/AudioTap.h"
 
@@ -15,7 +15,17 @@
 #include <memory>
 #include <unordered_map>
 
-namespace scene {
+namespace audio {
+
+// The description this mixer is built from stays in `scene/`, where the loaders and
+// `engine/Modules.h` reach it too. Spelled unqualified below so the file reads as it did
+// before the split.
+using scene::AudioAttenuation;
+using scene::AudioBusDesc;
+using scene::AudioConfig;
+using scene::AudioSourceDesc;
+using scene::BodyId;
+using scene::SoundId;
 
 namespace {
 
@@ -113,6 +123,10 @@ struct AudioEngine::Impl {
     /// from the second list to the first inside `update()`, between mixes.
     std::vector<uint32_t> freeVoiceSlots;
     std::vector<uint32_t> pendingVoiceRemoval;
+
+    /// The body each source rides, parallel to `voices` and allowed to be shorter -- a slot
+    /// past the end reads as no body, which is what a source nothing bound gets.
+    std::vector<BodyId> sourceBody;
 
     /// One per listener, sized at `init` and never resized. Kept beside miniaudio's own
     /// copy because the occlusion sweep reads it once per source per frame and
@@ -296,6 +310,7 @@ void AudioEngine::shutdown() {
     impl->voices.clear();
     impl->freeVoiceSlots.clear();
     impl->pendingVoiceRemoval.clear();
+    impl->sourceBody.clear();
 
     for (std::unique_ptr<Impl::Bus>& bus : impl->buses) {
         if (bus->ready) ma_sound_group_uninit(&bus->group);
@@ -484,12 +499,12 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
         impl->durationByFile[desc.file] = seconds;
     }
 
-    bool stream = audioShouldStream(desc.load, seconds, impl->cfg.streamThresholdSeconds);
+    bool stream = scene::audioShouldStream(desc.load, seconds, impl->cfg.streamThresholdSeconds);
     // Zero for a file some other source already decoded, because the resource manager
     // will hand this one the same buffer -- see Impl::decodedFiles.
     const uint64_t bytes = impl->alreadyDecoded(desc.file)
                                ? 0
-                               : audioDecodedBytes(seconds, impl->cfg.sampleRate, impl->cfg.channels);
+                               : scene::audioDecodedBytes(seconds, impl->cfg.sampleRate, impl->cfg.channels);
 
     // The budget only ever pushes a source onto the streaming path, and says so when it
     // does; it never refuses one for being large.
@@ -673,6 +688,51 @@ bool AudioEngine::occludable(SoundId id) const {
     return impl->cfg.occlusion && voice.desc.occlusion && voice.desc.spatial && voice.ready;
 }
 
+void AudioEngine::placeSources(const PoseSlot& poseOf) {
+    if (!impl->running || impl->voices.empty()) return;
+    for (uint32_t slot = 0; slot < sourceCount(); ++slot) {
+        const SoundId id = soundAt(slot);
+        if (!id.valid()) continue;
+        glm::mat4 world(1.0f);
+        if (poseOf(source(id).node, &world)) setSourceTransform(id, world);
+    }
+}
+
+void AudioEngine::updateOcclusion(const RaySlot& blocked) {
+    if (!impl->running || impl->voices.empty() || !impl->cfg.occlusion) return;
+    const float margin = impl->cfg.occlusionRayMargin;
+    for (uint32_t slot = 0; slot < sourceCount(); ++slot) {
+        const SoundId id = soundAt(slot);
+        if (!occludable(id)) continue;
+        const glm::vec3 to = sourcePosition(id);
+        const BodyId ignore = slot < impl->sourceBody.size() ? impl->sourceBody[slot] : BodyId{};
+
+        bool occluded = true;
+        for (uint32_t ears = 0; ears < listenerCount() && occluded; ++ears) {
+            const glm::vec3 ear = listenerPosition(ears);
+            const glm::vec3 delta = to - ear;
+            const float distance = glm::length(delta);
+            // Two margins is the whole segment: trimming both ends of anything shorter
+            // inverts it, and the sweep would test a backwards ray.
+            if (distance <= margin * 2.0f) {
+                occluded = false;
+                break;
+            }
+            const glm::vec3 direction = delta / distance;
+            occluded = blocked(ear + direction * margin, to - direction * margin, ignore);
+        }
+        setOccluded(id, occluded);
+    }
+}
+
+void AudioEngine::setSourceBody(uint32_t slot, BodyId body) {
+    if (slot >= sourceCount()) return;
+    if (impl->sourceBody.size() < sourceCount()) impl->sourceBody.resize(sourceCount());
+    impl->sourceBody[slot] = body;
+}
+
+void AudioEngine::clearSourceBodies() { impl->sourceBody.assign(sourceCount(), BodyId{}); }
+
 void AudioEngine::setMuted(bool muted) {
     impl->isMuted = muted;
     if (impl->running) ma_engine_set_volume(&impl->engine, muted ? 0.0f : impl->cfg.masterVolume);
@@ -823,4 +883,4 @@ void AudioEngine::update(float dt) {
     impl->rms = samples > 0 ? static_cast<float>(std::sqrt(sum / static_cast<double>(samples))) : 0.0f;
 }
 
-} // namespace scene
+} // namespace audio

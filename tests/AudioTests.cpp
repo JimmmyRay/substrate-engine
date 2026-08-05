@@ -1,4 +1,4 @@
-#include "scene/Audio.h"
+#include "audio/Audio.h"
 
 #include <gtest/gtest.h>
 
@@ -14,6 +14,10 @@
 using namespace core;
 
 using namespace scene;
+
+/// A using-declaration and not `using namespace audio`: every test below names a local
+/// `AudioEngine audio`, which would shadow the namespace for the rest of its scope.
+using ::audio::AudioEngine;
 
 namespace fs = std::filesystem;
 
@@ -842,4 +846,188 @@ TEST_F(AudioTest, ASourceIsHeardFromTheNearestPairOfEars) {
 
     EXPECT_GT(lone, 0.0f);
     EXPECT_GT(pair, lone * 2.0f) << "the second player's ears did not hear the source next to them";
+}
+
+// -------------------------------------------- the two sweeps the engine drives per step
+
+namespace {
+
+/// What a caster answered and what it was asked, so a test can assert on rays that were
+/// never cast as well as on the ones that were.
+struct RayLog {
+    std::vector<glm::vec3> from;
+    std::vector<glm::vec3> to;
+    std::vector<BodyId> ignored;
+    /// Rays starting left of this are blocked; everything else is clear. A predicate on the
+    /// origin rather than a fixed answer, because the rule under test is what happens when
+    /// two listeners disagree.
+    float blockedLeftOf = 1e30f;
+};
+
+AudioEngine::RaySlot rayInto(RayLog& log) {
+    return AudioEngine::RaySlot(
+        [](void* ctx, const glm::vec3& from, const glm::vec3& to, BodyId ignore) {
+            RayLog& l = *static_cast<RayLog*>(ctx);
+            l.from.push_back(from);
+            l.to.push_back(to);
+            l.ignored.push_back(ignore);
+            return from.x < l.blockedLeftOf;
+        },
+        &log);
+}
+
+/// A pose for one node and nothing else, which is what an animator with one rig is.
+struct OnePose {
+    uint32_t node = 0;
+    glm::mat4 world{1.0f};
+};
+
+AudioEngine::PoseSlot poseFrom(OnePose& pose) {
+    return AudioEngine::PoseSlot(
+        [](void* ctx, uint32_t node, glm::mat4* out) {
+            const OnePose& p = *static_cast<const OnePose*>(ctx);
+            if (node != p.node) return false;
+            *out = p.world;
+            return true;
+        },
+        &pose);
+}
+
+/// Occlusion that arrives in one update, so a test reads a decision rather than a slew.
+AudioConfig instantOcclusion(AudioConfig cfg) {
+    cfg.occlusionAttack = 0.0f;
+    cfg.occlusionRelease = 0.0f;
+    return cfg;
+}
+
+AudioSourceDesc occludableAt(const AudioSourceDesc& base, uint32_t node) {
+    AudioSourceDesc desc = base;
+    desc.spatial = true;
+    desc.occlusion = true;
+    desc.node = node;
+    return desc;
+}
+
+} // namespace
+
+TEST_F(AudioTest, PlacementMovesOnlyTheSourcesThePoseSlotAnswersFor) {
+    AudioEngine audio;
+    ASSERT_TRUE(audio.init(config()));
+
+    ASSERT_TRUE(audio.create(occludableAt(source(tone), 3)).valid());
+    ASSERT_TRUE(audio.create(occludableAt(source(tone), 9)).valid());
+
+    OnePose pose;
+    pose.node = 3;
+    pose.world = glm::translate(glm::mat4(1.0f), glm::vec3(1.0f, 2.0f, 3.0f));
+    audio.placeSources(poseFrom(pose));
+
+    EXPECT_EQ(audio.sourcePosition(audio.soundAt(0)), glm::vec3(1.0f, 2.0f, 3.0f));
+    // Left where it was, not folded onto the rig that happened to answer first: a source on
+    // an unanimated node is placed by the scene tree, and overwriting it here would drag it
+    // to whatever the last answered node was.
+    EXPECT_EQ(audio.sourcePosition(audio.soundAt(1)), glm::vec3(0.0f));
+}
+
+TEST_F(AudioTest, ASourceIsMuffledOnlyWhereEveryListenerIsBlocked) {
+    AudioConfig cfg = instantOcclusion(config());
+    cfg.listeners = 2;
+    AudioEngine audio;
+    ASSERT_TRUE(audio.init(cfg));
+    ASSERT_EQ(audio.listenerCount(), 2u);
+
+    ASSERT_TRUE(audio.create(occludableAt(source(tone), 0)).valid());
+    const SoundId id = audio.soundAt(0);
+    ASSERT_TRUE(audio.occludable(id));
+
+    audio.setListener({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, 0);
+    audio.setListener({20.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f}, 1);
+    audio.setSourceTransform(id, glm::translate(glm::mat4(1.0f), glm::vec3(10.0f, 0.0f, 0.0f)));
+
+    // Listener 0 is behind a wall and listener 1 is not. The second player can see the
+    // source plainly, so nothing may be filtered.
+    RayLog split;
+    split.blockedLeftOf = 5.0f;
+    audio.updateOcclusion(rayInto(split));
+    audio.update(kStep);
+    EXPECT_EQ(split.from.size(), 2u) << "the sweep stopped at the first listener";
+    EXPECT_FLOAT_EQ(audio.occlusion(id), 0.0f);
+
+    // Both behind something is the case that does filter, and it is the same source and the
+    // same call -- so what differs between the two arms is only the disagreement.
+    RayLog both;
+    both.blockedLeftOf = 1e30f;
+    audio.updateOcclusion(rayInto(both));
+    audio.update(kStep);
+    EXPECT_EQ(both.from.size(), 2u);
+    EXPECT_FLOAT_EQ(audio.occlusion(id), 1.0f);
+
+    // A clear first listener settles it, and the second ray is never cast: the cost of the
+    // rule is bounded by the listener that can already hear the source.
+    RayLog clear;
+    clear.blockedLeftOf = -1e30f;
+    audio.updateOcclusion(rayInto(clear));
+    audio.update(kStep);
+    EXPECT_EQ(clear.from.size(), 1u);
+    EXPECT_FLOAT_EQ(audio.occlusion(id), 0.0f);
+}
+
+TEST_F(AudioTest, ASegmentShorterThanTwoMarginsIsNotSweptAtAll) {
+    AudioConfig cfg = instantOcclusion(config());
+    cfg.occlusionRayMargin = 0.3f;
+    AudioEngine audio;
+    ASSERT_TRUE(audio.init(cfg));
+
+    ASSERT_TRUE(audio.create(occludableAt(source(tone), 0)).valid());
+    const SoundId id = audio.soundAt(0);
+    audio.setListener({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f});
+
+    // 0.4 m apart against a 0.6 m trim. Trimming both ends of it inverts the segment, and
+    // the sweep would test a ray pointing away from the source.
+    audio.setSourceTransform(id, glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -0.4f)));
+    RayLog inside;
+    audio.updateOcclusion(rayInto(inside));
+    audio.update(kStep);
+    EXPECT_TRUE(inside.from.empty());
+    EXPECT_FLOAT_EQ(audio.occlusion(id), 0.0f);
+
+    // Far enough out, the same source is swept, and both ends are pulled in by the margin.
+    audio.setSourceTransform(id, glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -5.0f)));
+    RayLog outside;
+    audio.updateOcclusion(rayInto(outside));
+    audio.update(kStep);
+    ASSERT_EQ(outside.from.size(), 1u);
+    EXPECT_NEAR(outside.from[0].z, -0.3f, 1e-5f);
+    EXPECT_NEAR(outside.to[0].z, -4.7f, 1e-5f);
+    EXPECT_FLOAT_EQ(audio.occlusion(id), 1.0f);
+}
+
+TEST_F(AudioTest, TheSweepIgnoresTheBodyASourceRides) {
+    AudioEngine audio;
+    ASSERT_TRUE(audio.init(instantOcclusion(config())));
+
+    ASSERT_TRUE(audio.create(occludableAt(source(tone), 0)).valid());
+    ASSERT_TRUE(audio.create(occludableAt(source(tone), 0)).valid());
+    audio.setListener({0.0f, 0.0f, 0.0f}, {0.0f, 0.0f, -1.0f}, {0.0f, 1.0f, 0.0f});
+    for (uint32_t slot = 0; slot < 2; ++slot) {
+        audio.setSourceTransform(audio.soundAt(slot), glm::translate(glm::mat4(1.0f), glm::vec3(0.0f, 0.0f, -5.0f)));
+    }
+
+    // Only the second rides a body. Losing the binding is not a crash and not a silence --
+    // it is a hum reported as occluded by the generator it is bolted to, for the whole run.
+    const BodyId generator{7u, 1u};
+    audio.setSourceBody(1, generator);
+
+    RayLog log;
+    audio.updateOcclusion(rayInto(log));
+    ASSERT_EQ(log.ignored.size(), 2u);
+    EXPECT_FALSE(log.ignored[0].valid());
+    EXPECT_EQ(log.ignored[1], generator);
+
+    // And a whole-table rebuild puts every source back to riding nothing.
+    audio.clearSourceBodies();
+    RayLog after;
+    audio.updateOcclusion(rayInto(after));
+    ASSERT_EQ(after.ignored.size(), 2u);
+    EXPECT_FALSE(after.ignored[1].valid());
 }

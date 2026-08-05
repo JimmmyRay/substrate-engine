@@ -200,7 +200,7 @@ add_subdirectory(external/JoltPhysics/Build EXCLUDE_FROM_ALL)
 #
 # Its own CMakeLists is not used. Upstream builds a shared library plus its examples and
 # tests, and what this engine wants is the header compiled into one translation unit of
-# its own (engine/scene/miniaudio_impl.cpp), which is how the same file already handles stb
+# its own (engine/audio/miniaudio_impl.cpp), which is how the same file already handles stb
 # and VMA. So this is an INTERFACE target carrying an include directory and nothing else.
 #
 # No dev packages are needed for ALSA, PulseAudio or JACK: miniaudio dlopen()s whichever
@@ -386,6 +386,8 @@ add_custom_target(layer_guard ALL
 # and an OBJECT library here would buy nothing but a name.
 set(SUBSTRATE_HOSTED_SOURCES
     engine/ai/Planner.cpp
+    engine/audio/Audio.cpp
+    engine/audio/miniaudio_impl.cpp
     engine/nav/NavMesh.cpp
     engine/particles/ParticleSystem.cpp
     engine/core/AudioTap.cpp
@@ -408,7 +410,6 @@ set(SUBSTRATE_HOSTED_SOURCES
     engine/gfx/Presentation.cpp
     engine/gfx/ViewTable.cpp
     engine/scene/Animation.cpp
-    engine/scene/Audio.cpp
     engine/scene/AudioSource.cpp
     engine/scene/Camera.cpp
     engine/scene/CameraControllers.cpp
@@ -418,7 +419,6 @@ set(SUBSTRATE_HOSTED_SOURCES
     engine/scene/LitSprite.cpp
     engine/scene/Locomotion.cpp
     engine/scene/MeshLod.cpp
-    engine/scene/miniaudio_impl.cpp
     engine/scene/ParticleEmitter.cpp
     engine/scene/Physics.cpp
     engine/scene/Scene.cpp
@@ -454,7 +454,7 @@ set(SUBSTRATE_SCENE_WRITE_SOURCES engine/scene/SceneCacheWrite.cpp)
 # written for, and it is one file. Silenced as a whole here rather than by chasing the
 # pragmas in miniaudio_impl.cpp across compiler versions: the point of that TU is to
 # contain the library, and this is the rest of containing it.
-set_source_files_properties(engine/scene/miniaudio_impl.cpp PROPERTIES COMPILE_OPTIONS "-w")
+set_source_files_properties(engine/audio/miniaudio_impl.cpp PROPERTIES COMPILE_OPTIONS "-w")
 
 # A library, not an executable, and that is the point of G1: `./build.sh` produces no
 # runnable binary at all. The engine has to build, test and sanitize with nothing under
@@ -486,6 +486,7 @@ add_library(substrate STATIC
     # The module wiring. Each names `Engine` and so is device-side by construction, which is
     # why none of these joins SUBSTRATE_HOSTED_SOURCES beside the module it wires: the module
     # itself stays hosted and testable, and only the wiring leaves.
+    engine/audio/AudioModule.cpp
     engine/nav/NavModule.cpp
     engine/particles/ParticlesModule.cpp
 )

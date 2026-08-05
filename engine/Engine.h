@@ -8,7 +8,6 @@
 #include "gfx/Resources.h"
 #include "gfx/VulkanContext.h"
 #include "scene/Animation.h"
-#include "scene/Audio.h"
 #include "scene/Camera.h"
 #include "scene/GltfScene.h"
 #include "scene/SceneLoader.h"
@@ -52,12 +51,16 @@ namespace particles {
 class ParticleSystem;
 } // namespace particles
 
+namespace audio {
+class AudioEngine;
+} // namespace audio
+
 class Engine {
   public:
     /// **Both defined in `Engine.cpp`, not defaulted here.** Inline, the destructor
     /// destroys twenty-odd by-value members in *the caller's* translation unit, so every
     /// object file that lets an `Engine` go out of scope carries an undefined
-    /// `~PhysicsWorld`, `~AudioEngine` and `~SceneLoader` that nothing in it mentions.
+    /// `~PhysicsWorld`, `~GltfScene` and `~SceneLoader` that nothing in it mentions.
     Engine();
     /// The backstop for the path `main` does not cover: `run()` calls into arbitrary game
     /// code, and if that unwinds, `Entry.cpp` never reaches `shutdown()` and the window,
@@ -345,7 +348,11 @@ class Engine {
     /// particles** -- a game that never calls this draws none. See that header.
     ::particles::ParticleSystem& particles();
     scene::PhysicsWorld& physics() { return physicsWorld; }
-    scene::AudioEngine& audio() { return audioEngine; }
+    /// The mixer a game places sources in and fires one-shots at.
+    ///
+    /// **Defined in `audio/AudioModule.cpp`, and naming it is what links audio** -- a game
+    /// that never calls this opens no device. See that header.
+    ::audio::AudioEngine& audio();
     core::input::InputMap& input() { return inputMap; }
     core::input::TextInput& text() { return textInput; }
     /// The camera the frame renders through, the listener follows and `--camera`
@@ -510,7 +517,8 @@ class Engine {
      * rest transform read before it is the identity, so every driven instance carries an
      * offset equal to its own placement and renders at twice its distance from the origin.
      *
-     * Appends to `out`; rebuilding or extending `sourceBody` and `authored` is the caller's.
+     * Appends to `out`; resetting the audio module's source-to-body bindings and `authored`
+     * is the caller's.
      */
     void createColliderBodies(uint32_t firstCollider, uint32_t colliderCount, std::vector<DrivenBody>& out);
 
@@ -577,10 +585,8 @@ class Engine {
     scene::LocomotionDriver& locomotionDriver = sim.locomotion;
     scene::PhysicsWorld& physicsWorld = sim.physics;
     scene::ClothSystem& clothSystem = sim.cloth;
-    scene::AudioEngine& audioEngine = sim.audio;
     scene::FixedClock& simClock = sim.clock;
     scene::Scene& sceneTree = sim.tree;
-    std::vector<scene::BodyId>& sourceBody = sim.sourceBody;
 
     scene::SceneLoader sceneLoader;
     /// Instances created per appended model, so `removeModel` can destroy exactly those.

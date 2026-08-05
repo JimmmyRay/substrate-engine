@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/Handle.h"
-#include "core/AudioBackend.h"
+#include "core/Slot.h"
 #include "scene/AudioSource.h"
+#include "scene/Physics.h"
 
 #include <glm/glm.hpp>
 
@@ -15,11 +15,17 @@ namespace core {
 class AudioTap;
 } // namespace core
 
-namespace scene {
+namespace audio {
 
 /**
- * @file Audio.h
+ * @file engine/audio/Audio.h
  * @brief The device, the voices, the buses and the occlusion filters.
+ *
+ * A module: `Engine.h` forward-declares `AudioEngine` and includes nothing from here, so
+ * an include of this header from `core/` or from the engine cluster is what
+ * `scripts/check_layers.sh` fails on. What the engine and the mixer both have to name --
+ * `AudioSourceDesc`, `AudioConfig`, `SoundId` -- is in `scene/AudioSource.h` for that
+ * reason.
  *
  * miniaudio stays behind an `Impl` to keep a 100k-line header off the include path of
  * every translation unit that touches a scene.
@@ -31,93 +37,7 @@ namespace scene {
  * gives, and the fallback a machine whose device will not open takes.
  */
 
-/// One volume group: a named gain stage, plus the ducking that makes it more than a
-/// multiply.
-struct AudioBusDesc {
-    std::string name;
-    /// Linear gain the bus sits at when nothing is ducking it.
-    float volume = 1.0f;
-
-    /// Bus whose playing voices duck this one, by name, or empty for none. A name no bus
-    /// claims is warned about and ignored.
-    std::string duckedBy;
-    /// Gain multiplier applied while the trigger bus has a voice playing. 1.0, the
-    /// default, is no ducking at all.
-    float duckAmount = 1.0f;
-    /// Seconds to reach the ducked gain, and seconds to come back. Asymmetric on purpose:
-    /// ducking late is audible as the first syllable of the thing you ducked for, and
-    /// recovering early is audible as a pump.
-    float duckAttack = 0.05f;
-    float duckRelease = 0.4f;
-};
-
-/// Everything the engine needs to exist.
-struct AudioConfig {
-    /// Off skips the device, the decode and every source.
-    bool enabled = true;
-
-    /// Where the mix goes. `Config` refuses a name that is not one of these, so what
-    /// arrives here is already a value rather than a string to re-validate.
-    core::AudioBackend backend = core::AudioBackend::Auto;
-
-    /// The mix format. Everything the resource manager decodes is converted to this once,
-    /// so a scene of 44.1 kHz and 48 kHz assets resamples at load rather than per buffer.
-    uint32_t sampleRate = 48000;
-    uint32_t channels = 2;
-    /// Pairs of ears, clamped to [1, 4] -- miniaudio's own maximum. Fixed at `init`,
-    /// because miniaudio sizes the spatializer's listener array once and growing it means
-    /// rebuilding the engine under every playing voice.
-    uint32_t listeners = 1;
-
-    float masterVolume = 1.0f;
-
-    /// Assets longer than this stream; shorter ones decode. See `audioShouldStream` for
-    /// why it is a threshold on duration and `docs/architecture/systems.md` for the
-    /// measurement the default came from.
-    float streamThresholdSeconds = 5.0f;
-    /// Ceiling on what decoding may cost, in bytes, across every source in the scene.
-    /// Binds after `streamThresholdSeconds` and only ever forces a source onto the
-    /// streaming path -- counted by `budgetForcedStreams()`, never silent. Zero is
-    /// unbounded.
-    uint64_t decodeBudgetBytes = 64u * 1024u * 1024u;
-
-    /// Master switch for the raycast, the filter and the slew.
-    bool occlusion = true;
-    /// Cutoff a fully occluded source is filtered to, in Hz. A wall passes low
-    /// frequencies, so the filter is what keeps occlusion from sounding like a volume
-    /// knob.
-    float occlusionCutoffHz = 700.0f;
-    /// Gain a fully occluded source is held at, on top of the filter.
-    float occlusionGain = 0.45f;
-    /// Seconds to reach full occlusion and to come out of it. Zero steps the cutoff in
-    /// one frame, which is an audible click per frame for a listener walking past a
-    /// doorway.
-    float occlusionAttack = 0.08f;
-    float occlusionRelease = 0.25f;
-    /// How far short of each end the occlusion ray stops, in metres. The listener stands
-    /// inside its own character's capsule and a source usually sits at the centre of the
-    /// body it is attached to, so a ray drawn all the way to both reports every source as
-    /// occluded by the thing it is bolted to.
-    float occlusionRayMargin = 0.3f;
-
-    /// Voices the engine will hold. A source past it is refused, counted and reported.
-    uint32_t voiceBudget = 64;
-
-    /// Named gain stages, in file order. Empty gets the defaults `AudioEngine::init`
-    /// creates.
-    std::vector<AudioBusDesc> buses;
-};
-
-/**
- * @brief The scene's sounds.
- *
- * A source keeps the slot `create` gave it for as long as the engine lives; nothing here
- * compacts or reorders, so a slot index taken one frame is still that source the next.
- */
-/// Tag for a playing sound. Declared, never defined -- see `core/Handle.h`.
-struct SoundTag;
-using SoundId = core::Handle<SoundTag>;
-
+/// @brief The scene's sounds.
 class AudioEngine {
   public:
     static constexpr uint32_t kMasterBus = 0xFFFFFFFFu;
@@ -135,7 +55,7 @@ class AudioEngine {
     /// Open the device (or the device-less mix) and create the buses.
     /// @return false when neither could be brought up, which leaves every call below a
     ///         no-op rather than a crash -- a game with no sound card still runs.
-    bool init(const AudioConfig& cfg);
+    bool init(const scene::AudioConfig& cfg);
     void shutdown();
 
     /// True once `init` has brought something up, and false for `enabled: false`, so a
@@ -151,7 +71,7 @@ class AudioEngine {
      * @return its handle, invalid when the file could not be opened or the voice budget
      *         refused it.
      */
-    SoundId create(const AudioSourceDesc& desc);
+    scene::SoundId create(const scene::AudioSourceDesc& desc);
 
     /**
      * @brief Fire one sound at a point, and forget about it.
@@ -163,7 +83,7 @@ class AudioEngine {
      * @return the voice, which goes stale on its own the step after the sound ends. A
      *         caller may `stop` or `destroy` it early, or drop the handle.
      */
-    SoundId playAt(const AudioSourceDesc& desc, const glm::vec3& position);
+    scene::SoundId playAt(const scene::AudioSourceDesc& desc, const glm::vec3& position);
 
     /**
      * @brief Stop a source and retire its slot.
@@ -174,29 +94,29 @@ class AudioEngine {
      * precisely because the mixer holds pointers into them -- so what is reused is the
      * slot, not the address.
      */
-    void destroy(SoundId id);
+    void destroy(scene::SoundId id);
 
     /// Does this handle still name a live source?
-    [[nodiscard]] bool valid(SoundId id) const;
+    [[nodiscard]] bool valid(scene::SoundId id) const;
 
     /// The handle occupying a slot, invalid for an empty one.
-    [[nodiscard]] SoundId soundAt(uint32_t slot) const;
+    [[nodiscard]] scene::SoundId soundAt(uint32_t slot) const;
 
     /// Slots, not live sources: what a walker pairs with `soundAt`.
     [[nodiscard]] uint32_t sourceCount() const;
-    [[nodiscard]] const AudioSourceDesc& source(SoundId id) const;
+    [[nodiscard]] const scene::AudioSourceDesc& source(scene::SoundId id) const;
     /// Which path `create` chose for this source. Reported by the overlay and the
     /// load-time summary, since a decision taken from a threshold is one somebody will
     /// want to check against the asset it was taken for.
-    [[nodiscard]] bool sourceStreamed(SoundId id) const;
-    [[nodiscard]] float sourceSeconds(SoundId id) const;
+    [[nodiscard]] bool sourceStreamed(scene::SoundId id) const;
+    [[nodiscard]] float sourceSeconds(scene::SoundId id) const;
 
     /// Move a source. Only the translation is read, plus -Z for a cone.
-    void setSourceTransform(SoundId id, const glm::mat4& transform);
-    [[nodiscard]] glm::vec3 sourcePosition(SoundId id) const;
-    [[nodiscard]] bool sourcePlaying(SoundId id) const;
-    void start(SoundId id);
-    void stop(SoundId id);
+    void setSourceTransform(scene::SoundId id, const glm::mat4& transform);
+    [[nodiscard]] glm::vec3 sourcePosition(scene::SoundId id) const;
+    [[nodiscard]] bool sourcePlaying(scene::SoundId id) const;
+    void start(scene::SoundId id);
+    void stop(scene::SoundId id);
 
     /**
      * @brief Where a pair of ears is. `forward` and `up` are that listener's view, so the
@@ -214,7 +134,7 @@ class AudioEngine {
     void setListener(const glm::vec3& position, const glm::vec3& forward, const glm::vec3& up,
                      uint32_t listener = 0);
     [[nodiscard]] glm::vec3 listenerPosition(uint32_t listener = 0) const;
-    /// How many pairs of ears this engine came up with, from `AudioConfig::listeners`.
+    /// How many pairs of ears this engine came up with, from `scene::AudioConfig::listeners`.
     [[nodiscard]] uint32_t listenerCount() const;
 
     /**
@@ -225,12 +145,43 @@ class AudioEngine {
      *
      * Idempotent per frame -- what is slewed is the state, not the number of calls.
      */
-    void setOccluded(SoundId id, bool occluded);
+    void setOccluded(scene::SoundId id, bool occluded);
     /// How far into occlusion a source currently is, 0 to 1, after the slew.
-    [[nodiscard]] float occlusion(SoundId id) const;
+    [[nodiscard]] float occlusion(scene::SoundId id) const;
     /// True for a source that both wants occlusion and is spatial, which is the set the
     /// caller has to raycast for.
-    [[nodiscard]] bool occludable(SoundId id) const;
+    [[nodiscard]] bool occludable(scene::SoundId id) const;
+
+    /// Where `placeSources` reads a node's world transform, false for a node nothing poses.
+    using PoseSlot = core::Slot<bool(uint32_t, glm::mat4*)>;
+    /// Where `updateOcclusion` casts: from, to, and the body the source rides, which the
+    /// sweep must not count as its own occluder.
+    using RaySlot = core::Slot<bool(const glm::vec3&, const glm::vec3&, scene::BodyId)>;
+
+    /// Move every source whose `AudioSourceDesc::node` the pose slot answers for. A source
+    /// on a body is placed by the scene tree instead, at the frame's alpha -- calling this
+    /// for it as well would give audio a transform one step ahead of the image.
+    void placeSources(const PoseSlot& poseOf);
+
+    /**
+     * @brief Sweep one ray per occludable source per listener and slew each toward what it
+     *        found.
+     *
+     * A source is occluded only where **every** listener is behind something: the filter is
+     * one biquad on one voice, so stopping at listener 0 muffles a source the second player
+     * of a split screen can see plainly.
+     *
+     * A no-op while `AudioConfig::occlusion` is off, so the caller has no second copy of
+     * that switch to keep in step with the filter's.
+     */
+    void updateOcclusion(const RaySlot& blocked);
+
+    /// The body a source rides, by slot, so `updateOcclusion` can ignore it. **Static
+    /// bodies included** -- a hum bolted to a generator has no transform to drive and still
+    /// occludes itself. Grows to `sourceCount()`; a slot with no body is left invalid.
+    void setSourceBody(uint32_t slot, scene::BodyId body);
+    /// Forget every binding, for a caller re-walking a whole collider table.
+    void clearSourceBodies();
 
     /**
      * @brief Advance the ducking and the occlusion slews by one step, and mix.
@@ -266,7 +217,7 @@ class AudioEngine {
     /// for as long as this engine is; `shutdown` stops the tap before releasing it.
     [[nodiscard]] core::AudioTap* captureTap();
 
-    /// Called from the recorder thread. Interleaved frames at `AudioConfig::sampleRate`
+    /// Called from the recorder thread. Interleaved frames at `scene::AudioConfig::sampleRate`
     /// and `channels`.
     [[nodiscard]] uint64_t readCaptured(float* dst, uint64_t maxFrames);
     /// Frames the audio thread could not fit because the recorder fell behind. The
@@ -320,4 +271,4 @@ class AudioEngine {
     std::unique_ptr<Impl> impl;
 };
 
-} // namespace scene
+} // namespace audio

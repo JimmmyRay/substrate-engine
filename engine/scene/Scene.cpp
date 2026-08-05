@@ -423,9 +423,7 @@ void Scene::update(const SceneTargets& targets) {
         if (targets.instances != nullptr && a.instance.valid() && targets.instances->valid(a.instance)) {
             targets.instances->setTransform(a.instance, a.hasOffset ? n.world * a.instanceOffset : n.world);
         }
-        if (targets.audio != nullptr && a.sound.valid()) {
-            targets.audio->setSourceTransform(a.sound, n.world);
-        }
+        if (a.sound.valid()) targets.soundTransform(a.sound, n.world);
         if (a.emitter != kNoAttachment) targets.emitterTransform(a.emitter, n.world);
         if (targets.lights != nullptr && a.light != kNoAttachment && a.light < targets.lights->size()) {
             gfx::GpuLight& l = (*targets.lights)[a.light];

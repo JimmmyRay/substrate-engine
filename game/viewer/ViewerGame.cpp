@@ -2,6 +2,7 @@
 
 #include "Engine.h"
 #include "Entry.h"
+#include "audio/AudioModule.h"
 #include "particles/ParticlesModule.h"
 
 namespace {
@@ -68,6 +69,12 @@ void ViewerGame::init(Engine& e) {
     // `particles` case is a viewer run: delete this and a scene's emitters spawn nothing,
     // in a build that reports no error.
     (void)e.particles();
+
+    // The same mechanism, for the same kind of silence: every golden case runs
+    // `--audio-null`, which is the whole audio path with the mix going nowhere, and that is
+    // what covers it. Delete this and `configure`'s three buses are never created, nothing
+    // decodes, and no build or baseline says so.
+    (void)e.audio();
 }
 
 void ViewerGame::frameUpdate(Engine& e, float /*dt*/) {

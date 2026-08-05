@@ -320,7 +320,7 @@ void drawSettingsPanel(ui::Context& ui, Engine& e, PanelState& state, const glm:
     if (!ui.beginPanel("Substrate", pos, size)) return;
 
     gfx::Renderer& r = e.renderer();
-    scene::AudioEngine& audio = e.audio();
+    audio::AudioEngine& audio = e.audio();
 
     if (state.uiImage.valid()) {
         ui.labelDim("Overlay image (C5)");

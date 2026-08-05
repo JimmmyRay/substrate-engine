@@ -541,7 +541,7 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
     // `Renderer::lights` is the live list a game pushes to; leaving these in the scene keeps
     // them out of the frame.
     for (uint32_t i = 0; i < m.lightCount; ++i) render.lights.push_back(sceneData.lights()[m.firstLight + i]);
-    for (uint32_t i = 0; i < m.audioCount; ++i) (void)audioEngine.create(sceneData.audioSources()[m.firstAudio + i]);
+    for (uint32_t i = 0; i < m.audioCount; ++i) modules::audio->create(sceneData.audioSources()[m.firstAudio + i]);
     // `addEmitter` rather than rebuilding the list through `setEmitters`: the renderer allocated
     // its buffers against the capacity the scene loaded with, so an import shares the
     // particles the existing emitters did not claim rather than resizing under it.
@@ -550,10 +550,8 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
     }
 
     if (m.colliderCount > 0) {
-        // Resized rather than reassigned: the sounds the scene loaded with keep the bodies
-        // they were already bound to.
-        sourceBody.resize(audioEngine.sourceCount());
-
+        // Resetting the source-to-body bindings here, the way `initPhysics` does, unbinds
+        // the sounds the scene loaded with, and nothing after this puts them back.
         std::vector<DrivenBody> added;
         createColliderBodies(m.firstCollider, m.colliderCount, added);
 
@@ -922,17 +920,16 @@ void Engine::initAudio() {
     acfg.occlusionAttack = setup.audio.occlusion.attack;
     acfg.occlusionRelease = setup.audio.occlusion.release;
     acfg.occlusionRayMargin = setup.audio.occlusion.rayMargin;
-    // Folded from the same expression as `acfg.occlusion`, so the sweep and the filter cannot
-    // disagree about `--no-occlusion`.
-    sim.occlusion = acfg.occlusion;
-    sim.occlusionMargin = setup.audio.occlusion.rayMargin;
     for (const GameSetup::Audio::Bus& b : setup.audio.buses) {
         acfg.buses.push_back({b.name, b.volume, b.duckedBy, b.duckAmount, b.duckAttack, b.duckRelease});
     }
 
-    if (!audioEngine.init(acfg)) return;
+    // The sweep reads `occlusion` and `occlusionRayMargin` back off this config rather than
+    // being handed a second copy, so `--no-occlusion` cannot switch off the filter and leave
+    // the raycast running.
+    if (!modules::audio->init(acfg)) return;
 
-    for (const scene::AudioSourceDesc& desc : sceneData.audioSources()) (void)audioEngine.create(desc);
+    for (const scene::AudioSourceDesc& desc : sceneData.audioSources()) modules::audio->create(desc);
 
     for (const GameSetup::Audio::Source& s : setup.audio.sources) {
         scene::AudioSourceDesc desc;
@@ -953,24 +950,24 @@ void Engine::initAudio() {
         for (uint32_t i = 0; i < 3; ++i) {
             if (s.load == scene::audioLoadName(static_cast<scene::AudioLoad>(i))) desc.load = static_cast<scene::AudioLoad>(i);
         }
-        (void)audioEngine.create(desc);
+        modules::audio->create(desc);
     }
 
-    if (!audioEngine.empty()) {
+    const modules::Audio::Stats a = modules::audio->stats();
+    if (a.sources > 0) {
         core::Logger::status(core::LogCategory::Audio, "Audio: %u sources (%u streamed, %u decoded costing %.1f MiB), %u buses",
-                       audioEngine.sourceCount(), audioEngine.streamedCount(), audioEngine.decodedCount(),
-                       static_cast<double>(audioEngine.decodedBytes()) / (1024.0 * 1024.0), audioEngine.busCount());
-        for (uint32_t slot = 0; slot < audioEngine.sourceCount(); ++slot) {
-            const scene::SoundId id = audioEngine.soundAt(slot);
-            if (!id.valid()) continue;
-            core::Logger::debug(core::LogCategory::Audio, "  %-20s %-8s %6.1fs  bus=%-10s %s", audioEngine.source(id).name.c_str(),
-                          audioEngine.sourceStreamed(id) ? "stream" : "decode",
-                          static_cast<double>(audioEngine.sourceSeconds(id)), audioEngine.source(id).bus.c_str(),
-                          audioEngine.source(id).spatial ? "spatial" : "bed");
+                       a.sources, a.streamed, a.decoded,
+                       static_cast<double>(a.decodedBytes) / (1024.0 * 1024.0), a.buses);
+        for (uint32_t slot = 0; slot < a.sources; ++slot) {
+            modules::Audio::Source s;
+            if (!modules::audio->sourceAt(slot, &s)) continue;
+            core::Logger::debug(core::LogCategory::Audio, "  %-20s %-8s %6.1fs  bus=%-10s %s", s.desc->name.c_str(),
+                          s.streamed ? "stream" : "decode", static_cast<double>(s.seconds), s.desc->bus.c_str(),
+                          s.desc->spatial ? "spatial" : "bed");
         }
     }
-    if (audioEngine.refusedSources() > 0) {
-        core::Logger::warn(core::LogCategory::Audio, "Audio: %u sources refused", audioEngine.refusedSources());
+    if (a.refused > 0) {
+        core::Logger::warn(core::LogCategory::Audio, "Audio: %u sources refused", a.refused);
     }
 }
 
@@ -996,23 +993,21 @@ bool Engine::startRecording(const std::filesystem::path& path) {
     options.path = path.empty() ? core::Resources(configData.record.file) : path;
     options.fps = configData.record.fps;
     options.windowSeconds = configData.record.seconds;
-    options.sampleRate = audioEngine.sampleRate();
-    options.channels = audioEngine.channelCount();
+    const modules::Audio::Stats a = modules::audio->stats();
+    options.sampleRate = a.sampleRate;
+    options.channels = a.channels;
 
-    core::AudioTap* tap = nullptr;
-    if (audioEngine.active()) {
-        // 1.0s of ring, 384 KiB: it only has to cover the gap between the audio thread
-        // producing and the worker draining. Sizing it to the recording window instead is
-        // hundreds of megabytes for a problem measured in milliseconds -- the encoder holds
-        // the recording, not this.
-        audioEngine.startCapture(1.0f);
-        tap = audioEngine.captureTap();
-    } else {
+    // 1.0s of ring, 384 KiB: it only has to cover the gap between the audio thread producing
+    // and the worker draining. Sizing it to the recording window instead is hundreds of
+    // megabytes for a problem measured in milliseconds -- the encoder holds the recording,
+    // not this.
+    core::AudioTap* tap = modules::audio->startCapture(1.0f);
+    if (tap == nullptr) {
         core::Logger::warn(core::LogCategory::Render, "Record: audio is off, so the recording will be silent");
     }
 
     if (!render.startRecording(recorder, std::move(options), tap)) {
-        audioEngine.stopCapture();
+        modules::audio->stopCapture();
         return false;
     }
     return true;
@@ -1029,7 +1024,7 @@ std::filesystem::path Engine::stopRecording() {
     const std::filesystem::path written = recorder.stop();
     // After the join inside `stop()`, never before: the worker is reading the tap until it
     // returns, and taking the ring out from under it is a use-after-free.
-    audioEngine.stopCapture();
+    modules::audio->stopCapture();
     return written;
 }
 
@@ -1113,8 +1108,12 @@ void Engine::createColliderBodies(uint32_t firstCollider, uint32_t colliderCount
         // Characters are skipped here instead -- `CharacterVirtual` is not in the broad phase,
         // so it can never be what an occlusion ray hit.
         if (!isCharacter) {
-            for (uint32_t sIdx = 0; sIdx < audioEngine.sourceCount(); ++sIdx) {
-                if (audioEngine.source(audioEngine.soundAt(sIdx)).node == desc.node) sourceBody[sIdx] = body;
+            const uint32_t sources = modules::audio->stats().sources;
+            for (uint32_t sIdx = 0; sIdx < sources; ++sIdx) {
+                modules::Audio::Source src;
+                if (modules::audio->sourceAt(sIdx, &src) && src.desc->node == desc.node) {
+                    modules::audio->setSourceBody(sIdx, body);
+                }
             }
         }
         if (desc.motion == scene::ColliderMotion::Static) continue;
@@ -1157,12 +1156,13 @@ uint32_t Engine::bindDrivenNodes(const std::vector<DrivenBody>& added, const std
         // the mesh above is the whole reason both exist: a sound's position is not compared
         // byte for byte by anything, so it can afford the decomposition a rendered transform
         // cannot.
-        for (uint32_t sIdx = 0; sIdx < audioEngine.sourceCount(); ++sIdx) {
-            const scene::SoundId sound = audioEngine.soundAt(sIdx);
-            if (!sound.valid() || audioEngine.source(sound).node != a.node) continue;
-            const scene::NodeId soundNode = sceneTree.create(audioEngine.source(sound).name, bodyNode);
-            sceneTree.setLocalTransform(soundNode, restInverse * audioEngine.source(sound).transform);
-            sceneTree.attachSound(soundNode, sound);
+        const uint32_t sources = modules::audio->stats().sources;
+        for (uint32_t sIdx = 0; sIdx < sources; ++sIdx) {
+            modules::Audio::Source src;
+            if (!modules::audio->sourceAt(sIdx, &src) || src.desc->node != a.node) continue;
+            const scene::NodeId soundNode = sceneTree.create(src.desc->name, bodyNode);
+            sceneTree.setLocalTransform(soundNode, restInverse * src.desc->transform);
+            sceneTree.attachSound(soundNode, src.id);
         }
     }
     return drivenNodes;
@@ -1206,7 +1206,7 @@ void Engine::initPhysics() {
 
     // Rebuilt, not appended to: this walks the whole collider table, so anything a previous
     // scene authored is naming a character that no longer exists.
-    sourceBody.assign(audioEngine.sourceCount(), scene::BodyId{});
+    modules::audio->clearSourceBodies();
     authored.clear();
 
     std::vector<DrivenBody> added;
@@ -1536,12 +1536,12 @@ bool Engine::beginFrame() {
     //
     // Runs before `Game::frameUpdate`, so a game placing listener 0 itself is overwritten
     // unless it clears `listenerFollowsCamera`. Listener 0 only; the rest are the game's.
-    if (audioEngine.active() && setup.audio.listenerFollowsCamera) {
+    if (modules::audio->stats().active && setup.audio.listenerFollowsCamera) {
         const glm::vec3 eye = camera().position();
         const glm::vec3 toFocus = camera().focus - eye;
         const float reach = glm::length(toFocus);
-        audioEngine.setListener(eye, reach > 1e-4f ? toFocus / reach : glm::vec3(0.0f, 0.0f, -1.0f),
-                                glm::vec3(0.0f, 1.0f, 0.0f));
+        modules::audio->setListener(eye, reach > 1e-4f ? toFocus / reach : glm::vec3(0.0f, 0.0f, -1.0f),
+                                    glm::vec3(0.0f, 1.0f, 0.0f));
     }
 
     // Per frame, and deliberately **not** scaled by `dt`: frame 60 has to be the same frame
@@ -1723,7 +1723,7 @@ void Engine::endFrame() {
         scene::SceneTargets targets;
         targets.instances = &instanceTable;
         targets.lights = &render.lights;
-        targets.audio = &audioEngine;
+        targets.soundTransform = modules::audio->sourceTransforms();
         targets.physics = &physicsWorld;
         targets.emitterTransform = modules::particles->emitterTransforms();
         targets.alpha = alpha;
@@ -1740,7 +1740,7 @@ void Engine::endFrame() {
     core::Profiler::counter("droppedSteps", simClock.droppedSteps());
     core::Profiler::counter("bodies", physicsWorld.bodyCount());
     core::Profiler::counter("particles", modules::particles->frame().alive);
-    core::Profiler::counter("audioSources", audioEngine.sourceCount());
+    core::Profiler::counter("audioSources", modules::audio->stats().sources);
     core::Profiler::counter("nodes", sceneTree.liveCount());
 
     // On change only -- a warning at 60 Hz drowns the log it is trying to appear in.
@@ -1763,16 +1763,19 @@ void Engine::endFrame() {
     // One line from each listener to each source, green when heard clear and red when fully
     // occluded. Every listener, because with two the question is which ears a source is
     // behind a wall from.
-    if (audioDebugDraw && audioEngine.active() && !audioEngine.empty()) {
-        auto s = core::Profiler::scope("audioDebugDraw");
-        for (uint32_t slot = 0; slot < audioEngine.sourceCount(); ++slot) {
-            const scene::SoundId i = audioEngine.soundAt(slot);
-            if (!i.valid() || !audioEngine.source(i).spatial) continue;
-            const float blocked = audioEngine.occlusion(i);
-            const uint32_t color = gfx::packDebugColor({blocked, 1.0f - blocked, 0.15f, 1.0f});
-            for (uint32_t ears = 0; ears < audioEngine.listenerCount(); ++ears) {
-                render.debugLines.push_back({audioEngine.listenerPosition(ears), color});
-                render.debugLines.push_back({audioEngine.sourcePosition(i), color});
+    if (audioDebugDraw) {
+        const modules::Audio::Stats mix = modules::audio->stats();
+        if (mix.active && mix.sources > 0) {
+            auto s = core::Profiler::scope("audioDebugDraw");
+            for (uint32_t slot = 0; slot < mix.sources; ++slot) {
+                modules::Audio::Source src;
+                if (!modules::audio->sourceAt(slot, &src) || !src.desc->spatial) continue;
+                const float blocked = src.occlusion;
+                const uint32_t color = gfx::packDebugColor({blocked, 1.0f - blocked, 0.15f, 1.0f});
+                for (uint32_t ears = 0; ears < mix.listeners; ++ears) {
+                    render.debugLines.push_back({modules::audio->listenerPosition(ears), color});
+                    render.debugLines.push_back({src.position, color});
+                }
             }
         }
     }
@@ -2285,12 +2288,12 @@ void Engine::teardown() {
     // still open, so `stop()` runs unconditionally as well. Both lines are no-ops otherwise.
     if (recorder.active()) core::Logger::status(core::LogCategory::Render, "Record: finishing the file");
     recorder.stop();
-    audioEngine.stopCapture();
+    modules::audio->stopCapture();
 
     // Explicit, and before the GPU teardown: a streamed voice is a file handle and a decode
     // job, neither of which the device knows about. Left to the destructor it would run after
     // the members below.
-    audioEngine.shutdown();
+    modules::audio->shutdown();
 
     // Sprites first, because they name image slots: the other order leaves sprites resolving
     // handles against a table that has already given up.
