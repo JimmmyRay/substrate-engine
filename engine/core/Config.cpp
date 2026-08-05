@@ -296,6 +296,8 @@ bool Config::applyCommandLine(int argc, char** argv, int& exitCode) {
             render.validation = Tristate::On;
         } else if (arg == "--headless") {
             window.headless = true;
+        } else if (arg == "--windowed") {
+            window.windowed = true;
         } else if (arg == "--camera") {
             // All six or none: accepting five would start from a camera five-sixths of what
             // was asked for and reproduce something other than the thing being reported.
@@ -499,7 +501,8 @@ bool Config::applyCommandLine(int argc, char** argv, int& exitCode) {
                 "  --no-occlusion           disable two-pass Hi-Z occlusion culling (C11)\n"
                 "  --no-lod                 draw every mesh at LOD 0 (C17)\n"
                 "  --sync-validation        add synchronization validation (implies --validation on)\n"
-                "  --headless               create the window unmapped (pairs with --frames)\n"
+                "  --headless               create the window unmapped\n"
+                "  --windowed               map it anyway: --frames implies --headless without this\n"
                 "  --camera <fx,fy,fz,yaw,pitch,dist>  start where the overlay's cam line says\n"
                 "  --camera-spin <degrees>       yaw this many degrees per frame, for repeatable motion\n"
                 "  --input-script <steps>   press actions on stated frames, e.g.\n"
@@ -588,6 +591,14 @@ bool Config::applyCommandLine(int argc, char** argv, int& exitCode) {
     // so leaving it on makes every golden capture differ in the same corner regardless of
     // what the renderer did.
     if (benchmark.captureFrame != 0 && !overlayNamed) render.debugOverlay = false;
+
+    // A frame budget already sets `GLFW_FOCUSED` and `GLFW_FOCUS_ON_SHOW` false, and that
+    // does not bind a window manager configured to focus whatever it maps -- so a harness
+    // run took the keyboard whenever a caller forgot `--headless`, and every caller had to
+    // remember it separately. Unmapping on the same signal is what removes the discipline.
+    // `--record` is the one thing a frame budget can legitimately want a swapchain for,
+    // since `startRecording` refuses a headless run.
+    if (benchmark.exitAfterFrames != 0 && !window.windowed && !record.enabled) window.headless = true;
 
     return true;
 }

@@ -402,6 +402,41 @@ TEST_F(ConfigTest, EveryRemainingRowsModuleIsOneOfTheEightThatSurvivedTheAudit) 
     }
 }
 
+TEST_F(ConfigTest, AFrameBudgetUnmapsTheWindowAndThreeThingsOptOut) {
+    // Deleting any arm of this leaves a harness able to take the keyboard off whoever is
+    // working, in a run that reports nothing wrong -- which is how it was found.
+    {
+        Config cfg;
+        int exitCode = -1;
+        Argv args({"substrate", "--frames", "60"});
+        ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
+        EXPECT_TRUE(cfg.window.headless);
+    }
+    {
+        Config cfg;
+        int exitCode = -1;
+        Argv args({"substrate", "--frames", "60", "--windowed"});
+        ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
+        EXPECT_FALSE(cfg.window.headless);
+    }
+    {
+        // `startRecording` refuses a headless run, so implying it here would turn every
+        // recorded benchmark into an error message and an empty file.
+        Config cfg;
+        int exitCode = -1;
+        Argv args({"substrate", "--frames", "60", "--record"});
+        ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
+        EXPECT_FALSE(cfg.window.headless);
+    }
+    {
+        Config cfg;
+        int exitCode = -1;
+        Argv args({"substrate"});
+        ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
+        EXPECT_FALSE(cfg.window.headless) << "an interactive run is untouched";
+    }
+}
+
 TEST_F(ConfigTest, AnAliasParsesAndIsCanonicalisedByTheFlagThatCarriesIt) {
     // The first entry naming a value is canonical, so an alias is an input spelling and
     // nothing downstream ever sees it. D12 had to say this about the *table*, because

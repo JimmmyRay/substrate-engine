@@ -52,6 +52,10 @@ struct Config {
     struct Window {
         /// `--headless`: create the window unmapped.
         bool headless = false;
+        /// `--windowed`: map the window even under a frame budget. Without it, `--frames`
+        /// implies `--headless` -- so a harness that forgets the flag cannot take the
+        /// keyboard off whoever is working while it runs.
+        bool windowed = false;
     } window;
 
     struct Scene {

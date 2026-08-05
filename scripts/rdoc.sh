@@ -110,7 +110,10 @@ capture)
     # SIGTERM specifically, per CLAUDE.md: the profiler's handler flushes the trace.
     export ENABLE_VULKAN_RENDERDOC_CAPTURE=1
     # shellcheck disable=SC2086
-    timeout -s TERM 300 ./run.sh "$CONFIG" -- \
+    # --windowed against the rule that a frame budget unmaps the window: RenderDoc hooks the
+    # present it is asked to capture, and this is the one harness whose output is a human
+    # opening the capture rather than a number.
+    timeout -s TERM 300 ./run.sh "$CONFIG" -- --windowed \
         --frames "$FRAMES" --rdoc-capture-frame "$FRAME" --rdoc-capture-path "$OUT" "$@"
 
     LATEST=$(ls -t debug_frames/rdoc/*.rdc 2>/dev/null | head -1 || true)
