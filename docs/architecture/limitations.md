@@ -1299,7 +1299,43 @@ duplicating it.
 
 ## What stays declined, and its trigger — the game arc
 
-### Selectable subsystems: a game still links every one of them
+### Selectable subsystems: a game links what it names
+
+**This section records a refusal that has since been reversed, and it is kept because the
+measurements in it are still true and still the reason to be sceptical of the next version
+of the idea.** G10 was opened to make a game link only the subsystems it names and closed by
+declining the mechanism; `engine/Modules.h` and `scripts/check_layers.sh` did it anyway, and
+the four measurements below are what the design had to answer rather than ignore. What
+changed is not the arithmetic — a game that draws one settings panel still carries most of
+what the demo carries, because the linker flag in measurement 2 had already taken the large
+share — but the *cost*, which turned out to be a null base class and a pointer per module
+rather than the slot table the card imagined.
+
+Two of the five things that "stay refused whatever the trigger" below are now built, and
+both are answered on the terms they were refused on:
+
+- **Registration in a module's header** was refused because "any transitive include would
+  relink the dependency the registration exists to avoid". That is exactly right, which is
+  why registration lives in the module's `.cpp` and never its header, and why
+  `check_layers.sh` fails the build on a cluster file including a module. The guard is what
+  makes the refusal unnecessary rather than what ignores it.
+- **A virtual interface per subsystem** was refused as "indirection between the engine and
+  its own parts", against the `Game` argument about one crossing at the edge. The
+  distinction that survives is *where the seam is*: `Engine.cpp` is in every binary, so a
+  call it makes by name is a subsystem every game links, and that makes it an edge rather
+  than an interior. `Engine::physics()` is still a reference that exists and never a cast
+  off a null pointer — the base class is the do-nothing implementation, so a game that
+  links no physics runs against it and no call site tests for null. What stays refused, on
+  the same terms as before, is a *common* base with a virtual `update()`.
+
+The three triggers below were also the wrong shape: none of them fired. What actually
+reopened it was the third one turned inside out — not a second engine-side consumer wanting
+a slot table, but five subsystems that could not answer "which module is this in?" without
+someone reading includes.
+
+---
+
+**The original refusal, as written, follows.**
 
 **G10 was opened to make a game link only the subsystems it names, and closed by declining
 the mechanism.** The want is real and the numbers below are the reason it is not worth what

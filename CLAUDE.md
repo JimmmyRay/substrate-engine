@@ -89,11 +89,23 @@ validation works however the binary is launched.
 ## No abstraction layers over Vulkan
 
 Substrate targets Vulkan and only Vulkan. Passes record their own commands inline and
-call `vkCmd*` directly. `engine/` defines exactly **three** base classes: `PhysicsDebugRenderer`,
-because Jolt's API demands an override; `Game`, because a game has to be called into somehow;
-and `scene::Camera`, because a camera controller is policy about input and the engine must not
-assert one. All three sit at an edge, and none is in `engine/gfx/` — **a base class inside
-`engine/gfx/` is still the thing to stop.**
+call `vkCmd*` directly. `engine/` defines base classes at **three edges and one seam**, and
+nowhere else:
+
+- `PhysicsDebugRenderer`, because Jolt's API demands an override.
+- `Game`, because a game has to be called into somehow.
+- `scene::Camera`, because a camera controller is policy about input and the engine must
+  not assert one.
+- One per module in `engine/Modules.h`, because `Engine.cpp` is in every binary and a call
+  it makes by name is a subsystem every game links. The base class *is* the do-nothing
+  implementation, so a game that links no physics runs against `modules::Physics` itself
+  and no call site needs an `if`. **The seam is `Engine.cpp` and only `Engine.cpp`** —
+  adding an interface for anything else is the same mistake in a new place.
+
+None is in `engine/gfx/` — **a base class inside `engine/gfx/` is still the thing to
+stop** — and none of them is a *common* base with a virtual `update()`. The frame order
+stays the visible sequence in `Simulation::step` rather than a container's iteration
+order.
 
 **Do not build:**
 

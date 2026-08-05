@@ -577,9 +577,32 @@ somebody made and did not.
 
 ### Namespaces
 
-**A namespace names a module, a module is a directory under `engine/`, and there are
-four**: `core`, `gfx`, `scene`, `ui`. `gfx/` and `ui/` are already exactly this and are the
-model.
+**A namespace names a directory under `engine/`**, and the directories fall into three
+tiers that `scripts/check_layers.sh` holds and the build enforces:
+
+```
+core                                 -> (nothing)
+gfx scene ui sim root                -> core, and each other
+ai nav particles physics audio anim  -> core, the engine cluster
+```
+
+**A module is exactly what `root` cannot reach.** That is the whole definition, and the
+tiers follow from it: anything `Engine.h` reaches is bidirectionally coupled with it and
+*is* the engine, so `gfx`, `scene`, `ui` and `sim` are one cluster with `root` rather than
+four layers stacked on each other — which is what "there are four" used to say, and it
+described an intent the includes never had. Two rules come out of it:
+
+1. **Nothing in `core` or the engine cluster may name a module.** That is the point of the
+   whole arrangement — see "Engine and game separation" for why an object file every game
+   links is what decides what every game carries.
+2. **No module may name another module.** Where two appear to need each other, what they
+   share is *description*, and description belongs in `scene/` beside `Collider.h`,
+   `AudioSource.h`, `ParticleEmitter.h`, `AnimationRig.h`, `CharacterMotion.h` and
+   `Body.h`, which are all exactly that split.
+
+The guard fails the build on an edge running the wrong way, and its `ACCEPTED` list —
+the exceptions it was baselined with — has been empty since the second phase of the
+migration that introduced it.
 
 A finer namespace nested inside is allowed where one header owns a vocabulary that would
 otherwise collide on common words — `core::settings`, `core::options`, `core::input`,

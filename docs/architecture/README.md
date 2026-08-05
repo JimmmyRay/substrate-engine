@@ -3,9 +3,10 @@
 Substrate is a Vulkan 1.3 deferred PBR game engine. It loads glTF, shades it with
 per-sample MSAA or TAA, simulates rigid bodies and characters, mixes spatial audio, and
 draws an immediate-mode interface over the result — in about 26,300 lines of `engine/`, with
-**three base classes and two templates**: one because Jolt's API demands an override, one
-because a game has to be called into somehow, and one because a camera controller is policy
-about input and the engine should not assert one.
+**three base classes at the edges, one interface per module, and two templates**. The three:
+Jolt's API demands an override, a game has to be called into somehow, and a camera controller
+is policy about input the engine should not assert. The interfaces are what keep `Engine.cpp`
+from naming a subsystem, and each is its own do-nothing implementation.
 
 This directory replaces the roadmap that built it. The roadmap was a plan; these are the
 answers it arrived at. Where a decision was made *against* an obvious alternative, the
@@ -41,16 +42,27 @@ engine/                the engine. Builds to a static library. Knows of no game.
   +-- gfx/          namespace gfx. Vulkan: Renderer, VulkanContext, Swapchain, Pipeline,
   |                 Resources (GPU buffers and images), FrameCapture, AccelStruct,
   |                 SpirvReflect, Ktx2, Light, GpuProfiler
-  +-- scene/        namespace scene. Content and simulation: InstanceTable, GltfScene,
-  |                 Camera (a pose and a projection) and CameraControllers (FlyCamera,
-  |                 which a game installs or does not), Animation, ParticleSystem, Physics, Collider, Audio,
-  |                 AudioSource, SceneTypes (the plain data), SceneData (C15's sidecar),
-  |                 MeshLod (C17's chains and the coverage arithmetic),
-  |                 SpatialIndex (C9's BVH), SpriteTable (P4's layers and order)
+  +-- scene/        namespace scene. Content, and the description a document authors:
+  |                 InstanceTable, GltfScene, Scene, Simulation, Camera (a pose and a
+  |                 projection) and CameraControllers, SceneTypes (the plain data),
+  |                 SceneData (C15's sidecar), MeshLod (C17's chains and the coverage
+  |                 arithmetic), SpatialIndex (C9's BVH), SpriteTable (P4's layers and
+  |                 order), and one description header per module: Collider, AudioSource,
+  |                 ParticleEmitter, AnimationRig, CharacterMotion, Body, Cloth
   +-- core/         namespace core. Config, Logger, Profiler, Resources (a file on disk --
-  |                 unrelated to gfx/Resources, see below), Handle, AudioTap, Recorder,
-  |                 and the four nested vocabularies core::{settings,options,input,json}
+  |                 unrelated to gfx/Resources, see below), Handle, Slot, Clip, AudioTap,
+  |                 Recorder, and the four nested core::{settings,options,input,json}
   +-- ui/           namespace ui. Ui, Font, FontMetrics, BindingMenu, Inspector
+  +-- Modules.h     one interface per module, each one its own null implementation
+  |
+  |                 the modules -- what root cannot reach, and what a game links by
+  |                 naming it:
+  +-- physics/      namespace physics. PhysicsWorld, ClothSystem
+  +-- audio/        namespace audio. AudioEngine
+  +-- anim/         namespace anim. SceneAnimator, LocomotionDriver
+  +-- particles/    namespace particles. ParticleSystem
+  +-- nav/          namespace nav. NavMesh
+  +-- ai/           namespace ai. Planner
   +-- shaders/      every .vert/.frag/.comp the engine compiles, and the .glsl they share
   +-- assets/       Sponza and the three scenes scripts/golden.sh pins. Gitignored.
 
@@ -64,11 +76,22 @@ tests/              the unit suite. Links the hosted sources only; never touches
 
 Three properties of that layout are load-bearing rather than tidy:
 
-**`gfx/` depends on nothing above it.** The renderer receives a `const GltfScene*`, an
-`InstanceTable*`, a `SceneAnimator*` and two plain vertex vectors (`debugLines`,
-`overlayLines`) plus a `DrawList*`. Physics reaches the renderer through
-`gfx/DebugLines.h`, a header of sixteen bytes that exists so that neither Jolt reaches the
-renderer nor Vulkan reaches the physics world. Audio never reaches it at all.
+**A module is what `root` cannot reach, and the build says so.** `scripts/check_layers.sh`
+holds three tiers — `core`, then the engine cluster `gfx scene ui sim root`, then the
+modules — and fails the build on an include running the wrong way. The cluster is one node
+rather than four layers because anything `Engine.h` reaches is bidirectionally coupled with
+it and *is* the engine; "`gfx/` depends on nothing above it" is what this line used to say,
+and it described an intent the includes never had. The rules are that nothing in `core` or
+the cluster may name a module, and that no module may name another; where two modules
+appear to need each other, what they share is description and it stays in `scene/`.
+
+The renderer therefore receives spans and PODs rather than subsystems — `gfx::SkinCharacter`,
+`gfx::DeformedMesh`, `gfx::ParticleFrame` — and physics reaches it through `gfx/DebugLines.h`,
+sixteen bytes that exist so neither Jolt reaches the renderer nor Vulkan the physics world.
+Audio never reaches it at all. **This is a link-time property, not a tidiness one**: the
+guard is what keeps `Engine.cpp` — an object file every binary carries — from naming a
+subsystem and pulling it into games that never asked for one. See "Engine and game
+separation" in [principles.md](principles.md).
 
 **The hosted set is a real boundary, and nothing writes it down.** `CMakeLists.txt` globs
 every `.cpp` under `engine/` into one static library and names no file. The unit suite,
@@ -86,14 +109,27 @@ leaking from a game into `engine/` becomes a link error rather than a code revie
 directory's CMake cache, which is why `run.sh`, `golden.sh` and `baseline.py` all kept
 the signatures they had when the binary moved.
 
-That check is about direction, not about size, and G10 is where the difference was measured
-rather than assumed: **every game links every subsystem, and a game that uses none of them
-is 97.8% the size of the demo that uses all of them.** `Engine.cpp.o` is what pulls them —
-it is in every game and it names them all — and the mechanism that would have changed it was
-declined with its numbers and its triggers in
-[limitations.md](limitations.md#what-stays-declined-and-its-trigger--the-game-arc). What
-holds today is one rung down: `Engine`'s constructor and destructor are out of line, so
-`Entry.cpp.o` and a game's own translation units name no subsystem type.
+That check is about direction, and G10 measured what direction alone did not buy: **every
+game linked every subsystem, and a game using none of them was 97.8% the size of the demo
+using all of them.** G10 was right about the cause and declined the fix — `Engine.cpp.o` is
+in every game and it named them all, so the linker pulled Jolt, miniaudio and the rest into
+binaries that never asked for them.
+
+That is what `engine/Modules.h` closes. `Engine.cpp` calls `modules::physics->step(dt)`
+through a pointer that starts at a do-nothing base, so it makes no call by name and pulls
+nothing; the real subsystem arrives only because a module's own translation unit defines
+`Engine::physics()`, and a game naming that accessor is the undefined symbol that drags it
+out of the archive. **A game links what it names and nothing else.**
+
+The honest witness for it is `nav`, not `viewer`. All thirteen golden cases are `viewer`
+runs, so `viewer` deliberately names particles, audio, animation and physics — otherwise
+those cases would render nothing and pass. `nav` is the module the golden set does not
+need:
+
+```
+nm -C build/release/viewer       | grep -c nav::   ->    0
+nm -C build/release/battle_arena | grep -c nav::   ->   43
+```
 
 ## What it does
 

@@ -287,6 +287,46 @@ binary is launched.
 `scripts/check_ascii.sh` runs every build over `engine/`, `game/` and `tests/`, skipping `assets/` in each. It exists
 because a stray non-English word reached a source comment and was only caught by eye.
 
+### The layer guard
+
+`scripts/check_layers.sh` runs every build beside the ASCII guard, walks every quoted
+`#include` under `engine/`, and fails on one running the wrong way. It exists because
+`core/Config.h` grew an include of `gfx/` and another of `scene/`, two layers above it, and
+nothing said so for as long as it compiled — the rule was written in `principles.md` and
+checked nowhere.
+
+`--table` prints the graph, which is two lists rather than a row per directory, because two
+lists is what the definition is:
+
+```
+core                                 -> (nothing)
+gfx scene ui sim root                -> core, and each other
+ai nav particles physics audio anim  -> core, the engine cluster
+```
+
+The cluster is **one node**, not four layers — anything `root` reaches is bidirectionally
+coupled with it and *is* the engine — so `gfx -> scene` is a self-edge rather than a cycle,
+while `core -> anything` and `cluster -> module` both fail. The tier table is checked for
+cycles before a single file is read, because a cycle written into it would make every
+include legal and the script would pass by saying nothing. A directory in neither list, and
+not `core`, is an error rather than a pass, so a new directory has to be classified
+deliberately.
+
+**`ACCEPTED` is the ratchet.** It lists edges the guard was baselined with, each as
+`<path>:<from>-><to>` without a line number, so an accepted edge survives its file being
+reformatted. The guard fails on anything not in the list *and* on a list entry that stops
+matching — so the count can fall and cannot rise, and an exception cannot outlive the edge
+it excused. It held two entries when it landed, `core/Config.h`'s two, and has been empty
+since they were closed.
+
+What the guard buys is a link-time property rather than a tidiness one: `Engine.cpp.o` is
+in every binary, so a subsystem it names is a subsystem every game links. The interfaces in
+`engine/Modules.h` are how the engine reaches a module without naming it, and the guard is
+what stops the next include from quietly undoing that. Its own failure modes were checked
+by hand rather than assumed — a cluster-to-module include, `core` reaching anything, a
+module naming another module, a stale `ACCEPTED` entry, an unclassified directory, and a
+cycle in the table.
+
 ### The cloth pin check
 
 `scripts/check_pins.py <scene.gltf|scene.glb>` reads an export and refuses one that does
@@ -1248,9 +1288,14 @@ Sponza at 4x: `Lighting` 1.870 against 1.843 windowed, `GBuffer` 0.472 against 0
 0.009 either way. `-- --windowed` puts the window back for watching a run.
 
 The engine holds the second half of that rule itself: **a run with `--frames N` never asks for
-focus.** A frame budget is what every harness passes and nothing interactive does, so it is the
-signal to set `GLFW_FOCUSED` and `GLFW_FOCUS_ON_SHOW` false. It does not *bind* a window manager
-configured to focus whatever it maps, which is why the harnesses pass `--headless` as well.
+focus, and no longer maps a window at all.** A frame budget is what every harness passes and
+nothing interactive does, so it is the signal to set `GLFW_FOCUSED` and `GLFW_FOCUS_ON_SHOW`
+false — and those hints do not *bind* a window manager configured to focus whatever it maps,
+so for a while every caller had to remember `--headless` separately and two of them did not.
+`--frames` now implies `--headless`, which is what removes the discipline: forgetting the flag
+can no longer cost the keyboard. `--windowed` is the opt-out, and `--record` is exempt, since
+`startRecording` refuses a headless run. `scripts/rdoc.sh` is the one harness that passes
+`--windowed`, because RenderDoc hooks the present it captures.
 
 ### `--zones` reports both sides, and for two years it reported one
 
