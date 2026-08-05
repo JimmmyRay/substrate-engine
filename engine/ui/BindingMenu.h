@@ -8,30 +8,19 @@
 namespace ui {
 
 /**
- * @brief The on-screen rebinder (S1.4), and the engine's first text field (S1.5).
+ * @brief The on-screen rebinder, and the engine's first text field.
  *
- * Tab opens a list of every declared action with its current bindings. Up/Down move
- * the selection, Enter arms a capture -- the next control pressed becomes the
- * binding -- F5 restores the default, and F2 writes the changed ones to the config
- * file so the rebind survives a restart. Typing filters the list.
+ * Up/Down move the selection, Enter arms a capture -- the next control pressed becomes the
+ * binding -- F5 restores the default, F2 writes the changed rows to the config file, and typing
+ * filters the list.
  *
- * It produces *lines of text*, not draw calls: the caller hands `lines()` to the
- * renderer's overlay. That keeps every decision here -- what is selected, what the
- * filter matches, what the capture is waiting for -- testable without a device, and
- * it is why this file sits in `SUBSTRATE_HOSTED_SOURCES` despite living under `ui/`.
+ * Produces lines of text, not draw calls. Reach for a device from here and this file leaves
+ * `SUBSTRATE_HOSTED_SOURCES` and stops being testable without one.
  *
- * **While the menu is open, the keyboard belongs to it.** That is exactly what text
- * mode means, so the menu's own controls are read as raw keys rather than as bound
- * actions: nothing else can be listening, and menu keys in the binding list would be
- * a list of things you must not rebind. The single exception is the key that opens
- * and closes it, which is an action (`Menu.Bindings`), is rebindable, and is exempt
- * from text mode -- a key that dismisses a text field cannot be disabled by the field
- * being open.
- *
- * **Scale: generalized.** The list is every action the map holds, whatever that
- * number becomes; `visibleRows` pages through it and the header states the range, so
- * a build with two hundred actions shows twelve and says so rather than showing the
- * first twelve as if they were all of them.
+ * While the menu is open the keyboard belongs to it, so its own controls are read as raw keys
+ * rather than bound actions -- bind them and they become a list of things a player must not
+ * rebind. `Menu.Bindings` is the exception and is exempt from text mode: a key that dismisses a
+ * text field cannot be disabled by the field being open.
  */
 class BindingMenu {
   public:
@@ -51,9 +40,8 @@ class BindingMenu {
     /// Empty when closed, which is what tells the renderer there is nothing to draw.
     [[nodiscard]] const std::vector<std::string>& lines() const { return rendered; }
 
-    /// Config file F2 writes to. The one the run was launched with, so a rebind lands
-    /// in the file that produced it rather than in whatever `substrate.json` is next
-    /// to the working directory.
+    /// Config file F2 writes to. Must be the one the run was launched with, or a rebind lands
+    /// in whatever `substrate.json` sits beside the working directory.
     std::string configPath = "substrate.json";
     /// Action rows on screen at once. The rest are a page away, not missing.
     uint32_t visibleRows = 12;

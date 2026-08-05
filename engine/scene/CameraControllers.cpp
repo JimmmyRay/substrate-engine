@@ -20,18 +20,15 @@ constexpr float kQuarterTurn = 1.57079633f;
 } // namespace
 
 void FlyCamera::activate(core::input::InputMap& map) {
-    // The pad half is bound alongside the keyboard half rather than added later: an
-    // action with two sources is what stops the gamepad becoming a second input path,
-    // and writing it down here is the cheapest moment to prove that works.
+    // The pad half is bound alongside the keyboard half: one action with two sources is
+    // what stops the gamepad becoming a second input path.
     actions.forward = map.declare("Camera.Forward", "W Pad.LeftY-");
     actions.back = map.declare("Camera.Back", "S Pad.LeftY+");
     actions.left = map.declare("Camera.Left", "A Pad.LeftX-");
     actions.right = map.declare("Camera.Right", "D Pad.LeftX+");
-    // E and Q, and Space belongs to neither. `update` reads `up` unconditionally while a
-    // game reads its jump only when a player character exists -- so Space on both meant
-    // one press flew the camera *and* jumped, in a scene whose own HUD said "space=jump".
-    // `InputMap::conflicts` is what said so; the asymmetry with `down`, which never had a
-    // second key, is what it had looked like beforehand.
+    // E and Q, and Space belongs to neither: `update` reads `up` unconditionally while a
+    // game reads its jump only when a player character exists, so Space on both makes one
+    // press fly the camera *and* jump.
     actions.up = map.declare("Camera.Up", "E Pad.RightTrigger+");
     actions.down = map.declare("Camera.Down", "Q Pad.LeftTrigger+");
     actions.fast = map.declare("Camera.Fast", "LeftShift RightShift Pad.RightBumper");
@@ -55,26 +52,20 @@ void FlyCamera::deactivate(core::input::InputMap& map) {
 }
 
 void FlyCamera::update(const core::input::InputMap& in, float dt) {
-    // ------------------------------------------------------------------- the pointer
     // **The ask, not the platform call.** `Engine` applies the cursor mode from
-    // `mouseGrabbed()` *after* this runs, so a camera that takes no input grabs nothing --
-    // which is the whole reason the engine no longer asks a camera for its orbit action.
+    // `mouseGrabbed()` after this runs, so a camera that takes no input grabs nothing.
     if (in.held(actions.orbit)) {
         core::input::mouseGrab();
     } else {
         core::input::mouseRelease();
     }
 
-    // ------------------------------------------------------------------- look
     // Skipped on the frame the button went down: the pointer's travel while the button
     // was up is a position change, not a drag, and applying it snaps the view.
     if (in.held(actions.orbit) && !in.pressed(actions.orbit)) {
-        // The eye is held still and the focus swings around it -- a camera turning on
-        // the spot, not one flying around the focus. The state is still a focus, a
-        // distance and two angles, so this is where the two readings of that state part
-        // company: orbiting it rotates the scene in front of you, and everything nearer
-        // than the focus then parallaxes the wrong way, which is what made both axes
-        // feel inverted rather than only the one that was.
+        // The eye is held still and the focus swings around it -- a camera turning on the
+        // spot. Swinging the eye instead rotates the scene in front of you, and everything
+        // nearer than the focus parallaxes the wrong way, which reads as both axes inverted.
         const glm::vec3 eye = position();
 
         // Mouse right turns right, mouse down looks down. Screen-right is
@@ -86,20 +77,15 @@ void FlyCamera::update(const core::input::InputMap& in, float dt) {
         focus = eye + forward() * distance;
     }
 
-    // ------------------------------------------------------------------- zoom
     // Multiplicative, so zoom feels the same at every scale and never crosses zero.
     if (const double scroll = in.scrollDelta(); scroll != 0.0) {
         distance *= std::pow(zoomStep, static_cast<float>(scroll));
         distance = std::max(distance, nearPlane * 2.0f);
     }
 
-    // ------------------------------------------------------------------- move
-    // **Speed is the distance to the focus, not a field the scene sized.** `frameBounds`
-    // is the base's and knows how big the world is; this controller is not, and the
-    // distance it is already holding is the one number that says how big the thing being
-    // looked at is -- so crossing that gap takes about a second at full deflection, at any
-    // scale and after any dolly. `camera.moveSpeedScale` is the ratio a user has an
-    // opinion about, over the derived speed rather than as a second spelling of it.
+    // **Speed is the distance to the focus, not a field the scene sized.** That distance is
+    // the one number here that says how big the thing being looked at is, so crossing it
+    // takes about a second at full deflection, at any scale and after any dolly.
     float speed = std::max(distance, kMinSpeed) * moveSpeedScale;
     if (in.held(actions.fast)) speed *= 4.0f;
     if (in.held(actions.slow)) speed *= 0.25f;
@@ -108,9 +94,8 @@ void FlyCamera::update(const core::input::InputMap& in, float dt) {
     const glm::vec3 right = glm::normalize(glm::cross(fwd, glm::vec3(0.0f, 1.0f, 0.0f)));
     const glm::vec3 up(0.0f, 1.0f, 0.0f);
 
-    // Values rather than held flags, so a stick at a third of its travel moves at a
-    // third of the speed. A key reads back as exactly 1, which is what makes the
-    // keyboard path identical to what it was.
+    // Values rather than held flags, so a stick at a third of its travel moves at a third
+    // of the speed. A key reads back as exactly 1.
     glm::vec3 delta(0.0f);
     delta += fwd * (in.value(actions.forward) - in.value(actions.back));
     delta += right * (in.value(actions.right) - in.value(actions.left));
@@ -131,16 +116,13 @@ void FlyCamera::applySettings(const core::settings::Settings& settings) {
     zoomStep = settings.get(core::options::camera::zoomStep);
 }
 
-// ================================================================== FirstPersonCamera
-
 void FirstPersonCamera::activate(core::input::InputMap& map) {
     // Unbound on purpose -- see the row on `Actions::look`. `declare` is idempotent by
     // name, so a player who put a button on it keeps it across a re-install.
     actions.look = map.declare("Camera.Look");
-    // **The whole of the grab, and it is not conditional on anything.** A first-person view
-    // has nowhere for a cursor to be, and the deltas it turns on have to be able to run
-    // further than the screen is wide. `Engine` applies the ask after `update`, and the UI
-    // hands the pointer back on its own while a panel is open.
+    // Unconditional: a first-person view has nowhere for a cursor to be, and the deltas it
+    // turns on have to run further than the screen is wide. `Engine` applies the ask after
+    // `update`, and the UI hands the pointer back on its own while a panel is open.
     core::input::mouseGrab();
 }
 
@@ -162,12 +144,12 @@ void FirstPersonCamera::update(const core::input::InputMap& in, float /*dt*/) {
     distance = 0.0f;
 
     // An unbound row looks continuously; a bound one is hold-to-look. The frame the button
-    // went down is skipped for the reason `FlyCamera` skips it: the pointer's travel while
-    // it was up is a position change, not a turn, and applying it snaps the view.
+    // went down is skipped, as in `FlyCamera`: the pointer's travel while it was up is a
+    // position change, not a turn, and applying it snaps the view.
     const bool gated = !in.bindings(actions.look).empty();
     if ((!gated || in.held(actions.look)) && !in.pressed(actions.look)) {
-        // Mouse right turns right, mouse down looks down -- the same two negations
-        // `FlyCamera::update` derives, and for the same two reasons.
+        // Mouse right turns right, mouse down looks down -- the two negations
+        // `FlyCamera::update` derives.
         yaw -= static_cast<float>(in.cursorDeltaX()) * lookSensitivity;
         pitch =
             std::clamp(pitch - static_cast<float>(in.cursorDeltaY()) * lookSensitivity, -kPitchLimit, kPitchLimit);
@@ -189,19 +171,13 @@ void FirstPersonCamera::follow(const Scene* tree, NodeId node) {
     target = node;
 }
 
-// ================================================================== ThirdPersonCamera
-
 void ThirdPersonCamera::activate(core::input::InputMap& map) {
-    // The same name and the same default as `FlyCamera`'s, because it is the same verb.
-    // One row means a player who moved it keeps it across a switch between the two, which
-    // is what `declare` being idempotent by name is for.
+    // The same name and default as `FlyCamera`'s, so a player who moved it keeps it across
+    // a switch between the two.
     //
-    // **Middle, and not left or right.** Both of those are a game's to spend: a pointer over
-    // a 3D world is how a game selects, orders and attacks, and a camera that took the two
-    // obvious buttons would leave nothing for it. Left is also `Ui.Click`, and while
-    // `setPointerMode` makes that overlap correct rather than broken, correct-by-suppression
-    // is a worse answer than not colliding. `IsometricCamera`'s `Camera.Pan` still lists
-    // Middle; the two are never live together, because two camera controllers never are.
+    // **Middle, and not left or right.** Both of those are a game's to spend on selecting,
+    // ordering and attacking, and left is also `Ui.Click`. `IsometricCamera`'s `Camera.Pan`
+    // also lists Middle; two camera controllers are never live together.
     actions.orbit = map.declare("Camera.Orbit", "Mouse.Middle");
     if (continuousLook) core::input::mouseGrab();
 }
@@ -215,7 +191,6 @@ void ThirdPersonCamera::deactivate(core::input::InputMap& map) {
 }
 
 void ThirdPersonCamera::update(const core::input::InputMap& in, float /*dt*/) {
-    // ------------------------------------------------------------------- the pointer
     const bool looking = continuousLook || in.held(actions.orbit);
     if (looking) {
         core::input::mouseGrab();
@@ -223,30 +198,25 @@ void ThirdPersonCamera::update(const core::input::InputMap& in, float /*dt*/) {
         core::input::mouseRelease();
     }
 
-    // ------------------------------------------------------------------- orbit
-    // **The focus is held and the eye swings around it**, which is the opposite of
-    // `FlyCamera` and is what a camera pointed at a character has to do: the thing being
-    // looked at is the thing that must not move. Nothing has to be written for that --
-    // `position()` already derives the eye from the focus and the two angles -- so the
-    // whole difference between the two controllers is that this one does not put `focus`
-    // back afterwards.
+    // **The focus is held and the eye swings around it**, the opposite of `FlyCamera`:
+    // a camera pointed at a character must not move the thing being looked at. That falls
+    // out of `position()`, so the difference between the two controllers is only that this
+    // one does not put `focus` back afterwards.
     if (looking && !in.pressed(actions.orbit)) {
         yaw -= static_cast<float>(in.cursorDeltaX()) * orbitSensitivity;
         pitch =
             std::clamp(pitch - static_cast<float>(in.cursorDeltaY()) * orbitSensitivity, -kPitchLimit, kPitchLimit);
     }
 
-    // ------------------------------------------------------------------- zoom
-    // Multiplicative, so a notch feels the same at every distance, and clamped only here
-    // -- see `minDistance`.
+    // Multiplicative, so a notch feels the same at every distance, and clamped only here --
+    // see `minDistance`.
     if (const double scroll = in.scrollDelta(); scroll != 0.0) {
         distance = std::clamp(distance * std::pow(zoomStep, static_cast<float>(scroll)), minDistance, maxDistance);
     }
 
-    // ------------------------------------------------------------------- follow
     // **Read here rather than pushed in by the game**, because this runs before
     // `Game::frameUpdate` and a pushed position would be a frame stale. `focus` is written
-    // and `yaw` never is; see the class comment for why that direction is the whole design.
+    // and `yaw` never is -- see the class comment.
     if (tree != nullptr && tree->valid(target)) {
         focus = glm::vec3(tree->worldTransform(target)[3]) + glm::vec3(0.0f, heightOffset, 0.0f);
     }
@@ -262,18 +232,15 @@ void ThirdPersonCamera::follow(const Scene* tree, NodeId node) {
     target = node;
 }
 
-// ==================================================================== IsometricCamera
-
 IsometricCamera::IsometricCamera() {
-    // On the instance rather than asserted in `update`, because the projection mode is the
-    // camera's own state: installing another controller installs its mode with it and there
-    // is nothing to restore.
+    // On the instance, because the projection mode is the camera's own state: installing
+    // another controller installs its mode with it and there is nothing to restore.
     projectionMode = Projection::Orthographic;
 }
 
 void IsometricCamera::activate(core::input::InputMap& map) {
-    // The pan shares `FlyCamera`'s four names and their defaults -- it is the same verb on
-    // the same keys, moving the focus in a plane rather than in the view.
+    // Shares `FlyCamera`'s four names and defaults: the same verb on the same keys, moving
+    // the focus in a plane rather than in the view.
     actions.forward = map.declare("Camera.Forward", "W Pad.LeftY-");
     actions.back = map.declare("Camera.Back", "S Pad.LeftY+");
     actions.left = map.declare("Camera.Left", "A Pad.LeftX-");
@@ -297,7 +264,6 @@ void IsometricCamera::deactivate(core::input::InputMap& map) {
 }
 
 void IsometricCamera::update(const core::input::InputMap& in, float dt) {
-    // ------------------------------------------------------------------- the pointer
     if (in.held(actions.pan)) {
         core::input::mouseGrab();
     } else {
@@ -308,37 +274,33 @@ void IsometricCamera::update(const core::input::InputMap& in, float dt) {
     // written against it. A game wanting a different one moves `fixedPitch`.
     pitch = fixedPitch;
 
-    // ------------------------------------------------------------------- rotate
     // Rounded off `yaw` at the moment of the press rather than accumulated, so whatever
-    // framing or `--camera` chose is where the first press counts from, and normalised
-    // through the integer rather than through the angle -- `remainder` on a float pi/2
-    // leaves a residue that eight presses turn into a visible tilt.
+    // framing or `--camera` chose is where the first press counts from. Normalised through
+    // the integer and not the angle: `remainder` on a float pi/2 leaves a residue that
+    // eight presses turn into a visible tilt.
     if (const int step = (in.pressed(actions.rotateRight) ? 1 : 0) - (in.pressed(actions.rotateLeft) ? 1 : 0);
         step != 0) {
         const int turns = static_cast<int>(std::lround(yaw / kQuarterTurn)) + step;
         yaw = static_cast<float>(((turns % 4) + 4) % 4) * kQuarterTurn;
     }
 
-    // ------------------------------------------------------------------- zoom
-    // **`orthoHeight`, not `distance`, and that is the whole of what an orthographic
-    // controller is.** A parallel projection ignores how far away the eye is, so a
-    // controller written for perspective dollies here and nothing on screen changes size.
+    // **`orthoHeight`, not `distance`.** A parallel projection ignores how far away the eye
+    // is, so a controller written for perspective dollies here and nothing on screen
+    // changes size.
     if (const double scroll = in.scrollDelta(); scroll != 0.0) {
         orthoHeight = std::clamp(orthoHeight * std::pow(zoomStep, static_cast<float>(scroll)), minOrthoHeight,
                                  maxOrthoHeight);
     }
 
-    // ------------------------------------------------------------------- pan
-    // The ground-plane basis, taken off `yaw` alone. Not `forward()`: this camera is pitched
-    // 35 degrees down, so its forward has a large Y and normalising the flattened version of
-    // it is one more step for the same two numbers.
+    // The ground-plane basis, off `yaw` alone rather than `forward()`: this camera is
+    // pitched 35 degrees down, so its forward has a large Y that would have to be flattened
+    // and renormalised to reach these same two numbers.
     const glm::vec3 ahead(std::sin(yaw), 0.0f, std::cos(yaw));
     const glm::vec3 side = glm::cross(ahead, glm::vec3(0.0f, 1.0f, 0.0f));
 
-    // Speed from the box the camera is showing rather than from a field a scene sized, for
-    // the reason `FlyCamera` derives its speed from `distance`: `orthoHeight` is the one
-    // number here that says how big the thing being looked at is, so crossing a screen
-    // takes about a second at any zoom.
+    // Speed from the box the camera is showing, as `FlyCamera` takes its speed from
+    // `distance`: `orthoHeight` is the one number here that says how big the thing being
+    // looked at is, so crossing a screen takes about a second at any zoom.
     const float speed = std::max(orthoHeight, 1.0f) * panSpeedScale;
     glm::vec3 delta = ahead * (in.value(actions.forward) - in.value(actions.back)) +
                       side * (in.value(actions.right) - in.value(actions.left));
@@ -350,7 +312,7 @@ void IsometricCamera::update(const core::input::InputMap& in, float dt) {
     }
 
     // The drag moves the ground under the pointer, so the focus goes the other way on the
-    // screen's right axis and the same way on its up axis -- the cursor's Y grows downward,
+    // screen's right axis and the same way on its up axis. The cursor's Y grows downward,
     // which is what leaves `ahead` un-negated here and negated in a look.
     if (in.held(actions.pan) && !in.pressed(actions.pan)) {
         const float scale = orthoHeight * dragScale;

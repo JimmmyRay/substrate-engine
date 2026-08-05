@@ -561,7 +561,7 @@ TEST(InstanceTable, ClearEmptiesEverythingAndBumpsTheRevision) {
     EXPECT_GT(table.revision(), before);
 }
 
-// ================================================== the handle itself (C1)
+// ================================================== the handle itself
 
 namespace {
 struct TestTagA;
@@ -619,7 +619,7 @@ TEST(InstanceTableHandles, ADestroyedIdStaysIssuedButStopsBeingLive) {
     EXPECT_FALSE(table.valid(id)) << "but it no longer names a live object";
 }
 
-// ======================= where a morphed instance's data actually is (G11)
+// ======================= where a morphed instance's data actually is
 //
 // A mesh made in code and one loaded from a file end up in the *same* delta array and the
 // *same* flat weight buffer, addressed by the same two expressions. These check that the

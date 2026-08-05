@@ -4,9 +4,8 @@
 
 namespace ui {
 
-/// Abbreviated rather than pulled in with `using`: `ui::Id` is a widget's identity within
-/// a frame and `settings::Id` is a row, and a file that had both unqualified would be one
-/// name meaning two things three lines apart.
+/// Abbreviated, never pulled in with `using`: `ui::Id` is a widget within a frame and
+/// `settings::Id` is a row, and unqualified both would be one name meaning two things.
 namespace cs = core::settings;
 
 using cs::Flags;
@@ -42,9 +41,7 @@ bool drawSettings(Context& ui, cs::Settings& settings, std::string_view module) 
         const Row& r = settings.row(id);
         if (!inModule(r, module)) continue;
 
-        // A row nothing would apply is a readout. See the header: a control that moves and
-        // does nothing is worse than no control, and which rows those are is the table's
-        // declaration rather than this file's guess.
+        // A row nothing would apply is a readout -- see the header.
         const bool frozen = (r.flags & Flags::kInitOnly) != 0 && settings.initOnlyFrozen();
         if ((r.flags & Flags::kEngine) != 0 || frozen) {
             ui.beginRow(2);
@@ -54,10 +51,8 @@ bool drawSettings(Context& ui, cs::Settings& settings, std::string_view module) 
             continue;
         }
 
-        // Everything the sliders decline -- a string, a 64-bit count, an unbounded number
-        // -- is the string door's case, and it is already written: `setFromString` parses
-        // exactly what a config file or a console would put here, and refuses the same
-        // things with the same message.
+        // Everything the sliders decline goes through `setFromString`, which parses and
+        // refuses exactly what a config file or the console would.
         const auto textRow = [&] {
             std::string text = settings.valueString(id);
             if (ui.textField(r.label, text)) {

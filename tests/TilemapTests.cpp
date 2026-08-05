@@ -108,7 +108,7 @@ constexpr uint32_t kDecorCell = 5;
  * that wants the other axis too writes the second loop; a game that wants neither passes
  * one box per cell and pays for it, which is also a decision it is allowed to make.
  *
- * `Plane2D` is what keeps the whole thing two-dimensional without a second solver (P7).
+ * `Plane2D` is what keeps the whole thing two-dimensional without a second solver.
  */
 [[nodiscard]] std::vector<ColliderDesc> mergeSolidRuns() {
     std::vector<ColliderDesc> out;
@@ -140,7 +140,7 @@ constexpr uint32_t kDecorCell = 5;
 }
 
 /**
- * @brief One chunk of the map as a single `MeshData`, ready for `Engine::createMesh` (G4).
+ * @brief One chunk of the map as a single `MeshData`, ready for `Engine::createMesh`.
  *
  * The path a game takes when its tiles must be *lit* rather than drawn flat after the
  * tonemap -- P6's trade, applied to a chunk instead of one card. It is a different mesh
@@ -199,7 +199,7 @@ class TilemapTest : public ::testing::Test {
 
         // 128x64 texels of 16x16 cells: eight across, four down. The four numbers an
         // artist reads off the tool that drew the sheet, which is the whole of "slicing"
-        // and the reason no tileset *file format* was ever needed (P5).
+        // and the reason no tileset *file format* was ever needed.
         sheet = sprites.createSheet({.frame = {16, 16}, .columns = 8, .count = 32});
         layer = sprites.createLayer({.order = -10});
     }
@@ -407,7 +407,7 @@ TEST_F(TilemapTest, AChunkOfTilesIsOneMeshData) {
 
     // What follows in a game is one line the suite cannot reach:
     //     const auto chunk = e.createMesh(std::move(mesh));
-    // and `e.removeModel(chunk)` unloads it (G4, C10). Nothing else is needed, and nothing
+    // and `e.removeModel(chunk)` unloads it. Nothing else is needed, and nothing
     // in it is tilemap-shaped -- which is the finding that closed P8.
     EXPECT_EQ(mesh.material, 0u);
     EXPECT_EQ(mesh.transform, glm::mat4(1.0f));

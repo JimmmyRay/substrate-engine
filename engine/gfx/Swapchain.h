@@ -14,13 +14,9 @@ struct VulkanContext;
 /**
  * @brief Whether rendering can continue.
  *
- * Deliberately not a bool, and deliberately not an error code. The only non-Continue
- * value means the user closed the window while the swapchain was being rebuilt, which
- * is the normal way this program ends -- a bool made that indistinguishable at the
- * call site from "something went wrong", and the two want opposite responses.
- *
- * Genuine Vulkan failures do not travel this way. They abort at the failing call
- * through vkCheck, which reports the call and the result code.
+ * Not an error code: the only non-Continue value means the user closed the window while
+ * the swapchain was being rebuilt, which is the normal way this program ends. Genuine
+ * Vulkan failures never travel this way -- they abort at the failing call through vkCheck.
  */
 enum class FrameResult {
     Continue,
@@ -42,9 +38,8 @@ struct Swapchain {
     VkFormat format = VK_FORMAT_UNDEFINED;
     VkExtent2D extent{};
     VkPresentModeKHR presentMode = VK_PRESENT_MODE_FIFO_KHR;
-    /// Whether the surface allowed TRANSFER_SRC on its images, which is what frame
-    /// capture (5.2) copies from. Every desktop driver does; a capture request on one
-    /// that does not is refused with a message rather than writing a black PNG.
+    /// Whether the surface allowed TRANSFER_SRC on its images, which is what frame capture
+    /// copies from. False means a capture request must be refused, not attempted.
     bool captureSupported = false;
 
     std::vector<VkImage> images;

@@ -120,12 +120,10 @@ void BindingMenu::update(core::input::InputMap& map, core::input::TextInput& tex
 }
 
 void BindingMenu::rebuild(const core::input::InputMap& map) {
-    // ------------------------------------------------------------- the matches
     matches.clear();
     for (core::input::ActionId id = 0; id < map.actionCount(); ++id) {
-        // The count is the table size, retired rows included, so the listing is what asks.
-        // Offering to rebind an action nothing resolves is offering a control that does
-        // nothing.
+        // The count is the table size, retired rows included, so the listing must filter
+        // them: a row nothing resolves is a control that does nothing.
         if (!map.actionLive(id)) continue;
         if (!filter.empty() && lowered(map.actionName(id)).find(filter) == std::string::npos) continue;
         matches.push_back(id);
@@ -144,7 +142,6 @@ void BindingMenu::rebuild(const core::input::InputMap& map) {
         firstRow = std::min(firstRow, maxFirst);
     }
 
-    // ---------------------------------------------------------------- the text
     rendered.clear();
     rendered.emplace_back(kHeader);
 
@@ -155,8 +152,7 @@ void BindingMenu::rebuild(const core::input::InputMap& map) {
 
     const uint32_t rows = std::max<uint32_t>(visibleRows, 1);
     const uint32_t last = std::min<uint32_t>(firstRow + rows, static_cast<uint32_t>(matches.size()));
-    // States the window rather than implying the list ends here, which is the whole
-    // difference between paging and silently truncating.
+    // States the window. Without it a paged list reads as one that ends here.
     filterLine += matches.empty() ? "   (no action matches)"
                                   : "   (" + std::to_string(firstRow + 1) + "-" + std::to_string(last) + " of " +
                                         std::to_string(matches.size()) + ")";

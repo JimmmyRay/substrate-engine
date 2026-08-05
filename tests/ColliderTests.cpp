@@ -13,7 +13,7 @@ using namespace scene;
 
 /**
  * @file tests/ColliderTests.cpp
- * @brief The `substrate_collider` schema (S4.2).
+ * @brief The `substrate_collider` schema.
  *
  * The parser takes bytes rather than a path or a parsed asset, which is what lets a
  * five-line document stand in for a scene here -- no device, no file, no fastgltf. The

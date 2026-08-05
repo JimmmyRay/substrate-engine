@@ -28,10 +28,6 @@
 
 #ifdef _WIN32
 #include <process.h>
-// The MS CRT spells these with a leading underscore and is otherwise identical. Three
-// defines rather than an #ifdef at each call site, so the shader-reload code below stays
-// readable as the POSIX it was written as -- and because these are the only three uses in
-// the engine, which makes a mapping cheaper than a wrapper nobody else calls.
 #define popen _popen
 #define pclose _pclose
 #define getpid _getpid
@@ -48,19 +44,9 @@ namespace {
 /**
  * @brief Make a device write to host-visible memory visible to *this* thread.
  *
- * Waiting on a fence proves the copy executed. It does not prove the host can see it:
- * that only holds for `HOST_COHERENT` memory, and `VMA_MEMORY_USAGE_AUTO` is entitled to
- * pick a heap that is not. On the three readbacks below -- a screenshot, an intermediate
- * target, and the cull counters -- the difference is between reading the frame that was
- * drawn and reading whatever the CPU's cache line held before it.
- *
- * `vmaInvalidateAllocation` is a no-op on coherent memory, so this costs nothing in the
- * case that already worked and closes the case that only mostly did. It is deliberately
- * *not* paired with a flush on the upload path: those buffers are written by the host and
- * read by the device, which the queue submit already orders.
- *
- * File-local rather than beside `createBuffer` because all three callers are in this
- * translation unit, and that is the narrowest scope that reaches them.
+ * A fence proves the copy executed, not that the host can see it: that only holds for
+ * `HOST_COHERENT` memory, and `VMA_MEMORY_USAGE_AUTO` is entitled to pick a heap that is
+ * not. Skipping this reads whatever the CPU's cache line held before the frame was drawn.
  */
 void invalidateForHostRead(const VulkanContext& ctx, const GpuBuffer& buffer) {
     if (buffer.allocation == VK_NULL_HANDLE) return;
@@ -69,9 +55,9 @@ void invalidateForHostRead(const VulkanContext& ctx, const GpuBuffer& buffer) {
 }
 
 constexpr VkFormat kAlbedoFormat = VK_FORMAT_R8G8B8A8_SRGB;
-/// Two channels, not four: the normal is octahedrally encoded (3.5). SFLOAT rather
-/// than UNORM because R16G16_SFLOAT is on Vulkan's mandatory colour-attachment list
-/// and R16G16_UNORM is not -- see the reasoning at the top of octahedral.glsl.
+/// Two channels: the normal is octahedrally encoded. SFLOAT rather than UNORM because
+/// R16G16_SFLOAT is on Vulkan's mandatory colour-attachment list and R16G16_UNORM is
+/// not -- see the top of octahedral.glsl.
 constexpr VkFormat kNormalFormat = VK_FORMAT_R16G16_SFLOAT;
 constexpr VkFormat kOrmFormat = VK_FORMAT_R8G8B8A8_UNORM;
 constexpr VkFormat kDepthFormat = VK_FORMAT_D32_SFLOAT;
@@ -83,15 +69,6 @@ constexpr VkFormat kHdrFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kBloomFormat = VK_FORMAT_R16G16B16A16_SFLOAT;
 constexpr VkFormat kAoFormat = VK_FORMAT_R8G8B8A8_UNORM;
 
-/// The G-buffer and forward passes have no push constants at all (0.11). Everything
-/// that used to be pushed per draw -- the model matrix, the normal matrix, the
-/// material index -- is in the instance buffer, and a vertex shader finds its own
-/// record through `gl_InstanceIndex`. What is left is a pass-level bind and a single
-/// vkCmdDrawIndexedIndirect.
-
-/// A colour attachment that keeps what is already there. Seven passes want exactly this
-/// -- particles, decals, SSR composite, fog composite, forward blend, the debug overlay
-/// and the UI -- and each of them spelled the same five lines out until D4.
 VkRenderingAttachmentInfo colorAttachment(VkImageView view) {
     VkRenderingAttachmentInfo info{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
     info.imageView = view;
@@ -101,10 +78,6 @@ VkRenderingAttachmentInfo colorAttachment(VkImageView view) {
     return info;
 }
 
-/// The same attachment, cleared first. The argument *is* the distinction: an attachment
-/// given a clear value clears, one given none loads. That was two functions' worth of
-/// difference written out at nine call sites, and the CLEAR half had a helper while the
-/// LOAD half did not -- an extraction reaching two of its nine callers.
 VkRenderingAttachmentInfo colorAttachment(VkImageView view, const VkClearColorValue& clear) {
     VkRenderingAttachmentInfo info = colorAttachment(view);
     info.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
@@ -112,10 +85,6 @@ VkRenderingAttachmentInfo colorAttachment(VkImageView view, const VkClearColorVa
     return info;
 }
 
-/// The one interleaved vertex stream every geometry pass binds at binding 0. Three of
-/// them describe different *attributes* out of it -- the G-buffer all four, the shadow
-/// pass position and UV, velocity position alone -- but the binding is the same buffer at
-/// the same stride, and stating it once is what keeps them in step.
 VkVertexInputBindingDescription sceneVertexBinding() {
     return {0, sizeof(scene::Vertex), VK_VERTEX_INPUT_RATE_VERTEX};
 }
@@ -141,9 +110,7 @@ struct SkinPush {
 static_assert(sizeof(SkinPush) <= 128, "push constants must fit the guaranteed minimum");
 
 /// Storage buffers skinning.comp binds: source vertices, deformed output, influences,
-/// joint matrices, morph deltas, morph weights. Named because it is written in three
-/// places -- the layout, the descriptor writes and the shader -- and the reflection
-/// check in verifyShaderBindings is what catches the fourth if one is ever missed.
+/// joint matrices, morph deltas, morph weights.
 constexpr uint32_t kSkinBindings = 6;
 
 /// Must match the Push block in cull.comp exactly.
@@ -162,7 +129,7 @@ struct CullPush {
     uint32_t pyramidLevels;
     /// Where the triangle counters start in the stats buffer, in uints.
     uint32_t statsStride;
-    /// C17, and set for the camera view alone. A shadow cascade is orthographic and covers
+    /// Set for the camera view alone. A shadow cascade is orthographic and covers
     /// the world rather than the screen, so "how much of the viewport does this cover" is
     /// not a question it can be asked -- and a caster dropping a level while the surface it
     /// shades keeps its own is a shadow that stops fitting what casts it.
@@ -185,8 +152,7 @@ struct LightTilePush {
 };
 static_assert(sizeof(LightTilePush) <= 128, "push constants must fit the guaranteed minimum");
 
-/// Shared by all three bloom passes. One block rather than three keeps a single
-/// pipeline layout across the chain; the fields each pass ignores cost nothing.
+/// Shared by all three bloom passes, which share one pipeline layout across the chain.
 /// Must match the Push block in bloom_*.comp exactly.
 struct BloomPush {
     glm::vec2 dstTexel; ///< 1 / destination mip size
@@ -209,9 +175,9 @@ static_assert(sizeof(SsaoPush) <= 128, "push constants must fit the guaranteed m
 
 /// Must match the Push block in ssr_body.glsl exactly.
 ///
-/// The five addresses are read only by the ray-traced variants, which declare them and
-/// the pad; the screen-space variants declare a shorter block and read a prefix of the
-/// same range. One struct rather than two, at the cost of 40 bytes the march ignores.
+/// The five addresses are read only by the ray-traced variants; the screen-space
+/// variants declare a shorter block and read a prefix of the same range, so reordering
+/// anything above them changes what the screen-space march reads.
 struct SsrPush {
     glm::vec2 texel;
     float maxDistance;
@@ -220,11 +186,9 @@ struct SsrPush {
     float roughnessCutoff;
     uint32_t stepCount;
     uint32_t refineSteps;
-    /// Non-zero to trace a shadow ray per light at each reflection hit, so a reflected
-    /// surface is shadowed the same way the world one is. Named in the shader too, and
-    /// so is `pad`: a device address needs 8-byte alignment and the fields above come to
-    /// 36, and two compilers agreeing by accident about implicit padding is one compiler
-    /// away from reading garbage.
+    /// Non-zero to trace a shadow ray per light at each reflection hit. `pad` is named in
+    /// the shader too: a device address needs 8-byte alignment and the fields above come
+    /// to 36, so leaving the padding implicit makes the addresses below compiler-dependent.
     uint32_t shadowLights;
     uint32_t pad;
     VkDeviceAddress hitRecords;
@@ -281,8 +245,8 @@ struct ParticleSimPush {
     float dt;
     float now;
     float sortRange;
-    /// Fourth, where `nearPlane` used to be, because `texel` is a `vec2` and std430
-    /// aligns those to 8. The shader would insert a hole this struct does not.
+    /// Must stay ahead of `texel`: std430 aligns a `vec2` to 8, so moving this after it
+    /// puts a hole in the shader block that this struct does not have.
     float collisionThickness;
     glm::vec2 texel;
     uint32_t capacity;
@@ -291,8 +255,7 @@ struct ParticleSimPush {
 static_assert(sizeof(ParticleSimPush) <= 128, "push constants must fit the guaranteed minimum");
 
 /// Must match the Push block in particle_sort.comp and particle_sort_local.comp, which
-/// share it: one struct because the two shaders are two halves of one network, and a
-/// second three-word struct differing in which field is ignored would be noise.
+/// share it.
 struct ParticleSortPush {
     uint32_t k;
     uint32_t j;
@@ -343,9 +306,7 @@ constexpr uint32_t kOverlayShadow = 0xC0000000u; ///< 75% black, for the drop sh
 /**
  * @brief An extent scaled by a fraction, never smaller than 1x1.
  *
- * `scale >= 1.0f` returns `e` untouched rather than `e` rounded off a float, so the
- * unscaled path is the same integers it was before a scale existed. The clamp is the one
- * `halfOf` carries for the same reason: a window one pixel wide is legal mid-resize and
+ * The 1x1 floor is not optional: a window one pixel wide is legal mid-resize, and
  * `vkCreateImage` rejects a zero extent.
  */
 VkExtent2D scaledBy(VkExtent2D e, float scale) {
@@ -355,12 +316,6 @@ VkExtent2D scaledBy(VkExtent2D e, float scale) {
     };
     return VkExtent2D{axis(e.width), axis(e.height)};
 }
-
-// `appendText` used to live here. S6 moved it to `ui/Ui.cpp`, where the UI's draw list
-// is the second caller: written twice, the pen convention -- baseline origin, y down --
-// would have had two places to drift from overlay.vert. It is a free function over a
-// plain vector rather than a DrawList method for exactly that reason, since the HUD does
-// no clipping and wants none of the machinery around it.
 
 } // namespace
 
@@ -388,7 +343,7 @@ void Renderer::init(VulkanContext& context, Uploader& up, GLFWwindow* win, bool 
     samplerInfo.addressModeW = VK_SAMPLER_ADDRESS_MODE_CLAMP_TO_EDGE;
     vkCheck(vkCreateSampler(ctx->device, &samplerInfo, nullptr, &pointSampler), "vkCreateSampler(fullscreen)");
 
-    // The Hi-Z sampler (C11): nearest everywhere and every level reachable. Filtering a
+    // The Hi-Z sampler: nearest everywhere and every level reachable. Filtering a
     // depth pyramid averages a near surface with a far one and yields a plane that is
     // neither, and an unset maxLod clamps `textureLod` to mip 0 -- which is a test against
     // one texel of full-resolution depth, and over-culls badly enough to be visible.
@@ -406,11 +361,6 @@ void Renderer::init(VulkanContext& context, Uploader& up, GLFWwindow* win, bool 
     samplerInfo.minFilter = VK_FILTER_NEAREST;
     vkCheck(vkCreateSampler(ctx->device, &samplerInfo, nullptr, &fontSampler), "vkCreateSampler(font)");
 
-    // One zone each, and they are named for their functions rather than pooled under a
-    // "pipelines" heading: they are individually the largest things `Renderer::init`
-    // does, they differ by an order of magnitude between debug and release, and pooling
-    // them would leave the reader exactly where the whole of `initRenderer` was before
-    // this -- one big number.
     { auto z = core::Profiler::scope("createDescriptorLayouts"); createDescriptorLayouts(); }
     // Before createFrameResources: the per-frame cull sets are allocated from
     // cullSetLayout the first time ensureInstanceCapacity() runs, which that calls.
@@ -426,27 +376,15 @@ void Renderer::init(VulkanContext& context, Uploader& up, GLFWwindow* win, bool 
     { auto z = core::Profiler::scope("createRenderTargets"); createViewTargets(); }
     { auto z = core::Profiler::scope("createIblResources"); createIblResources(); }
     { auto z = core::Profiler::scope("createShadowResources"); createShadowResources(); }
-    // Consumed, not discarded: without timestamps every zone reports 0.000 ms, and
-    // logGpuTimings has to say that rather than print a table of zeros someone could
-    // read as "these passes are free".
-    //
-    // **The left arm is what makes `--no-profiler` mean what it says.** Short-circuiting
-    // it leaves `queryPool` null, and every `GpuProfiler` entry point early-outs on that
-    // handle -- so no timestamp is written, none is read back, and the flag the profiler's
-    // own overhead figure is differenced against costs the GPU query path nothing. What
-    // survives is `GpuScope`'s debug-utils label, which is deliberately not tied to the
-    // timestamp succeeding; a run that asked for no profiler is still a run whose capture
-    // has to be readable.
+    // Order of the operands is what makes `--no-profiler` mean what it says: short-
+    // circuiting leaves `queryPool` null, and every `GpuProfiler` entry point early-outs
+    // on that handle. Swap them and the GPU query path runs whatever the flag said.
     gpuTimingAvailable =
         core::Profiler::enabled() && gpuProfiler.init(*ctx, kFramesInFlight) == ProfilerStatus::Enabled;
 
-    // The atlas is built whether or not the overlay starts enabled: F6 can turn it on
-    // at any point, and a 12 KB R8 image is not worth making conditional.
     debugFont.init(*ctx, up, debugFontPath, debugFontHeight);
     overlayScratch.reserve(static_cast<size_t>(kMaxOverlayQuads) * 6);
 
-    // Nothing is loaded yet, so this allocates the smallest array there is and points
-    // every descriptor at the atlas. `syncImages` grows it from the table.
     ensureImageCapacity(1);
     writeImageDescriptors();
 
@@ -463,29 +401,11 @@ void Renderer::setImages(const ImageTable* table) {
 void Renderer::createOverlaySetLayout(uint32_t slots) {
     const VkDescriptorSetLayout previous = overlaySetLayout;
 
-    // PARTIALLY_BOUND is deliberately absent -- the same argument `GltfScene` makes about
-    // its own array. A partially-bound array lets a shader read an unwritten slot, and
-    // "undefined data" is exactly the state a vertex holding a stale index would land in.
-    // Every allocated slot is written, so a wrong index draws the font atlas, which is
-    // visible and harmless.
-    //
-    // VARIABLE_DESCRIPTOR_COUNT is absent too, and that is the repair rather than an
-    // oversight. It let this layout be created once at the device's ceiling with each
-    // allocation taking as much of it as it needed, so growth touched no pipeline -- and
-    // the ceiling on this machine is 1,044,480. **The validation layer charges the
-    // *declared* count once per draw that samples the array**, at about 8 ns a descriptor,
-    // and the overlay's single text draw is such a draw: 8.5 ms of CPU in every debug
-    // frame, which is 94% of `Renderer::record` and half the frame rate, for descriptors
-    // no image will ever occupy. Measured at three declared counts and linear in all
-    // three; see
+    // `slots` is the resident capacity, and VARIABLE_DESCRIPTOR_COUNT must stay off it.
+    // The validation layer charges the *declared* count once per draw that samples the
+    // array, at about 8 ns a descriptor, and declaring the device ceiling (1,044,480 here)
+    // costs 8.5 ms of CPU in every debug frame -- half the frame rate. See
     // docs/kanban/done/bug-the-debug-frame-spends-seven-milliseconds-recording-commands.md.
-    //
-    // Declaring the capacity instead makes the charge proportional to what is resident,
-    // which is the honest number and is one or two in every scene in the tree. It costs a
-    // rebuild of the five pipeline layouts this set appears in each time the array
-    // doubles -- log2(N) times over a run, on the same event that already waits for the
-    // device -- which is a far better trade than a per-frame tax that scales with a limit
-    // nobody can reach.
     const VkDescriptorSetLayoutBinding binding{0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, slots,
                                                VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
 
@@ -494,19 +414,16 @@ void Renderer::createOverlaySetLayout(uint32_t slots) {
     info.pBindings = &binding;
     vkCheck(vkCreateDescriptorSetLayout(ctx->device, &info, nullptr, &overlaySetLayout),
             "vkCreateDescriptorSetLayout(overlay)");
-    // The same registry `createDescriptorLayouts` fills, and for the same reason: Vulkan
-    // offers no way to read a layout back, and `verifyShaderBindings` compares against it.
+    // Vulkan offers no way to read a layout back, so `verifyShaderBindings` compares
+    // against this registry; a layout created without an entry here is never checked.
     layoutBindings[overlaySetLayout] = {binding};
 
     if (previous == VK_NULL_HANDLE) return;
 
     layoutBindings.erase(previous);
     vkDestroyDescriptorSetLayout(ctx->device, previous, nullptr);
-    // Two set layouts are compatible only if they are identically defined, so a layout of
-    // a different width is a different layout to everything built against it. The dirty
-    // flag `drawFrame` already polls rebuilds the pipeline layouts and the pipelines
-    // behind them, after the `vkDeviceWaitIdle` it already takes -- and at init there are
-    // none to rebuild, which the early return above is what makes true.
+    // Two set layouts are compatible only if identically defined, so a layout of a
+    // different width is a different layout to every pipeline built against it.
     pipelinesDirty = true;
 }
 
@@ -514,15 +431,12 @@ void Renderer::ensureImageCapacity(uint32_t slots) {
     const uint32_t need = std::max(slots, 1u);
     if (need <= imageCapacity) return;
 
-    // Double, so a game loading images one at a time does not reallocate on every load.
-    // The first allocation is one slot, because at init the only image is the atlas.
     uint32_t grown = imageCapacity == 0 ? need : imageCapacity;
     while (grown < need) grown *= 2;
     grown = std::min(grown, imageSlotCeiling);
 
-    // A pool's sizes are fixed at creation, so a wider set cannot come out of the old
-    // one. Destroying the pool frees the set with it, which is why there is no
-    // vkFreeDescriptorSets here.
+    // A pool's sizes are fixed at creation, so a wider set cannot come out of the old one.
+    // Destroying the pool frees the set with it.
     if (overlayImagePool != VK_NULL_HANDLE) {
         vkDestroyDescriptorPool(ctx->device, overlayImagePool, nullptr);
         overlaySet = VK_NULL_HANDLE;
@@ -531,7 +445,7 @@ void Renderer::ensureImageCapacity(uint32_t slots) {
     }
 
     // After the pool, so the set allocated from the old layout is already freed, and
-    // before the allocation below, which needs the new one. The width is stated once, here.
+    // before the allocation below, which needs the new one.
     createOverlaySetLayout(grown);
 
     VkDescriptorPoolSize size{VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, grown};
@@ -552,22 +466,16 @@ void Renderer::ensureImageCapacity(uint32_t slots) {
 }
 
 void Renderer::writeImageDescriptors() {
-    // Every allocated slot, not just the ones with an image. An index nothing has loaded
-    // into then draws the atlas rather than reading a descriptor that was never written
-    // -- see the note on the layout's creation for why that is the property worth having.
+    // Every allocated slot, not just the ones with an image: leaving a slot unwritten lets
+    // a stale index sample a descriptor that was never filled in.
     std::vector<VkDescriptorImageInfo> infos(imageCapacity,
                                              {fontSampler, debugFont.view(), VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
     for (uint32_t s = 1; s < imageCapacity && s < overlayImages.size(); ++s) {
         if (overlayImages[s].view == VK_NULL_HANDLE) continue;
-        // Linear, not `fontSampler`'s nearest: an image is drawn at whatever size the
-        // layout gives it, which is almost never 1:1 with its texels.
-        //
-        // Unless the game asked for pixel exactness (P2), where the opposite is true and
-        // the linear tap is the defect. At 1:1 a linear sampler is *nearly* exact -- the
-        // sample lands on a texel centre and the neighbour's weight is zero -- but "nearly"
-        // is decided by how many sub-texel bits the hardware keeps, and a coordinate that
-        // rounds the wrong side of a centre blends 1/256 of the wrong texel into an image
-        // that was supposed to arrive unchanged. Nearest has no such margin.
+        // Linear except under `pixelExact`. At 1:1 a linear tap is only *nearly* exact:
+        // how many sub-texel bits the hardware keeps decides it, and a coordinate rounding
+        // the wrong side of a centre blends 1/256 of the neighbour into an image that was
+        // supposed to arrive unchanged.
         infos[s] = {pixelExact ? fontSampler : pointSampler, overlayImages[s].view,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
     }
@@ -582,17 +490,15 @@ void Renderer::writeImageDescriptors() {
 }
 
 void Renderer::syncImages() {
-    // Above the revision test, which is the *common* case: this costs nothing on almost
-    // every frame and milliseconds on one, so the number worth reading is the max and a
-    // zone that vanished on the cheap path would have no max to read.
-    // `zone`, not the `s` used elsewhere: the reconcile loop below already indexes with one.
+    // Above the revision test: the zone is milliseconds on the frame that reconciles and
+    // nothing on the rest, and one that vanished on the cheap path would have no max left
+    // to read.
     auto zone = core::Profiler::scope("syncImages");
     if (images == nullptr || images->revision() == imageRevision) return;
 
-    // One wait for the whole reconcile, and the argument for it rather than a retirement
-    // list is on the declaration. It covers both hazards at once: an image about to be
-    // destroyed that an in-flight frame samples, and a descriptor about to be rewritten
-    // in a set an in-flight command buffer bound.
+    // Covers both hazards at once: an image about to be destroyed that an in-flight frame
+    // samples, and a descriptor about to be rewritten in a set an in-flight command
+    // buffer bound.
     vkDeviceWaitIdle(ctx->device);
 
     const uint32_t slots = std::min(images->slotCount(), imageSlotCeiling);
@@ -603,19 +509,17 @@ void Renderer::syncImages() {
 
     for (uint32_t s = 1; s < slots; ++s) {
         const ImageTable::Entry& e = images->at(s);
-        // Zero for a slot the table has given up. A slot destroyed and reacquired between
-        // two syncs differs here too, because `destroy` moved the generation -- which is
-        // what stops the old image being left in place under a new name.
+        // The generation, not just `live`: `destroy` moves it, so a slot destroyed and
+        // reacquired between two syncs still compares unequal here. Testing `live` alone
+        // leaves the old image in place under a new name.
         const uint32_t want = e.live ? e.generation : 0;
         if (overlayResident[s] == want) continue;
 
-        // **A borrowed slot is not this function's to load or to free.** A render view's
-        // destination is drawn rather than decoded, and `syncViews` owns the image; all
-        // that is shared is the descriptor array it lands in. Dropping the handle without
-        // destroying it is the whole difference, and getting it wrong is a double free --
-        // which is exactly what the validation layer reported the first time this was
-        // written with the borrow tracked on the *table's* entry instead of here. The flag
-        // has to live beside the handle, because teardown runs when the table is gone.
+        // **A borrowed slot is not this function's to free.** `syncViews` owns a render
+        // view's destination image; only the descriptor array is shared, so the handle is
+        // dropped and not destroyed. Destroying it is a double free. The flag has to live
+        // beside the handle rather than on the table's entry, because teardown runs when
+        // the table is already gone.
         if (overlayImages[s].image != VK_NULL_HANDLE && overlayBorrowed[s] == 0) {
             destroyImage(*ctx, overlayImages[s]);
         }
@@ -632,8 +536,6 @@ void Renderer::syncImages() {
         stbi_uc* pixels = stbi_load(e.path.c_str(), &width, &height, &channels, STBI_rgb_alpha);
         if (pixels == nullptr || width <= 0 || height <= 0) {
             if (pixels != nullptr) stbi_image_free(pixels);
-            // The slot stays empty and its descriptor keeps the atlas, which is what the
-            // table promised a caller whose file resolved but was not an image.
             core::Logger::warn(core::LogCategory::Render, "image %u (%s): could not be decoded (%s)", s, e.name.c_str(),
                                stbi_failure_reason() != nullptr ? stbi_failure_reason() : "unknown");
             continue;
@@ -641,8 +543,8 @@ void Renderer::syncImages() {
 
         const VkExtent2D extent{static_cast<uint32_t>(width), static_cast<uint32_t>(height)};
         // _SRGB, so the hardware decodes to linear on read and `overlay.frag` multiplies
-        // two linear values. A UNORM image here would be the exact bug the note in that
-        // shader describes for vertex colours, one stage later.
+        // two linear values. UNORM here is the vertex-colour bug that shader warns about,
+        // one stage later.
         overlayImages[s] = createImage(*ctx, extent, VK_FORMAT_R8G8B8A8_SRGB,
                                        VK_IMAGE_USAGE_SAMPLED_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT |
                                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -661,13 +563,9 @@ void Renderer::syncImages() {
 
 void Renderer::setSprites(const scene::SpriteTable* table) {
     sprites = table;
-    // Whatever the buffers hold belongs to the old table's ordering. Nothing is freed:
-    // the next `ensureSpriteCapacity` either finds them large enough or grows them, and
-    // the copy that follows overwrites every byte a draw will read.
     stats.sprites = 0;
-    // A new table is a new revision space and the numbers from the old one mean nothing
-    // here -- the same reset `setInstances` makes, and for the same reason: a second table
-    // whose counter happened to agree would have every slot skip its first copy.
+    // A new table is a new revision space: a second table whose counter happened to agree
+    // with the old one would have every slot skip its first copy.
     for (auto& f : frames) f.spriteRevision = 0;
 }
 
@@ -675,16 +573,9 @@ void Renderer::ensureSpriteCapacity(uint32_t count) {
     auto s = core::Profiler::scope("ensureSpriteCapacity");
     if (count == 0 || count <= spriteCapacity) return;
 
-    // Double, so a game creating sprites one at a time does not reallocate on every
-    // create. The first call sizes exactly, because that one is the level load and there
-    // is nothing to guess.
     const uint32_t grown = spriteCapacity == 0 ? count : std::max(count, spriteCapacity * 2);
 
-    // The buffers being replaced may be read by a frame still in flight, and the answer
-    // is the one `ensureInstanceCapacity` and `syncImages` already gave: wait. A
-    // retirement list is machinery for an event that happens when a level loads, and the
-    // trigger for writing one is unchanged -- a caller that reallocates per frame during
-    // play, which is streaming.
+    // The buffers being replaced may still be read by a frame in flight.
     if (spriteCapacity != 0) {
         vkDeviceWaitIdle(ctx->device);
         core::Logger::status(core::LogCategory::Render, "Sprite buffers grown: %u -> %u sprites", spriteCapacity, grown);
@@ -715,10 +606,9 @@ void Renderer::ensureSpriteCapacity(uint32_t count) {
         write.pBufferInfo = &info;
         vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
 
-        // The buffer this slot's revision described has just been destroyed, so the
-        // revision describes nothing. Without this the upload gate would look at a fresh
-        // allocation full of whatever the driver handed back, decide it already held the
-        // current revision, and draw it.
+        // The buffer this revision described has just been destroyed. Leaving it set has
+        // the upload gate decide a fresh allocation already holds the current revision,
+        // and draw whatever the driver handed back.
         f.spriteRevision = 0;
     }
 
@@ -730,10 +620,8 @@ void Renderer::recordSprites(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
     if (sprites == nullptr || spritePipeline == VK_NULL_HANDLE) return;
 
     const std::vector<scene::GpuSprite>& draws = sprites->draws();
-    // The capacity is grown before recording begins, so a table that outran it between
-    // `ensureSpriteCapacity` and here is impossible -- but the clamp costs one comparison
-    // and the alternative is a buffer overrun, so it is written down rather than reasoned
-    // about.
+    // Clamped rather than reasoned about: the alternative to one comparison is a buffer
+    // overrun.
     const auto count = static_cast<uint32_t>(std::min<size_t>(draws.size(), spriteCapacity));
     // Assigned before the early return, not after the draw: a level that destroyed its
     // last sprite would otherwise leave the HUD reporting the count from the frame before.
@@ -742,31 +630,18 @@ void Renderer::recordSprites(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
 
     GpuScope zone(gpuProfiler, cmd, slot, "Sprites");
 
-    // Straight into mapped memory during recording, exactly as the overlay's vertices and
-    // the particle emitters are: this slot's fence was waited on at the top of drawFrame,
-    // so nothing in flight is reading it. One memcpy of an array that is already in draw
-    // order -- there is no gather step, which is the whole reason `SpriteTable` keeps its
-    // dense array sorted rather than sorting an index list per frame.
+    // Written into mapped memory during recording: this slot's fence was waited on at the
+    // top of drawFrame, so nothing in flight is reading it.
     //
-    // **Once per revision per frame slot, not once per frame**, which is the gate
-    // `updateInstances` has had since the instance table existed. A screen of sprites that
-    // did not change costs nothing: at ten thousand the copy is 640 KB and 0.036 ms, which
-    // is a third of everything `Renderer::record` does in this scene, and at fifty
-    // thousand it is 0.171 ms and three quarters of it. A moving screen pays exactly what
-    // it paid before, because the whole array is still one linear write.
-    //
-    // Every path that can invalidate what the buffer holds without the table's counter
-    // moving zeroes this slot's copy instead: growth destroys the allocation, `setSprites`
-    // replaces the revision space, and `destroyFrameResources` destroys both.
+    // Anything that invalidates what the buffer holds without moving the table's counter
+    // has to zero this slot's revision -- growth, `setSprites` and `destroyFrameResources`
+    // all do, and a path that forgets draws stale sprites indefinitely.
     if (frames[slot].spriteRevision != sprites->revision()) {
         frames[slot].spriteRevision = sprites->revision();
         std::memcpy(frames[slot].spriteBuffer.mapped, draws.data(),
                     static_cast<size_t>(count) * sizeof(scene::GpuSprite));
     }
 
-    // LOAD, like the debug lines and the overlay: this composites onto the tonemapped
-    // image that is already there, and into the *virtual* target, because a sprite is
-    // world-space content.
     VkRenderingAttachmentInfo color = colorAttachment(target);
 
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -782,76 +657,54 @@ void Renderer::recordSprites(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
     const VkDescriptorSet sets[] = {overlaySet, frames[slot].spriteSet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, spriteLayout, 0, 2, sets, 0, nullptr);
 
-    // The *unjittered* view-projection, for the reason `recordDebugLines` gives: a jitter
-    // applied here would move every sprite by a sub-pixel every frame against a frame that
-    // has already been resolved. `pixelExact` turns the jitter off anyway; this pass does
-    // not depend on a game having asked for it.
+    // The *unjittered* view-projection: a jitter here moves every sprite by a sub-pixel
+    // each frame, against a frame that has already been resolved.
     const float aspect = static_cast<float>(view.renderExtent.width) / static_cast<float>(view.renderExtent.height);
     const glm::mat4 viewProj = camera.viewProjection(aspect);
     vkCmdPushConstants(cmd, spriteLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(viewProj), &viewProj);
 
-    // Six vertices, `count` instances, one draw for every layer at once. The card that
-    // opened this row said one draw per layer; one blend state makes one global sort
-    // possible and one global sort makes one draw possible, which is the argument
-    // `particle.frag` already carries -- and a layer is then purely a sort key, which is
-    // all it was ever asked to be.
     vkCmdDraw(cmd, 6, count, 0, 0);
 
     vkCmdEndRendering(cmd);
 }
 
 void Renderer::setScene(const scene::GltfScene* s) {
-    // The outgoing scene's layout is destroyed by `GltfScene::destroy()` immediately after
-    // this returns, so its entry goes now: leaving it in the map would leave a key pointing
-    // at a freed handle -- and handles get reused, so the next layout to land on that value
-    // would be checked against the wrong bindings. Same argument as the IBL bake's erase.
+    // `GltfScene::destroy()` frees the outgoing layout immediately after this returns.
+    // Leaving the entry keys the map on a freed handle, and handles get reused: the next
+    // layout to land on that value is then checked against the wrong bindings.
     if (scene != nullptr) layoutBindings.erase(scene->descriptorSetLayout());
 
     scene = s;
 
-    // The variant cache is keyed by material index into the scene that has just gone, so
-    // it says nothing about this one. Zero is a revision no live table reports, which
-    // forces the next updateInstances() to rebuild it -- a second scene whose revision
-    // happened to match the first's would otherwise be grouped by the first's answers.
+    // Zero is a revision no live table reports, so the next updateInstances() rebuilds the
+    // variant cache. A second scene whose revision happened to match the first's would
+    // otherwise be grouped by the first's answers.
     seenMaterialRevision = 0;
     materialVariant.clear();
     reportedVariantOverflow = false;
 
-    // Null is how a caller drops the scene ahead of destroying it -- `Engine::applyPendingScene`
-    // does exactly that between the device wait and the upload of the replacement. Nothing
-    // below has a scene to read, and the pipelines built against the old layout stay put
-    // until the next `setScene` with a real scene calls `createPipelines()`, which begins by
-    // destroying them.
     if (s == nullptr) return;
 
     const float diagonal = glm::length(s->boundsMax - s->boundsMin);
-    // Both particle lengths are scene-relative (S3.3, S3.4). The
-    // sort key quantises distance over a fixed range, and a range that resolves Sponza
-    // to a centimetre would put a 2 m test scene in one bucket. The collision thickness
-    // has to exceed what a particle travels in one step and stay well under the depth
-    // of a room, or a particle in the next room counts as inside the wall.
+    // Both particle lengths are scene-relative. The sort key quantises distance over a
+    // fixed range, and a range that resolves Sponza to a centimetre puts a 2 m test scene
+    // in one bucket. The collision thickness has to exceed what a particle travels in one
+    // step and stay well under the depth of a room, or a particle in the next room counts
+    // as inside the wall.
     particleSortRange = std::max(diagonal * 2.0f, 1.0f);
     particleCollisionThickness = std::max(diagonal * 0.02f, 0.05f);
 
-    // The scene owns one of the layouts the G-buffer and forward pipelines bind, so it
-    // registers here rather than in createDescriptorLayouts(). It is also the only set
-    // with a variable-count descriptor array, which makes it the one most worth
-    // checking a shader against.
     layoutBindings[s->descriptorSetLayout()] = s->descriptorBindings();
 
-    // Two of the skinning set's six bindings are the scene's vertex buffer and the skin
-    // influences, and G4 made the first of those something that moves: growing the shared
-    // geometry buffer destroys the old one, and a descriptor still naming it is a dispatch
-    // reading freed memory. Found exactly that way -- by growth, under the validation
-    // layers, which reported it as binding #0 using a destroyed buffer.
+    // Two of the skinning set's six bindings name buffers the scene owns, and the shared
+    // geometry buffer moves: growing it destroys the old allocation, and a descriptor
+    // still naming it is a dispatch reading freed memory.
     for (uint32_t slot = 0; slot < kFramesInFlight; ++slot) writeSkinSet(slot, false);
 
-    // The G-buffer pipeline layout references the scene's descriptor set layout, so
-    // pipelines cannot exist until a scene does -- but only the *first* scene has to build
-    // them here. `Engine::createMesh` calls this per mesh, and rebuilding every graphics
-    // and compute pipeline per prop is 22 ms a call in debug for an answer no frame has
-    // asked for yet. `drawFrame`'s `pipelineRebuild` runs before anything records, so what
-    // a frame draws with is always current.
+    // Only the *first* scene builds pipelines here. `Engine::createMesh` calls this per
+    // mesh, and rebuilding every graphics and compute pipeline per prop is 22 ms a call in
+    // debug; `drawFrame`'s `pipelineRebuild` runs before anything records, so deferring
+    // costs a frame nothing.
     if (pipelinesBuilt) {
         pipelinesDirty = true;
     } else {
@@ -875,24 +728,16 @@ void Renderer::setInstances(const scene::InstanceTable* table) {
     // `instanceRevision` from the previous one means nothing here.
     for (auto& f : frames) f.instanceRevision = 0;
 
-    // ------------------------------------------------------------ ray query (3.9)
-    // Built from the instance table rather than from the scene, because a BLAS
-    // geometry is one *instance* of a primitive at one transform -- the same thing a
-    // draw command is.
-    //
-    // **Marked rather than built.** This used to build on the spot, and it is called once
-    // per `createMesh`, `addModel` and `removeModel` -- so a game making a dozen props at
-    // load paid a dozen full BLAS-and-TLAS builds for a structure nothing had traced yet.
-    // `rebuildAccelIfStale` consumes the flag once per frame, in `endFrame`, which runs
-    // before that frame's `drawFrame`: the structure a frame traces is always the one its
-    // instances describe, and a batch of any size costs one build.
+    // Marked, not built. This runs once per `createMesh`, `addModel` and `removeModel`,
+    // so building on the spot charges a game making a dozen props at load a dozen full
+    // BLAS-and-TLAS builds. `rebuildAccelIfStale` consumes the flag once per frame, in
+    // `endFrame`, which runs before that frame's `drawFrame`.
     if (ctx->rayQuerySupported) {
         accelDirty = true;
 
-        // The ray-traced variants of the lighting and reflection shaders are selected
-        // by whether a TLAS exists, so the pipelines built before the structure did
-        // are the wrong ones. Also deferred -- and it has to be sequenced *after* the
-        // build, which it is: `pipelineRebuild` is inside `drawFrame`.
+        // The ray-traced variants of the lighting and reflection shaders are selected by
+        // whether a TLAS exists, so this rebuild has to be sequenced *after* the structure
+        // is built -- `pipelineRebuild` is inside `drawFrame`, which is what makes it so.
         pipelinesDirty = true;
     }
 }
@@ -900,8 +745,6 @@ void Renderer::setInstances(const scene::InstanceTable* table) {
 void Renderer::instancesGrew() {
     if (instances == nullptr) return;
     ensureInstanceCapacity(instances->slotCount());
-    // The slot exists but no frame has uploaded it, and `instanceRevision` is per slot:
-    // forcing it re-reads the table on the next `updateInstances`.
     for (auto& f : frames) f.instanceRevision = 0;
     accelDirty = true;
 }
@@ -909,10 +752,8 @@ void Renderer::instancesGrew() {
 void Renderer::rebuildAccelIfStale() {
     if (!ctx->rayQuerySupported || instances == nullptr) return;
 
-    // The dirty flag first, and **before the `accel.valid()` test**, because this is now
-    // the path that builds the structure the first time: nothing else does. It is also
-    // not a "stale" case -- nothing moved, the set of instances changed -- so it carries
-    // no warning. Adding geometry is a thing a game does on purpose.
+    // Ahead of the `accel.valid()` test: this is the only path that builds the structure
+    // the first time, so a validity test in front of it never builds one at all.
     if (accelDirty) {
         accelDirty = false;
         vkDeviceWaitIdle(ctx->device);
@@ -923,9 +764,6 @@ void Renderer::rebuildAccelIfStale() {
     if (!accel.valid()) return;
     if (!staticTierStale(accel, *instances)) return;
 
-    // Once, not once per offender, and warned rather than silent: a game that moves a
-    // static instance every frame would otherwise pay a full structure rebuild every frame
-    // with nothing in the log to say why. The flag it is missing is `InstanceDesc::dynamic`.
     if (!staleAccelReported) {
         staleAccelReported = true;
         core::Logger::warn(core::LogCategory::Render,
@@ -934,10 +772,9 @@ void Renderer::rebuildAccelIfStale() {
                      "instance that should have been created dynamic.");
     }
 
-    // The two other callers run before a frame has been submitted; this one runs between
-    // them, with `kFramesInFlight` command buffers still executing and still holding the
+    // This path runs mid-flight, with `kFramesInFlight` command buffers still holding the
     // TLAS, the BLASes and the hit-record buffer `buildAccelerationStructures` is about to
-    // free. Without the stall this is a use-after-free of GPU objects, which does not look
+    // free. Without the stall it is a use-after-free of GPU objects, which does not look
     // like a rendering bug -- it looks like flaky hardware, on a different case each run.
     vkDeviceWaitIdle(ctx->device);
     buildAccelerationStructures();
@@ -951,11 +788,8 @@ void Renderer::buildAccelerationStructures() {
                           scene->indexBuffer(), scene->indexData(), skinnedVertices.buffer, skinnedVertexCount,
                           skinDestBase, *instances, scene->emissiveMaterials(), accel);
 
-    // Binding 2 of the TLAS set (the binding kept its number when the shadow maps
-    // that shared the set were ripped out). The handle it points at is stable for the
-    // life of the structure -- a refit and a TLAS *rebuild into the same handle* both
-    // leave it valid, which is what lets the descriptor be written once here rather
-    // than per frame.
+    // Written once here rather than per frame: the handle survives both a refit and a
+    // TLAS rebuild into the same handle, so only a destroy-and-recreate invalidates it.
     VkWriteDescriptorSetAccelerationStructureKHR asInfo{
         VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET_ACCELERATION_STRUCTURE_KHR};
     asInfo.accelerationStructureCount = 1;
@@ -971,10 +805,9 @@ void Renderer::buildAccelerationStructures() {
 }
 
 void Renderer::createDescriptorLayouts() {
-    // Every layout is recorded as it is created. Vulkan offers no way to read a
-    // VkDescriptorSetLayout back, and verifyShaderBindings() needs something to
-    // compare a reflected binding against; the alternative was threading the binding
-    // arrays through to every pipeline call site.
+    // Vulkan offers no way to read a VkDescriptorSetLayout back, so verifyShaderBindings()
+    // compares a reflected binding against this registry; a layout created without a
+    // matching `record` call is never checked against any shader.
     auto record = [&](VkDescriptorSetLayout layout, const VkDescriptorSetLayoutBinding* b, uint32_t count) {
         layoutBindings[layout] = {b, b + count};
     };
@@ -988,15 +821,9 @@ void Renderer::createDescriptorLayouts() {
     frameBinding.stageFlags =
         VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
-    // Binding 1 the lights, binding 3 the instance table (4.1), binding 4 last
-    // frame's transforms (3.4); binding 2 is vacant (it held the shadow matrices
-    // before the shadow system was ripped out, and the numbering stayed so nothing
-    // renumbered). Storage buffers rather than
-    // more UBO array slots, so every count is a number the shader reads instead of a
-    // constant the descriptor layout was built around. The instance *bounds* are not
-    // here: what a cull tests is the union over one draw command, and uploading a value
-    // alongside its own reduction would be paying twice to say one thing. They live in
-    // the cull set.
+    // Binding 1 the lights, binding 2 vacant, binding 3 the instance table, binding 4 last
+    // frame's transforms. Every shader that binds this set declares those numbers, so
+    // closing the gap at 2 renumbers all of them.
     constexpr uint32_t kFrameBindingCount = 5;
     std::array<VkDescriptorSetLayoutBinding, kFrameBindingCount> frameBindings{};
     frameBindings[0] = frameBinding;
@@ -1013,16 +840,16 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(frame)");
     record(frameSetLayout, frameBindings.data(), kFrameBindingCount);
 
-    // Four multisampled G-buffer attachments plus depth, read with texelFetch per
-    // sample, then the single-sampled AO buffer at binding 5 -- single-sampled because
-    // it is one value per pixel regardless of how many samples the G-buffer holds.
+    // Bindings 0-4 are the four multisampled G-buffer attachments plus depth, read with
+    // texelFetch per sample; binding 5 is the AO buffer, single-sampled because it is one
+    // value per pixel however many samples the G-buffer holds.
     std::array<VkDescriptorSetLayoutBinding, 6> gbufferBindings{};
     for (uint32_t i = 0; i < gbufferBindings.size(); ++i) {
         gbufferBindings[i].binding = i;
         gbufferBindings[i].descriptorType = VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER;
         gbufferBindings[i].descriptorCount = 1;
-        // Compute too: ssr.comp (3.1) marches the depth buffer and reads the same
-        // normals and roughness the lighting pass does, through this very set.
+        // Compute too: ssr.comp marches the depth buffer and reads the same normals and
+        // roughness the lighting pass does, through this very set.
         gbufferBindings[i].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
     }
 
@@ -1033,8 +860,6 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(gbuffer)");
     record(gbufferSetLayout, gbufferBindings.data(), static_cast<uint32_t>(gbufferBindings.size()));
 
-    // One sampled image in the fragment stage. The tonemap set takes two of these --
-    // the HDR target and the bloom chain -- and the font takes one.
     std::array<VkDescriptorSetLayoutBinding, 2> sampledBindings{};
     for (uint32_t i = 0; i < sampledBindings.size(); ++i) {
         sampledBindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
@@ -1047,17 +872,8 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(hdr)");
     record(hdrSetLayout, sampledBindings.data(), 2);
 
-    // One sampled image, and now shared rather than duplicated.
-    //
-    // This was two separate layouts of identical shape -- one for the font atlas, one
-    // for the SSR composite -- on the argument that binding a reflection buffer through
-    // something called `singleImageSetLayout` costs an hour to read. That argument was right
-    // and the answer was wrong: the third user (the decal pass, 3.3) makes this a
-    // pattern rather than a coincidence, so it gets a name that describes the *shape*
-    // instead of one of its users. The Rule of Threes, applied literally.
-    // Compute as well as fragment since S3.4: `particle_simulate.comp` collides against
-    // the same resolved depth the decal pass projects onto, through this very layout. A
-    // stage flag the other four users do not need costs them nothing.
+    // Compute as well as fragment: `particle_simulate.comp` collides against the same
+    // resolved depth the decal pass projects onto, through this very layout.
     std::array<VkDescriptorSetLayoutBinding, 1> singleBindings{sampledBindings[0]};
     singleBindings[0].stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
@@ -1068,10 +884,6 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(single image)");
     record(singleImageSetLayout, singleBindings.data(), 1);
 
-    // One storage image, fragment stage: the shadow mask, written by shadowmask.frag and
-    // read by the lighting pass through the same descriptor. Not `computeImageSetLayout`,
-    // whose one storage binding is compute-only -- widening that would widen it for
-    // bloom, SSAO and the depth pyramid to buy one user a stage it does not share.
     const std::array<VkDescriptorSetLayoutBinding, 1> storageBindings{
         VkDescriptorSetLayoutBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr}};
 
@@ -1082,36 +894,12 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(storage image)");
     record(storageImageSetLayout, storageBindings.data(), 1);
 
-    // The overlay's image array (C5, grown by P1). A layout of its own rather than a
-    // second binding on the one above: four other passes bind exactly one image through
-    // that, and widening it for the overlay would widen it for all of them.
-    //
-    // **The layout itself is not built here.** Its one binding's count is the number of
-    // slots the array currently holds, so `createOverlaySetLayout` builds it and
-    // `ensureImageCapacity` rebuilds it whenever the array grows. The argument for
-    // declaring the capacity rather than the ceiling is on that function, and it is a
-    // measured one.
-    //
-    // What is computed here is the *ceiling* -- how far the array is allowed to grow --
-    // because that is a property of the device rather than of any allocation, and
-    // `maxImageSlots()` reports it to `ImageTable::init` before a single image is loaded.
-    // It is the smaller of the two limits that bind: the per-stage one, and the per-set
-    // one, because they are all in one set. Nothing here is an engine constant a game
-    // could grow into and be refused by.
-    //
-    // **Less a reserve, and P6 is why -- the validation layer found it on the first run.**
-    // Those two limits are sums over *every set in a pipeline layout*, not over one set. So
-    // long as this array was bound alone, declaring the whole device limit was free; the
-    // moment it joined the G-buffer and shadow layouts beside `GltfScene`'s own texture
-    // array, the sum came to the limit plus that scene's 134 textures and
-    // `vkCreatePipelineLayout` refused all four of the layouts it appears in. A set that
-    // claims the entire budget cannot be bound next to anything, which makes the budget
-    // useless rather than generous.
-    //
-    // The reserve is what the sets bound beside it may declare: `GltfScene`'s array is
-    // `textures + 1 + kTextureSlotHeadroom` and is not known until a scene loads, so this is
-    // stated ahead rather than derived. Four thousand textures in one scene is the trigger
-    // to make it a real calculation; nothing in the tree is within two orders of it.
+    // How far the overlay's image array may grow. Both device limits are sums over *every
+    // set in a pipeline layout*, not over one set, so claiming the whole ceiling makes
+    // `vkCreatePipelineLayout` refuse every layout this array is bound beside -- found by
+    // the validation layer the first time it joined `GltfScene`'s 134-texture array. The
+    // reserve is headroom for those neighbours, which are not known until a scene loads;
+    // a scene with four thousand textures is the point at which it has to be derived.
     constexpr uint32_t kSharedDescriptorReserve = 4096;
     const uint32_t deviceCeiling = std::min(ctx->properties.limits.maxPerStageDescriptorSampledImages,
                                             ctx->properties.limits.maxDescriptorSetSampledImages);
@@ -1119,15 +907,10 @@ void Renderer::createDescriptorLayouts() {
                                         ? deviceCeiling - kSharedDescriptorReserve
                                         : deviceCeiling / 2);
 
-    // One binding: the scene TLAS (3.9) at binding 2 -- it kept its number when the
-    // shadow maps that shared this set were ripped out, so no shader renumbered.
-    // Present only where the device can trace; a descriptor layout cannot be
-    // specialised away, so an empty layout stands in on devices that cannot.
     std::array<VkDescriptorSetLayoutBinding, 3> tlasBindings{};
-    // Bindings 0 and 1 are the sun's map and the punctual atlas, always present: they are
-    // what a device without ray query shadows with, and the traced path simply never
-    // samples them. Binding 2 is the TLAS, only where the device can trace -- so the
-    // count is 2 or 3 and the *order* here has to put the optional one last.
+    // Binding 0 the sun's map, 1 the punctual atlas, 2 the TLAS. The count below is 2 or
+    // 3, so the optional binding has to stay last: reordering silently drops a shadow map
+    // on every device that cannot trace.
     tlasBindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     tlasBindings[1] = {1, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_FRAGMENT_BIT, nullptr};
     tlasBindings[2] = {2, VK_DESCRIPTOR_TYPE_ACCELERATION_STRUCTURE_KHR, 1,
@@ -1141,8 +924,6 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(tlas)");
     record(tlasSetLayout, tlasBindings.data(), tlasBindingCount);
 
-    // Compute image processing: binding 0 the source to sample, binding 1 the
-    // destination to store into. Bloom and SSAO both use it.
     std::array<VkDescriptorSetLayoutBinding, 2> bloomBindings{};
     bloomBindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     bloomBindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -1158,8 +939,8 @@ void Renderer::createDescriptorLayouts() {
     // the skybox.
     std::array<VkDescriptorSetLayoutBinding, 4> iblBindings{};
     for (uint32_t i = 0; i < iblBindings.size(); ++i) {
-        // Compute too: the ray-traced reflection pass (3.11) samples the environment
-        // cube where a ray misses everything.
+        // Compute too: the ray-traced reflection pass samples the environment cube where
+        // a ray misses everything.
         iblBindings[i] = {i, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1,
                           VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     }
@@ -1170,9 +951,8 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(ibl)");
     record(iblSetLayout, iblBindings.data(), static_cast<uint32_t>(iblBindings.size()));
 
-    // Particles (S3): the pool, its sort keys, the emitters and this frame's births.
-    // Vertex as well as compute -- particle.vert reads the pool and the keys, which is
-    // what makes the draw need no vertex buffer at all.
+    // Bindings 0-3: the pool, its sort keys, the emitters, this frame's births. Vertex as
+    // well as compute, because particle.vert reads the pool and the keys itself.
     std::array<VkDescriptorSetLayoutBinding, 4> particleBindings{};
     for (uint32_t i = 0; i < particleBindings.size(); ++i) {
         particleBindings[i] = {i, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
@@ -1185,8 +965,8 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(particles)");
     record(particleSetLayout, particleBindings.data(), static_cast<uint32_t>(particleBindings.size()));
 
-    // The sprite array (P4). One binding, vertex stage only: the fragment half reads the
-    // *image* array, which is `overlaySetLayout` and set 0 of the same pipeline.
+    // Vertex stage only: the fragment half reads the *image* array, which is
+    // `overlaySetLayout` and set 0 of the same pipeline.
     const VkDescriptorSetLayoutBinding spriteBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                                                      VK_SHADER_STAGE_VERTEX_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo spriteInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -1196,10 +976,6 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(sprites)");
     record(spriteSetLayout, &spriteBinding, 1);
 
-    // One storage buffer, written by the build dispatch and read by the lighting and
-    // shadow-mask draws (C35). Its own layout rather than a binding on the frame set: the
-    // buffer is sized from the render extent, so it is rebuilt by every resize, and the
-    // frame set is not.
     VkDescriptorSetLayoutBinding tileBinding{0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1,
                                                 VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     VkDescriptorSetLayoutCreateInfo tileInfo{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO};
@@ -1209,18 +985,10 @@ void Renderer::createDescriptorLayouts() {
             "vkCreateDescriptorSetLayout(light tiles)");
     record(lightTileSetLayout, &tileBinding, 1);
 
-    // Sized with headroom rather than to today's exact allocation (2 frame sets, the
-    // G-buffer set, the HDR set, the font set). A pool that fits precisely fails on
-    // the very next pass, and the failure is an allocation error a long way from the
-    // line that caused it. Descriptor pool memory is negligible; the tight fit was
-    // never buying anything.
-    //
-    // **Every figure below has a per-view term, and it is the one that moves** (C38):
-    // `createRenderTargets` allocates about thirty-four sets -- SSAO, the shadow mask, the
-    // tiles, the G-buffer, the bloom chain, the depth pyramid, SSR, fog and TAA -- and
-    // there is now one of it per live view rather than one shared serially. Raising
-    // `kMaxViews` without these terms fails in `vkAllocateDescriptorSets` on the *fourth*
-    // view, which is a long way from the constant that caused it.
+    // Every figure below carries a per-view term, and it is the one that moves:
+    // `createRenderTargets` allocates about thirty-four sets per live view. Raising
+    // `kMaxViews` without raising these fails in `vkAllocateDescriptorSets` on the fourth
+    // view, a long way from the constant that caused it.
     std::array<VkDescriptorPoolSize, 5> sizes{};
     sizes[0] = {VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER, 8 + 4 * kMaxViews};
     sizes[1] = {VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 32 + 48 * kMaxViews};
@@ -1239,17 +1007,8 @@ void Renderer::createDescriptorLayouts() {
     vkCheck(vkCreateDescriptorPool(ctx->device, &poolInfo, nullptr, &descriptorPool),
             "vkCreateDescriptorPool(renderer)");
 
-    // The TLAS set is allocated here, immediately behind the pool it comes from, because
-    // there is nowhere else it belongs: the descriptor it holds is written once from
-    // buildAccelerationStructures() and never again, so this set has no resource to be
-    // created alongside. It lived in the shadow resources until S3.9 -- the cascades and
-    // the punctual atlas shared the set, so allocating it there was free -- and went
-    // missing when they did, leaving a layout, a write and four binds pointing at a
-    // handle nothing had ever filled in.
-    //
-    // Allocated whether or not the device can trace. Without ray query the layout is
-    // empty, but an empty set is still a set, and every pipeline that takes this one at
-    // index 2 binds it unconditionally.
+    // Allocated whether or not the device can trace: every pipeline that takes this set at
+    // index 2 binds it unconditionally, and an empty layout is still a set.
     VkDescriptorSetAllocateInfo tlasAlloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     tlasAlloc.descriptorPool = descriptorPool;
     tlasAlloc.descriptorSetCount = 1;
@@ -1277,16 +1036,11 @@ void Renderer::createFrameResources() {
         fenceInfo.flags = VK_FENCE_CREATE_SIGNALED_BIT;
         vkCheck(vkCreateFence(ctx->device, &fenceInfo, nullptr, &f.inFlight), "vkCreateFence");
 
-        // Sized from the budget, not from a constant. That is what makes `lightBudget`
-        // the only cap there is: a config raising it grows the buffer to match, and
-        // there is no second limit further down to truncate against silently (0.9).
         lightBufferCapacity = std::max(lightBudget, 1u);
 
-        // One bit per light per tile, so the stride follows the same capacity the light
-        // buffer does (C35). Zero disables the pass rather than truncating: a game that
-        // states a budget past what the build shader's shared mask can hold gets every one
-        // of its lights, untiled, and a line saying so -- not a silent cap that would
-        // drop lights above the 1024th from the image entirely.
+        // Zero is the sentinel for "no tiling", not a truncation: a budget past what the
+        // build shader's shared mask holds runs the deferred loop over every light instead
+        // of dropping the ones above it from the image.
         lightTileWords = (lightBufferCapacity + 31) / 32;
         if (lightTileWords > kLightTileMaxWords) {
             core::Logger::warn(core::LogCategory::Render,
@@ -1296,11 +1050,8 @@ void Renderer::createFrameResources() {
             lightTileWords = 0;
         }
 
-        // One block per view. Allocated for all `kMaxViews` up front rather than on
-        // demand: they total a few hundred kilobytes across every frame slot, and a view
-        // created mid-frame that had to allocate its own would need the device idle to do
-        // it. Nothing *writes* a block until a view uses it, which is the cost that would
-        // have shown up in a frame time.
+        // All `kMaxViews` up front, not on demand: a view created mid-frame that had to
+        // allocate its own block would need the device idle to do it.
         for (uint32_t v = 0; v < kMaxViews; ++v) {
             f.uniforms[v] = createBuffer(*ctx, sizeof(FrameUniforms), VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                          VMA_MEMORY_USAGE_AUTO,
@@ -1314,27 +1065,20 @@ void Renderer::createFrameResources() {
                                                 VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                             "lightBuffer");
         }
-        // Written by the CPU and read once by the GPU in the same frame, so it lives in
-        // host-visible memory rather than being staged: a staging copy for 123 KB of
-        // text would cost more than the draw.
         f.overlayVertices = createBuffer(*ctx, sizeof(OverlayVertex) * kMaxOverlayQuads * 6,
                                          VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                                              VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                          "overlayVertices");
 
-        // Same reasoning, one subsystem along (S4.5): a wireframe of the physics world is
-        // rebuilt on the CPU every frame it is drawn, so staging it would be staging
-        // something written once and read once.
         f.debugLineVertices = createBuffer(*ctx, sizeof(DebugLineVertex) * kMaxDebugLineVertices,
                                            VK_BUFFER_USAGE_VERTEX_BUFFER_BIT, VMA_MEMORY_USAGE_AUTO,
                                            VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                                                VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                            "debugLineVertices");
 
-        // One projection per atlas layer: six for a point, one for a spot. Read by
-        // shadow.vert to render a layer and by shadow.glsl to sample it, which is why it
-        // is a buffer both stages can see rather than a push constant.
+        // One projection per atlas layer: six for a point, one for a spot. shadow.vert
+        // renders a layer through it and shadow.glsl samples through it.
         for (uint32_t v = 0; v < kMaxViews; ++v) {
             f.shadowMatrixBuffer[v] = createBuffer(*ctx, sizeof(glm::mat4) * kMaxShadowLayers,
                                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -1387,11 +1131,9 @@ void Renderer::destroyFrameResources() {
     renderFinished.clear();
 
     for (auto& f : frames) {
-        // The frame set has to be handed back, not merely forgotten. destroyRenderTargets
-        // frees its two sets and this function did not, so every resize leaked
-        // kFramesInFlight sets and the pool ran dry after a handful of them -- the
-        // allocation that then failed took the process down through Logger::critical,
-        // mid-swapchain-recreate.
+        // Handed back, not merely forgotten: dropping the free leaks kFramesInFlight sets
+        // per resize, and the pool runs dry after a handful -- which surfaces as a
+        // Logger::critical from an allocation mid-swapchain-recreate.
         for (uint32_t v = 0; v < kMaxViews; ++v) {
             vkFreeDescriptorSets(ctx->device, descriptorPool, 1, &f.frameSet[v]);
             f.frameSet[v] = VK_NULL_HANDLE;
@@ -1432,46 +1174,25 @@ void Renderer::destroyFrameResources() {
         f.cmd = VK_NULL_HANDLE;
     }
 
-    // The instance buffers went with the frames, so the capacity they represented did
-    // too. Leaving this set would have the next createFrameResources() believe there
-    // were buffers to write into.
+    // The buffers went with the frames. Leaving these set has the next
+    // createFrameResources() believe there are buffers to write into.
     instanceCapacity = 0;
-    // Same argument, one subsystem along (P4).
     spriteCapacity = 0;
 }
 
 void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
-    // P2. The layout is how this view's extent lands in the window: an extent equal to the
-    // window makes it the identity and `presentTarget` unnecessary -- the one path, at its
-    // degenerate case. Recomputed here rather than held, because the window changes under
-    // the user's hands and this function is what a resize calls.
     view.renderExtent = extent;
     view.presentPlan = presentLayout(extent.width, extent.height, swap.extent.width, swap.extent.height);
 
     const VkImageUsageFlags colorUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
 
-    // Every target listed in captureTargets() carries TRANSFER_SRC so it can be read
-    // back by name (5.7). Not gated on a debug build: Release is the configuration whose
-    // frame is worth inspecting, and a flag that only works in Debug is a flag that is
-    // never there when you want it.
-    //
-    // The worry is that declaring TRANSFER_SRC lets a driver decline compression on
-    // these images. Measured rather than assumed, `scripts/bench.sh 5` either way:
-    // Frame 4.221 ms without against 4.355 with, and per-pass the zones move in *both*
-    // directions (SSAO 0.997 -> 0.885, Lighting 0.957 -> 0.983). That is the run-to-run
-    // spread this project already documents for the bimodal zones, not a cost. If a
-    // future device disagrees, this one constant is where to gate it.
+    // Every target named by captureTargets() has to carry this, in every configuration:
+    // without it the readback that names it fails at run time rather than at build time.
     const VkImageUsageFlags readback = VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
 
-    // Half the render extent, never smaller than 1x1. Three targets want this -- the bloom
-    // chain, SSAO and SSR -- which is one past the point where writing it out again is
-    // coincidence. Local to this function because every caller is in it: the record*
-    // methods take the extent from the member each creation below stores it in, rather
-    // than recomputing it and risking a dispatch that disagrees with its own image.
-    //
-    // The clamp is not decoration. vkCreateImage rejects a zero extent, and a swapchain
-    // one pixel wide is a legal thing for a window manager to hand over mid-resize -- which
-    // reaches here whenever no virtual resolution was named, since then the two are one.
+    // The 1x1 floor is not decoration. vkCreateImage rejects a zero extent, and a
+    // swapchain one pixel wide is legal for a window manager to hand over mid-resize --
+    // which reaches here whenever no virtual resolution was named.
     const auto halfOf = [](VkExtent2D e) {
         return VkExtent2D{std::max(1u, e.width / 2), std::max(1u, e.height / 2)};
     };
@@ -1493,21 +1214,12 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
     view.hdrTarget = createImage(*ctx, extent, kHdrFormat, colorUsage | readback, 1, VK_SAMPLE_COUNT_1_BIT,
                             VK_IMAGE_ASPECT_COLOR_BIT, 1, "hdrTarget");
 
-    // Where the tonemap lands when the presentation step is real (P2). Only then: at
-    // native the layout is the identity, `recordPresent` records nothing, and the tonemap
-    // draws straight into the swapchain image exactly as it did before this row -- which
-    // is what makes the eleven golden cases a check on this change rather than a casualty
-    // of it.
-    //
     // `swap.format` rather than a format of its own, because the blit that follows has to
-    // be a byte move. TRANSFER_SRC is what it is blitted from; SAMPLED is not requested,
-    // since nothing samples it and asking would be inviting somebody to.
+    // be a byte move.
     //
-    // **`primary` first, and it is not a micro-optimisation.** A registered view is almost
-    // never an exact integer divisor of the window, so `identityPresent` is false for
-    // nearly every one of them -- and each would allocate a presentation target it can
-    // never reach, since only the presenting view's tonemap sees the swapchain. It would
-    // also log a "Presentation:" line per view per resize.
+    // `primary` has to be tested first. `identityPresent` is false for nearly every
+    // registered view, so testing it alone allocates a presentation target per view that
+    // only the presenting one can ever reach.
     if (view.primary && !identityPresent(view.presentPlan, swap.extent.width, swap.extent.height)) {
         view.presentTarget = createImage(*ctx, extent, swap.format,
                                     VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT, 1,
@@ -1517,9 +1229,8 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
                              swap.extent.height, view.presentPlan.x, view.presentPlan.y);
     }
 
-    // The forward pass draws into hdrTarget, which is single-sample, so it needs a
-    // single-sample depth buffer to test against. At MSAA that is a resolve of gDepth
-    // taken as the G-buffer pass stores; at 1x gDepth already is one.
+    // hdrTarget is single-sample, so the forward pass needs single-sample depth to test
+    // against. At MSAA that is a resolve of gDepth taken as the G-buffer pass stores.
     if (msaaSamples != VK_SAMPLE_COUNT_1_BIT) {
         view.gDepthResolved = createImage(*ctx, extent, kDepthFormat,
                                      VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1,
@@ -1527,20 +1238,12 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         view.forwardDepth = view.gDepthResolved.image;
         view.forwardDepthView = view.gDepthResolved.view;
 
-        // Which resolve mode, and why this is a query rather than a constant.
-        //
         // SAMPLE_ZERO is the only mode the spec guarantees for depth, so it is the
-        // fallback. AVERAGE is preferred where available purely because the
-        // validation layers in SDK 1.3.280 apply VUID-VkRenderingAttachmentInfo-
-        // imageView-06129 -- a rule about non-integer *colour* formats -- to depth
-        // attachments too, and reject everything except NONE and AVERAGE. The device
-        // here advertises all four modes, so this is a layer disagreement rather than
-        // a hardware limit, but shipping a pass that logs an error every frame would
-        // destroy the one signal that says the renderer is clean.
-        //
-        // The choice is close to immaterial: every sample of an interior pixel holds
-        // the same depth, so the modes differ only on MSAA silhouette pixels, where
-        // any single depth is already an approximation of several surfaces.
+        // fallback. AVERAGE is preferred where available only because the validation
+        // layers in SDK 1.3.280 apply VUID-VkRenderingAttachmentInfo-imageView-06129 -- a
+        // rule about non-integer *colour* formats -- to depth attachments too, and reject
+        // everything except NONE and AVERAGE. Hard-coding SAMPLE_ZERO logs a validation
+        // error every frame on a device that advertises all four modes.
         VkPhysicalDeviceDepthStencilResolveProperties resolveProps{
             VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_DEPTH_STENCIL_RESOLVE_PROPERTIES};
         VkPhysicalDeviceProperties2 props2{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PROPERTIES_2};
@@ -1555,25 +1258,9 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         view.forwardDepthView = view.gDepth.view;
     }
 
-    // -------------------------------------------------------------------- ssao
-    // RGBA8 for a single channel of occlusion, which is wasteful and deliberate:
-    // R8_UNORM is only a guaranteed storage-image format when
-    // shaderStorageImageExtendedFormats is present, and RGBA8_UNORM always is.
-    //
-    // Half resolution. Occlusion is an integral over a hemisphere of world-space radius
-    // `ssaoRadius`, so its detail is bounded by the geometry that occludes it and not by
-    // the pixel grid -- four neighbouring pixels integrate almost the same hemisphere and
-    // spend 16 depth taps each to agree on it. Measured on showcase at 4x MSAA: 0.770 ms
-    // full resolution against 0.222 here.
-    //
-    // What it costs is contact detail, which is what SSAO is *for*: a shadow narrower than
-    // two full-resolution pixels now resolves to one AO texel. ssao_blur.comp shrank its
-    // kernel to 3x3 in the same change to pay part of that back -- see the note there.
-    //
-    // The depth this samples stays full resolution and is addressed in normalised uv, so
-    // the same coordinates reach it unchanged; only the number of hemispheres falls. The
-    // lighting pass reads the blurred result through a filtering sampler, so the upsample
-    // is free.
+    // RGBA8 for one channel of occlusion: R8_UNORM is only a guaranteed storage-image
+    // format where shaderStorageImageExtendedFormats is present, and RGBA8_UNORM always
+    // is.
     const VkImageUsageFlags aoUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT;
     view.ssaoExtent = halfOf(extent);
     view.ssaoRaw = createImage(*ctx, view.ssaoExtent, kAoFormat, aoUsage | readback, 1, VK_SAMPLE_COUNT_1_BIT,
@@ -1591,10 +1278,8 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkCheck(vkAllocateDescriptorSets(ctx->device, &alloc, &view.ssaoSet), "vkAllocateDescriptorSets(ssao)");
         vkCheck(vkAllocateDescriptorSets(ctx->device, &alloc, &view.ssaoBlurSet), "vkAllocateDescriptorSets(ssao blur)");
 
-        // The AO pass reads the single-sample depth -- the resolve at MSAA, gDepth
-        // itself at 1x -- and writes ssaoRaw; the blur reads that and writes
-        // ssaoBlurred. Both sources are declared SHADER_READ_ONLY, which is the layout
-        // recordGBuffer and recordSsao leave them in.
+        // The declared layouts have to be the ones recordGBuffer and recordSsao actually
+        // leave these images in.
         const std::array<VkDescriptorImageInfo, 4> aoImages{
             VkDescriptorImageInfo{pointSampler, view.forwardDepthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
             VkDescriptorImageInfo{VK_NULL_HANDLE, view.ssaoRawStorage, VK_IMAGE_LAYOUT_GENERAL},
@@ -1615,15 +1300,10 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx->device, 4, aoWrites.data(), 0, nullptr);
     }
 
-    // -------------------------------------------------------------- shadow mask
-    // One 32-bit word per sample, one bit per light. R32_UINT rather than something
-    // narrower because `kDefaultLightBudget` is 32 and the mask is exactly one texel wide
-    // in lights -- see kShadowMaskLights in rayshadow.glsl for what a wider budget does.
-    //
-    // Allocated at every configuration, including the ones that never write it: the
-    // lighting shader declares the descriptor whether or not the pass runs, which is the
-    // same arrangement the AO buffer has and for the same reason -- a layout cannot be
-    // specialised away, only the read can.
+    // One 32-bit word per sample, one bit per light: R32_UINT holds exactly
+    // `kDefaultLightBudget` of them. See kShadowMaskLights in rayshadow.glsl for what a
+    // wider budget does. Allocated at every configuration, including the ones that never
+    // write it, because the lighting shader declares the descriptor either way.
     view.shadowMask = createImage(*ctx, extent, VK_FORMAT_R32_UINT, VK_IMAGE_USAGE_STORAGE_BIT, 1,
                                   VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT,
                                   static_cast<uint32_t>(msaaSamples), "shadowMask");
@@ -1637,9 +1317,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkCheck(vkAllocateDescriptorSets(ctx->device, &alloc, &view.shadowMaskSet),
                 "vkAllocateDescriptorSets(shadow mask)");
 
-        // GENERAL, and it never leaves it. Both passes reach the image through this one
-        // descriptor -- one writes it, the other reads it -- so there is no second layout
-        // for a transition to move it to.
         const VkDescriptorImageInfo maskImage{VK_NULL_HANDLE, view.shadowMaskStorage, VK_IMAGE_LAYOUT_GENERAL};
         VkWriteDescriptorSet maskWrite{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
         maskWrite.dstSet = view.shadowMaskSet;
@@ -1650,15 +1327,9 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx->device, 1, &maskWrite, 0, nullptr);
     }
 
-    // ------------------------------------------------------------ light tiles (C35)
-    // One word of light bits per 32 lights per tile. At 1600x900 with the default budget
-    // that is 5700 tiles of one word: 22 KB, which is why the bitmask won over a compacted
-    // index list -- the list would need a count, a per-tile cap, and an ordering rule to
-    // keep the shading sum bit-exact, and it would be larger.
-    //
-    // Allocated at every configuration, including the ones that never write it, for the
-    // reason the shadow mask above is: the lighting pipeline declares the descriptor
-    // whether or not the pass runs. `tileParams.z` gates the *read*.
+    // One word of light bits per 32 lights per tile, allocated at every configuration
+    // including the ones that never write it: the lighting pipeline declares the
+    // descriptor either way, and `tileParams.z` is what gates the read.
     view.lightTileGrid = {(extent.width + kLightTileSize - 1) / kLightTileSize,
                        (extent.height + kLightTileSize - 1) / kLightTileSize};
     {
@@ -1686,24 +1357,15 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx->device, 1, &tileWrite, 0, nullptr);
     }
 
-    // G-buffer descriptor set.
     VkDescriptorSetAllocateInfo gbufferAlloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     gbufferAlloc.descriptorPool = descriptorPool;
     gbufferAlloc.descriptorSetCount = 1;
     gbufferAlloc.pSetLayouts = &gbufferSetLayout;
     vkCheck(vkAllocateDescriptorSets(ctx->device, &gbufferAlloc, &view.gbufferSet), "vkAllocateDescriptorSets(gbuffer)");
 
-    // Binding 5 is the blurred AO, single-sampled even when the rest of this set is
-    // not: it is a screen-space quantity, one value per pixel, and the per-sample
-    // lighting loop reads the same one for every sample.
-    //
-    // It is also the one entry at *half* resolution, so it needs a filtering sampler or
-    // it upsamples as visible 2x2 blocks. `pointSampler` supplies that despite the name --
-    // it is VK_FILTER_LINEAR on both axes with CLAMP_TO_EDGE (see where it is created);
-    // `fontSampler` is the NEAREST one. The name is a leftover and the only thing here
-    // depending on it is this binding, so do not "fix" it by swapping in a nearest
-    // sampler. bloomSampler would say it better but does not exist yet at this point in
-    // createRenderTargets.
+    // `pointSampler` is VK_FILTER_LINEAR despite the name -- `fontSampler` is the NEAREST
+    // one. Binding 5 is the half-resolution AO and needs the filtering, so swapping in a
+    // nearest sampler to match the name upsamples it as visible 2x2 blocks.
     const std::array<VkImageView, 6> views{view.gAlbedo.view,   view.gNormal.view,     view.gOrm.view,
                                            view.gDepth.view,    view.gEmissive.view,   view.ssaoBlurred.view};
     std::array<VkDescriptorImageInfo, 6> imageInfos{};
@@ -1720,8 +1382,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
     }
     vkUpdateDescriptorSets(ctx->device, 6, writes.data(), 0, nullptr);
 
-    // ----------------------------------------------------------- Hi-Z pyramid (C11)
-    //
     // Power-of-two, and rounded *down* rather than up. A pyramid larger than the depth it
     // samples would leave its outer texels holding whatever the reduction wrote for a
     // clamped tap, and an occlusion test reading those would cull against depth that was
@@ -1761,9 +1421,8 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
             vkCheck(vkAllocateDescriptorSets(ctx->device, &alloc, &view.depthPyramidSets[m]),
                     "vkAllocateDescriptorSets(depth pyramid)");
 
-            // Level 0 reduces the single-sample depth; every level after reduces the
-            // pyramid itself, which stays in GENERAL for the whole build so the storage
-            // write of one level and the sampled read of the next need no layout change.
+            // The pyramid stays in GENERAL for the whole build, so the storage write of
+            // one level and the sampled read of the next need no layout change between.
             const bool fromDepth = m == 0;
             pyramidImages[m * 2] = {pointSampler, fromDepth ? view.forwardDepthView : view.depthPyramid.view,
                                     fromDepth ? VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL : VK_IMAGE_LAYOUT_GENERAL};
@@ -1785,10 +1444,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         }
         vkUpdateDescriptorSets(ctx->device, view.depthPyramidLevels * 2, pyramidWrites.data(), 0, nullptr);
 
-        // The cull dispatch's view of the finished pyramid, rewritten here on every resize
-        // because that is exactly when the view it names is replaced. Allocated only when
-        // the view does not already hold one, which is what `destroyRenderTargets` freeing
-        // it makes true again -- a second View gets its own rather than inheriting this.
         if (view.hizSet == VK_NULL_HANDLE) {
             VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
             alloc.descriptorPool = descriptorPool;
@@ -1806,10 +1461,9 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx->device, 1, &hizWrite, 0, nullptr);
     }
 
-    // ------------------------------------------------------------------- bloom
-    // Half resolution. The clamp inside halfOf matters more here than anywhere else: at
-    // 5 mips a window narrower than 32 pixels would otherwise produce a zero-sized
-    // level, and vkCreateImage rejects that rather than clamping.
+    // The clamp inside halfOf matters more here than anywhere else: at 5 mips a window
+    // narrower than 32 pixels produces a zero-sized level, which vkCreateImage rejects
+    // rather than clamping.
     const VkExtent2D bloomExtent = halfOf(extent);
     view.bloomChain = createImage(*ctx, bloomExtent, kBloomFormat,
                              VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | readback, kBloomMips,
@@ -1817,9 +1471,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
 
     for (uint32_t m = 0; m < kBloomMips; ++m) view.bloomStorageViews[m] = createStorageView(*ctx, view.bloomChain, m);
 
-    // 2 * kBloomMips sets, one per dispatch. They are allocated here rather than
-    // rebound per frame because none of them ever changes: the chain is the same image
-    // every frame and only its contents move.
     for (uint32_t m = 0; m < kBloomMips; ++m) {
         VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         alloc.descriptorPool = descriptorPool;
@@ -1829,21 +1480,17 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkCheck(vkAllocateDescriptorSets(ctx->device, &alloc, &view.bloomUpSets[m]), "vkAllocateDescriptorSets(bloom)");
     }
 
-    // The threshold pass reads the lit HDR image; every other pass reads the chain
-    // itself at an explicit LOD, which is why they all share bloomChain.view.
-    // Fixed arrays, not vectors: every write holds a pointer into the image-info
-    // storage, and a vector that reallocated mid-loop would leave those dangling with
-    // no diagnostic beyond a corrupt descriptor.
+    // Fixed arrays, not vectors: every write holds a pointer into the image-info storage,
+    // and a vector reallocating mid-loop leaves those dangling with no diagnostic beyond
+    // a corrupt descriptor.
     constexpr uint32_t kBloomDispatches = 2 * kBloomMips - 1; // kBloomMips down, kBloomMips-1 up
     std::array<VkDescriptorImageInfo, kBloomDispatches * 2> bloomImages{};
     std::array<VkWriteDescriptorSet, kBloomDispatches * 2> bloomWrites{};
     uint32_t bloomWriteCount = 0;
 
-    // The source layout is not the same for every set. The threshold pass reads
-    // hdrTarget, which the frame leaves in SHADER_READ_ONLY; every other pass reads
-    // the chain, which stays in GENERAL for the duration so the storage writes and
-    // sampled reads can interleave without a layout change per step. A descriptor
-    // declaring the wrong one is a validation error at dispatch, not at update.
+    // The source layout differs per set -- SHADER_READ_ONLY for hdrTarget, GENERAL for the
+    // chain, which stays there so storage writes and sampled reads interleave without a
+    // transition. A descriptor declaring the wrong one fails at dispatch, not at update.
     auto bindPair = [&](VkDescriptorSet set, VkImageView source, VkImageLayout sourceLayout, VkImageView dest) {
         const uint32_t i = bloomWriteCount;
         bloomImages[i] = {bloomSampler, source, sourceLayout};
@@ -1875,19 +1522,14 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
     }
     vkUpdateDescriptorSets(ctx->device, bloomWriteCount, bloomWrites.data(), 0, nullptr);
 
-    // The last up set is allocated but never written or bound; there is no mip above
-    // the smallest to add. Freeing it would make the two arrays disagree in length for
-    // no gain.
-
-    // HDR descriptor set for the tonemap pass.
     VkDescriptorSetAllocateInfo hdrAlloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     hdrAlloc.descriptorPool = descriptorPool;
     hdrAlloc.descriptorSetCount = 1;
     hdrAlloc.pSetLayouts = &hdrSetLayout;
     vkCheck(vkAllocateDescriptorSets(ctx->device, &hdrAlloc, &view.hdrSet), "vkAllocateDescriptorSets(hdr)");
 
-    // Binding 1 is the bloom chain, sampled at LOD 0 -- the top of the chain already
-    // holds every level summed back down into it by the upsample walk.
+    // Binding 1 is the bloom chain at LOD 0: the upsample walk has already summed every
+    // level back down into it, so sampling a lower mip here drops most of the bloom.
     const std::array<VkDescriptorImageInfo, 2> hdrImages{
         VkDescriptorImageInfo{pointSampler, view.hdrTarget.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL},
         VkDescriptorImageInfo{bloomSampler, view.bloomChain.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL}};
@@ -1903,12 +1545,9 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
     }
     vkUpdateDescriptorSets(ctx->device, 2, hdrWrites.data(), 0, nullptr);
 
-    // --------------------------------------------------------------------- ssr
-    // Full resolution by default; `render.ssrScale` is what moves it, and at 1.0 this is
-    // `extent` exactly rather than `extent` through a float, so the default path is the
-    // one it always was. Below 1.0 recordSsr picks the upsampling composite instead of the
-    // plain one -- the two must move together, and `ssrExtent == renderExtent` is the only
-    // thing either of them tests.
+    // Below 1.0 recordSsr picks the upsampling composite rather than the plain one, and
+    // `ssrExtent == renderExtent` is the only thing either of them tests -- so this extent
+    // and that choice have to move together.
     view.ssrExtent = scaledBy(extent, ssrScale);
     builtSsrScale = ssrScale;
     view.ssrTarget = createImage(*ctx, view.ssrExtent, kHdrFormat,
@@ -1944,9 +1583,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx->device, 3, ssrWrites.data(), 0, nullptr);
     }
 
-    // ------------------------------------------------------- resolved scene depth
-    // Written here rather than beside the pass that uses it, because there are two of
-    // them now: the decal projection (3.3) and the particle collision test (S3.4).
     {
         VkDescriptorSetAllocateInfo alloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         alloc.descriptorPool = descriptorPool;
@@ -1966,7 +1602,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx->device, 1, &write, 0, nullptr);
     }
 
-    // --------------------------------------------------------------------- fog
     view.fogTarget = createImage(*ctx, extent, kHdrFormat,
                             VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | readback, 1,
                             VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 1, "fogTarget");
@@ -1981,8 +1616,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkCheck(vkAllocateDescriptorSets(ctx->device, &alloc, &view.fogCompositeSet),
                 "vkAllocateDescriptorSets(fog composite)");
 
-        // The march reads the single-sample depth -- the resolve at MSAA, gDepth at 1x
-        // -- exactly as SSAO and TAA do.
         const std::array<VkDescriptorImageInfo, 3> fogImages{
             VkDescriptorImageInfo{pointSampler, view.forwardDepthView, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
             VkDescriptorImageInfo{VK_NULL_HANDLE, view.fogStorage, VK_IMAGE_LAYOUT_GENERAL},
@@ -2002,11 +1635,8 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
         vkUpdateDescriptorSets(ctx->device, 3, fogWrites.data(), 0, nullptr);
     }
 
-    // --------------------------------------------------------------------- taa
-    // Always allocated, even with TAA off. Two RGBA16F targets at 1600x900 is 11.5 MB
-    // against the 649 MB the scene already holds, and allocating them lazily would
-    // mean a keypress that toggles TAA had to rebuild render targets rather than a
-    // pipeline -- which is the one thing the feature-key path deliberately avoids.
+    // Always allocated, even with TAA off: allocating lazily makes the keypress that
+    // toggles TAA rebuild render targets rather than a pipeline.
     const VkImageUsageFlags taaUsage = VK_IMAGE_USAGE_STORAGE_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | readback;
     for (uint32_t i = 0; i < 2; ++i) {
         view.taaHistory[i] = createImage(*ctx, extent, kHdrFormat, taaUsage, 1, VK_SAMPLE_COUNT_1_BIT,
@@ -2015,8 +1645,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
     }
     view.taaHistoryValid = false;
 
-    // Allocated on the same terms as the history above and for the same reason: a
-    // keypress that toggles TAA rebuilds a pipeline, never a render target.
     view.velocityTarget = createImage(*ctx, extent, VK_FORMAT_R16G16_SFLOAT,
                                  VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT | readback, 1,
                                  VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 1, "velocityTarget");
@@ -2033,10 +1661,6 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
                     "vkAllocateDescriptorSets(taa output)");
         }
 
-        // Four bindings per resolve set: the frame's lit image, the other history, the
-        // single-sample depth, and the history being written. The depth view is the
-        // same one SSAO and the forward pass use -- the resolve at MSAA, gDepth at 1x
-        // -- so TAA never has to know which of the two it got.
         constexpr uint32_t kTaaBindings = 5;
         std::array<VkDescriptorImageInfo, kTaaBindings * 2> taaImages{};
         std::array<VkWriteDescriptorSet, kTaaBindings * 2> taaWrites{};
@@ -2084,11 +1708,8 @@ void Renderer::createRenderTargets(View& view, VkExtent2D extent) {
 }
 
 void Renderer::createTaaPipeline() {
-    // Four sampled images and one storage image. Not computeImageSetLayout, which is
-    // the one-in-one-out shape bloom and SSAO share; a resolve reads four sources and
-    // parameterising that layout by count would make both harder to read than having
-    // two of them. Binding 3 is the output and 4 is 3.4's motion correction, which is
-    // why the storage image is in the middle rather than last.
+    // Binding 3 is the output and 4 the motion correction, so the storage image sits in
+    // the middle rather than last. taa.comp declares them that way round.
     std::array<VkDescriptorSetLayoutBinding, 5> bindings{};
     for (uint32_t i = 0; i < bindings.size(); ++i) {
         bindings[i] = {static_cast<uint32_t>(i),
@@ -2153,21 +1774,14 @@ void Renderer::destroyDepthPyramidPipeline() {
 void Renderer::recordDepthPyramidLayout(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("HiZLayout");
     if (view.depthPyramid.image == VK_NULL_HANDLE) return;
-    // A zone on a lone barrier, so that every GPU command inside `Frame` sits in one.
-    // It measures 0.001 ms, which is the point: an unnamed 0.001 and an unnamed 0.5 look
-    // identical from outside.
     GpuScope zone(gpuProfiler, cmd, slot, "HiZLayout");
-    // Before the first cull dispatch, because that dispatch binds the pyramid and its
-    // descriptor declares GENERAL. On frame one the image is still UNDEFINED, and a
-    // descriptor that disagrees with the image is a validation error at submit -- not at
-    // the dispatch that would have read it, and not only on the frame that matters.
+    // Has to precede the first cull dispatch: that dispatch binds the pyramid through a
+    // descriptor declaring GENERAL, and on frame one the image is still UNDEFINED, which
+    // is a validation error at submit rather than at the dispatch that would have read it.
     //
-    // UNDEFINED as the source every frame: the contents are rebuilt from scratch below, so
-    // there is nothing to preserve and discarding is cheaper than not.
-    // `VK_ACCESS_2_SHADER_READ_BIT` rather than `SHADER_SAMPLED_READ`, and it is not
-    // belt-and-braces: a combined image sampler in a compute shader is attributed to
-    // *storage* read, so a barrier naming only the sampled form covers none of it and sync
-    // validation says so at every dispatch that binds the pyramid.
+    // `VK_ACCESS_2_SHADER_READ_BIT` rather than `SHADER_SAMPLED_READ`: a combined image
+    // sampler in a compute shader is attributed to *storage* read, so a barrier naming
+    // only the sampled form covers none of it.
     transitionImage(cmd, view.depthPyramid.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, VK_ACCESS_2_NONE, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, view.depthPyramidLevels);
@@ -2179,14 +1793,9 @@ void Renderer::recordDepthPyramid(VkCommandBuffer cmd, uint32_t slot) {
 
     GpuScope zone(gpuProfiler, cmd, slot, "HiZ");
 
-    // The whole chain lives in GENERAL for the build. A per-level layout transition would
-    // be correct and would also be five barriers doing what one does: the levels are
-    // written and read as storage and sampled data in strict sequence, and it is the
-    // *execution* dependency between them that matters, not the layout.
-    // Already GENERAL -- `recordDepthPyramidLayout` put it there before the first cull
-    // dispatch bound it. What this orders is the write against that dispatch's read: the
-    // phase 0 cull has the pyramid bound, validation counts that as a read, and overwriting
-    // it here without a barrier is a write-after-read.
+    // Not a layout change -- it is already GENERAL. What this orders is the write below
+    // against the phase 0 cull's read: that dispatch has the pyramid bound, validation
+    // counts it as a read, and overwriting it here without a barrier is a write-after-read.
     transitionImage(cmd, view.depthPyramid.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_READ_BIT,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -2239,9 +1848,8 @@ void Renderer::destroyBloomPipelines() {
 }
 
 void Renderer::createSsaoPipelines() {
-    // Two sets: the frame UBO, because reconstructing world position from depth needs
-    // invViewProj and viewProj, then the image pair. The blur uses only the second and
-    // simply does not declare the first.
+    // The frame UBO is set 0 because reconstructing world position from depth needs
+    // invViewProj and viewProj.
     ssaoLayout = createLayout("ssao", {"ssao.comp", "ssao_blur.comp"}, {frameSetLayout, computeImageSetLayout},
                               {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SsaoPush)}});
     ssaoPipeline = createComputePipeline(*ctx, ssaoLayout, "ssao.comp");
@@ -2258,14 +1866,11 @@ void Renderer::destroySsaoPipelines() {
 }
 
 
-/// Depth-only, so no colour format and no blend state. D32 rather than D16: the box spans
-/// tens of metres and 16 bits of it puts visible terracing on a long floor.
+/// D32 rather than D16: the box spans tens of metres, and 16 bits of it puts visible
+/// terracing on a long floor.
 static constexpr VkFormat kShadowFormat = VK_FORMAT_D32_SFLOAT;
 
 void Renderer::createShadowResources() {
-    // One layer, so `createImage` hands back a plain 2D view and there is nothing to
-    // build per-layer views for -- the sampler is a sampler2DShadow rather than an array,
-    // and the pass renders into `shadowMap.view` directly.
     shadowMap = createImage(*ctx, {kShadowMapSize, kShadowMapSize}, kShadowFormat,
                             VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1,
                             VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_DEPTH_BIT, 1, "shadowMap");
@@ -2296,8 +1901,6 @@ void Renderer::createShadowResources() {
     info.compareOp = VK_COMPARE_OP_LESS_OR_EQUAL;
     vkCheck(vkCreateSampler(ctx->device, &info, nullptr, &shadowSampler), "vkCreateSampler(shadow)");
 
-    // Both maps share the sampler: same comparison, same border, same filter. What
-    // differs between them is the projection, and that is in the matrices, not here.
     const std::array<VkDescriptorImageInfo, 2> shadowInfos{
         VkDescriptorImageInfo{shadowSampler, shadowMap.view, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL},
         VkDescriptorImageInfo{shadowSampler, punctualShadowMap.view, VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL}};
@@ -2317,11 +1920,9 @@ void Renderer::createShadowResources() {
 void Renderer::createIblResources() {
     auto s = core::Profiler::scope("Renderer::createIbl");
 
-    // 512, not the 128 the split-sum chain needs. The convolved cubes below are sampled
-    // through a cosine or a roughness lobe and gain nothing from more texels, but a ray
-    // that misses reads this one *directly*, and a near-mirror surface resolves it almost
-    // 1:1 -- at 128 the sky in a polished reflection was visibly blocky. Baked once at
-    // startup, so this is load time and VRAM, not frame time.
+    // 512, not the 128 the split-sum chain needs: a ray that misses reads this cube
+    // *directly*, and a near-mirror surface resolves it almost 1:1 -- at 128 the sky in a
+    // polished reflection is visibly blocky.
     constexpr uint32_t kEnvSize = 512;
     constexpr uint32_t kIrradianceSize = 32;
     constexpr uint32_t kPrefilterSize = 128;
@@ -2352,11 +1953,9 @@ void Renderer::createIblResources() {
     samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
     vkCheck(vkCreateSampler(ctx->device, &samplerInfo, nullptr, &iblSampler), "vkCreateSampler(ibl)");
 
-    // ------------------------------------------------------------ compute layouts
     // One layout shape for all four passes: binding 0 the source cube, binding 1 the
-    // destination storage image. sky and brdf have no source, so they simply do not
-    // declare binding 0 and it is statically unused -- which is why every one of these
-    // shaders must put its *output* at binding 1, including the 2D BRDF LUT.
+    // destination storage image. Every one of these shaders has to put its *output* at
+    // binding 1, including the 2D BRDF LUT, because sky and brdf leave 0 undeclared.
     std::array<VkDescriptorSetLayoutBinding, 2> computeBindings{};
     computeBindings[0] = {0, VK_DESCRIPTOR_TYPE_COMBINED_IMAGE_SAMPLER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
     computeBindings[1] = {1, VK_DESCRIPTOR_TYPE_STORAGE_IMAGE, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr};
@@ -2369,11 +1968,10 @@ void Renderer::createIblResources() {
     vkCheck(vkCreateDescriptorSetLayout(ctx->device, &computeLayoutInfo, nullptr, &computeSetLayout),
             "vkCreateDescriptorSetLayout(ibl compute)");
 
-    // Registered only across the creation, which verifies as it goes. This set layout is
-    // local to the IBL bake and is destroyed at the end of the function, so leaving it in
-    // the map would leave a key pointing at a freed handle -- and handles get reused.
+    // Registered across the creation only. This layout is destroyed at the end of the
+    // function, so an entry left behind keys the map on a freed handle, and handles get
+    // reused -- the `erase` below is not optional.
     layoutBindings[computeSetLayout] = {computeBindings.begin(), computeBindings.end()};
-    // 32 bytes covers the largest of the four push blocks.
     const VkPipelineLayout computeLayout =
         createLayout("ibl", {"sky.comp", "irradiance.comp", "prefilter.comp", "brdf_lut.comp"}, {computeSetLayout},
                      {{VK_SHADER_STAGE_COMPUTE_BIT, 0, 48}});
@@ -2384,8 +1982,8 @@ void Renderer::createIblResources() {
     VkPipeline prefilterPipe = createComputePipeline(*ctx, computeLayout, "prefilter.comp");
     VkPipeline brdfPipe = createComputePipeline(*ctx, computeLayout, "brdf_lut.comp");
 
-    // Storage views: one per destination mip. A cube cannot be written through a CUBE
-    // view, so each of these is a 2D_ARRAY view of six faces.
+    // A cube cannot be written through a CUBE view, so each of these is a 2D_ARRAY view of
+    // six faces.
     std::vector<VkImageView> storageViews;
     storageViews.push_back(createStorageView(*ctx, envCube, 0));
     storageViews.push_back(createStorageView(*ctx, irradianceCube, 0));
@@ -2413,8 +2011,7 @@ void Renderer::createIblResources() {
     setAlloc.pSetLayouts = layouts.data();
     vkCheck(vkAllocateDescriptorSets(ctx->device, &setAlloc, sets.data()), "vkAllocateDescriptorSets(ibl)");
 
-    // Every set reads the environment cube and writes one storage view. The sky pass
-    // reads nothing, but binding 0 must still point somewhere valid.
+    // The sky pass reads nothing, but binding 0 must still point somewhere valid.
     for (uint32_t i = 0; i < setCount; ++i) {
         VkDescriptorImageInfo sampled{iblSampler, envCube.view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL};
         VkDescriptorImageInfo storage{VK_NULL_HANDLE, storageViews[i], VK_IMAGE_LAYOUT_GENERAL};
@@ -2435,14 +2032,12 @@ void Renderer::createIblResources() {
         vkUpdateDescriptorSets(ctx->device, 2, writes.data(), 0, nullptr);
     }
 
-    // ------------------------------------------------------------------- dispatch
     const auto dispatch2D = [](VkCommandBuffer c, uint32_t size, uint32_t layers) {
         vkCmdDispatch(c, (size + 7) / 8, (size + 7) / 8, layers);
     };
 
     VkCommandBuffer cmd = uploader->beginImmediate(*ctx);
 
-    // sky -> envCube mip 0
     transitionImage(cmd, envCube.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -2540,8 +2135,6 @@ void Renderer::createIblResources() {
     }
     uploader->endImmediate(*ctx);
 
-    // Everything above was scaffolding for a one-time computation; only the four
-    // images and the sampler outlive this function.
     for (VkImageView storage : storageViews) vkDestroyImageView(ctx->device, storage, nullptr);
     vkDestroyPipeline(ctx->device, skyPipe, nullptr);
     vkDestroyPipeline(ctx->device, irradiancePipe, nullptr);
@@ -2551,7 +2144,6 @@ void Renderer::createIblResources() {
     vkDestroyDescriptorPool(ctx->device, computePool, nullptr);
     vkDestroyDescriptorSetLayout(ctx->device, computeSetLayout, nullptr);
 
-    // The set the lighting pass binds: irradiance, prefiltered, BRDF LUT.
     VkDescriptorSetAllocateInfo iblAlloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
     iblAlloc.descriptorPool = descriptorPool;
     iblAlloc.descriptorSetCount = 1;
@@ -2573,7 +2165,6 @@ void Renderer::createIblResources() {
     }
     vkUpdateDescriptorSets(ctx->device, 4, iblWrites.data(), 0, nullptr);
 
-    // What this bake used, so `rebakeIblIfSunMoved` can tell whether it is still current.
     iblBakedSun = sunDirection;
     iblBakedColor = sunColorValue;
     iblBakedIntensity = sunIntensity;
@@ -2586,12 +2177,9 @@ void Renderer::createIblResources() {
 void Renderer::rebakeIblIfSunMoved() {
     if (iblBakedSun == sunDirection && iblBakedColor == sunColorValue && iblBakedIntensity == sunIntensity) return;
 
-    // The images and the one descriptor set that names them, and nothing else: `iblSetLayout`
-    // is created in `init` and is what every pipeline baked into its layout, so a re-bake
-    // must not touch it. Rebuilding pipelines here -- which the hot-reload path does, for its
-    // own reasons -- would be the expensive half of a reload for no reason.
-    //
-    // A device wait because the images are the ones frames in flight are sampling.
+    // The images and the set that names them, and nothing else: every pipeline baked
+    // `iblSetLayout` into its own layout, so a re-bake that destroyed it would take the
+    // pipelines with it. The wait is because frames in flight are sampling these images.
     vkDeviceWaitIdle(ctx->device);
     destroyIblResources();
     createIblResources();
@@ -2600,10 +2188,8 @@ void Renderer::rebakeIblIfSunMoved() {
 void Renderer::destroyIblResources() {
     vkDestroySampler(ctx->device, iblSampler, nullptr);
     iblSampler = VK_NULL_HANDLE;
-    // Freed, not just nulled. This ran once per process until shader hot reload
-    // started re-baking the environment, at which point nulling it alone would have
-    // leaked one set per reload and drained a 48-set pool -- exactly the failure 0.3b
-    // was, one function over.
+    // Freed, not just nulled: this runs again on every shader reload and every re-bake,
+    // so nulling it alone leaks one set apiece and drains a 48-set pool.
     vkFreeDescriptorSets(ctx->device, descriptorPool, 1, &iblSet);
     iblSet = VK_NULL_HANDLE;
     destroyImage(*ctx, envCube);
@@ -2614,10 +2200,9 @@ void Renderer::destroyIblResources() {
 
 void Renderer::destroyShadowResources() {
     if (ctx == nullptr || ctx->device == VK_NULL_HANDLE) return;
-    // VMA asserts on any dedicated allocation still live at teardown, which is how the
-    // absence of this function announced itself -- an abort in the allocator's
-    // destructor, one frame after a clean run, with nothing in it naming a shadow.
-    // `destroyImage` takes the view `createImage` made with it.
+    // The layer views were made by hand, so `destroyImage` does not take them. VMA aborts
+    // inside its own destructor on any allocation still live at teardown, which names
+    // nothing that would point back here.
     for (VkImageView& layer : punctualShadowLayerViews) {
         vkDestroyImageView(ctx->device, layer, nullptr);
         layer = VK_NULL_HANDLE;
@@ -2633,17 +2218,12 @@ void Renderer::createViewTargets() {
     for (uint32_t s = 0; s < extraViews.size(); ++s) {
         ViewSlot& v = extraViews[s];
         if (!v.live) continue;
-        // The table's extent, not the one it was built at: a view following the presenting
-        // view has just changed size, and one that named its own has not. Both answers come
-        // out of `viewExtent`, which is why the window resize needs no rule of its own.
         createViewSlot(v, viewExtent(views->at(s)));
     }
-    // **And rebind them, in the same function that replaced them.** A resize destroys every
-    // destination and builds new ones at the new extent, while the image descriptor array
-    // still names the old views -- which the validation layer reported as `imageView ... is
-    // invalid or has been destroyed` on the first draw after the first resize. `syncViews`
-    // cannot cover this: it reconciles against the *table's* revision, and a resize does
-    // not move it.
+    // Rebound in the same function that replaced them. A resize builds new destinations
+    // while the image descriptor array still names the old views, and `syncViews` cannot
+    // cover it: that reconciles against the *table's* revision, which a resize does not
+    // move. Dropping this draws through a destroyed imageView on the next frame.
     bindViewDestinations();
 }
 
@@ -2653,11 +2233,9 @@ void Renderer::destroyViewTargets() {
 }
 
 VkExtent2D Renderer::viewExtent(const ViewTable::Entry& e) const {
-    // Either component zero is the table's "follow the presenting view", and it is the
-    // table that enforces that rather than this -- see `ViewTable::create`. Clamped to 1
-    // for the same reason `createRenderTargets` clamps its halves: a window one pixel wide
-    // is a legal thing for a window manager to hand over mid-resize, and it reaches a
-    // following view through `primaryViewExtent`.
+    // Either component zero is the table's "follow the presenting view" -- see
+    // `ViewTable::create`. The clamp to 1 is the one `createRenderTargets` needs: a window
+    // one pixel wide is legal mid-resize, and it reaches a following view from here.
     const VkExtent2D want =
         (e.extent.x != 0 && e.extent.y != 0) ? VkExtent2D{e.extent.x, e.extent.y} : primaryViewExtent();
     return {std::max(1u, want.width), std::max(1u, want.height)};
@@ -2675,17 +2253,14 @@ void Renderer::createViewSlot(ViewSlot& v, VkExtent2D extent) {
 
 void Renderer::destroyViewSlot(ViewSlot& v) {
     destroyImage(*ctx, v.targets.destination);
-    // A `View` whose targets were never built frees nothing: every handle in it is null
-    // and `destroyRenderTargets` is written against exactly that.
     if (v.targets.gAlbedo.image != VK_NULL_HANDLE) destroyRenderTargets(v.targets);
     v.builtExtent = {};
 }
 
 GpuImage Renderer::createViewDestination(VkExtent2D extent) const {
-    // `swap.format`, and it is not a free choice: `tonemapPipeline` declares its colour
-    // attachment format once, and a destination in any other format is a validation error
-    // at the draw rather than a wrong image. SAMPLED because the whole point is that a
-    // material can read it; TRANSFER_SRC so `--capture-target` can too.
+    // `swap.format` is not a free choice: `tonemapPipeline` declares its colour attachment
+    // format once, and a destination in any other format is a validation error at the draw
+    // rather than a wrong image.
     return createImage(*ctx, extent, swap.format,
                        VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_SAMPLED_BIT |
                            VK_IMAGE_USAGE_TRANSFER_SRC_BIT,
@@ -2696,24 +2271,23 @@ void Renderer::syncViews() {
     auto zone = core::Profiler::scope("syncViews");
     if (views == nullptr || views->revision() == viewRevision) return;
 
-    // The same one wait `syncImages` takes, for both of its reasons at once: a destination
-    // about to be destroyed that an in-flight frame sampled, and the descriptor array about
-    // to be rewritten in a set an in-flight command buffer bound.
+    // Covers both hazards at once: a destination about to be destroyed that an in-flight
+    // frame sampled, and the descriptor array about to be rewritten in a set an in-flight
+    // command buffer bound.
     vkDeviceWaitIdle(ctx->device);
 
     extraViews.resize(views->slotCount());
     for (uint32_t s = 0; s < extraViews.size(); ++s) {
         const ViewTable::Entry& e = views->at(s);
         ViewSlot& v = extraViews[s];
-        // Zero for a slot the table has given up. A slot destroyed and reacquired between
-        // two syncs differs here too, because `destroy` moved the generation -- which is
-        // what stops the old destination being left in place under a new view.
+        // The generation, not just `live`: `destroy` moves it, so a slot reacquired between
+        // two syncs still compares unequal and the old destination is not left in place
+        // under a new view.
         const uint32_t want = e.live ? e.generation : 0;
         const VkExtent2D wantExtent = e.live ? viewExtent(e) : VkExtent2D{};
-        // The extent is the second half of the same question, because `ViewTable::resize`
-        // moves the revision without moving the generation: a live view that changed size
-        // has to rebuild seventeen targets, and comparing what they were built at is what
-        // says so without a dirty flag to keep in step.
+        // The extent is the second half of the same test: `ViewTable::resize` moves the
+        // revision without moving the generation, so a live view that changed size is
+        // indistinguishable here unless what it was built at is compared too.
         if (v.generation == want && v.builtExtent.width == wantExtent.width &&
             v.builtExtent.height == wantExtent.height) {
             continue;
@@ -2731,9 +2305,9 @@ void Renderer::syncViews() {
         if (!e.live) continue;
 
         createViewSlot(v, wantExtent);
-        // Uniform block 0 belongs to the presenting view and is never handed out, so the
-        // first table slot takes block 1. `ViewTable::init` is given `kMaxViews - 1`, which
-        // is what makes this arithmetic safe rather than a second cap to keep in step.
+        // Uniform block 0 belongs to the presenting view, so the first table slot takes
+        // block 1. `ViewTable::init` is given `kMaxViews - 1`, which is what keeps this
+        // arithmetic in range.
         v.targets.uniformSlot = s + 1;
         v.imageSlot = views->image(ViewId{s, e.generation}).index;
         v.live = true;
@@ -2746,10 +2320,8 @@ void Renderer::syncViews() {
 }
 
 void Renderer::bindViewDestinations() {
-    // The destination goes into the ordinary image array, at the slot `ViewTable::create`
-    // adopted. That is what makes what a view drew samplable by a sprite, a UI quad or a
-    // material without a second kind of texture handle -- and `syncImages` leaves these
-    // slots alone precisely so this can own them.
+    // These slots of the image array are owned here, not by `syncImages`, which skips any
+    // slot flagged borrowed. Loading one from the table instead double-frees it.
     bool any = false;
     for (const ViewSlot& v : extraViews) {
         if (!v.live || v.imageSlot == 0 || v.imageSlot >= overlayImages.size()) continue;
@@ -2775,10 +2347,9 @@ void Renderer::destroyRenderTargets(View& view) {
     destroyImage(*ctx, view.gDepthResolved); // no-op at 1x, where it was never created
     destroyImage(*ctx, view.presentTarget);  // no-op at native, where the blit was elided
 
-    // Views, then sets, then the image. The sets are freed rather than dropped: an
-    // earlier version of this teardown nulled a descriptor set handle without freeing
-    // it, and the pool ran dry on the sixth resize with an allocation failure a long
-    // way from the leak.
+    // The sets are freed, not merely nulled: nulling a set handle without freeing it runs
+    // the pool dry after a handful of resizes, and the allocation that fails is a long way
+    // from the leak.
     for (auto& storage : view.bloomStorageViews) {
         vkDestroyImageView(ctx->device, storage, nullptr);
         storage = VK_NULL_HANDLE;
@@ -2793,10 +2364,9 @@ void Renderer::destroyRenderTargets(View& view) {
             view.bloomUpSets[m] = VK_NULL_HANDLE;
         }
     }
-    // The sets go back with the views they name, for the reason given just above. The loop
-    // runs the full `kDepthPyramidMips` rather than `depthPyramidLevels` because a resize
-    // that shrinks the pyramid lowers that count, and the sets past the new top would
-    // otherwise be stranded with nothing left to free them.
+    // The full `kDepthPyramidMips`, not `depthPyramidLevels`: a resize that shrinks the
+    // pyramid lowers that count, stranding the sets above the new top with nothing left to
+    // free them.
     for (uint32_t m = 0; m < kDepthPyramidMips; ++m) {
         vkDestroyImageView(ctx->device, view.depthPyramidStorage[m], nullptr);
         view.depthPyramidStorage[m] = VK_NULL_HANDLE;
@@ -2805,11 +2375,6 @@ void Renderer::destroyRenderTargets(View& view) {
             view.depthPyramidSets[m] = VK_NULL_HANDLE;
         }
     }
-    // **Freed here, and it was not before this row.** The set names `depthPyramid.view`,
-    // which the line below destroys, and it was allocated once and never released -- a
-    // single view got away with that because the pool outlives it. A second View would not:
-    // it would allocate its own on first use and leak it on every teardown. The rule this
-    // restores is the one the whole function is: everything a View owns, released here.
     if (view.hizSet != VK_NULL_HANDLE) {
         vkFreeDescriptorSets(ctx->device, descriptorPool, 1, &view.hizSet);
         view.hizSet = VK_NULL_HANDLE;
@@ -2878,26 +2443,20 @@ void Renderer::destroyRenderTargets(View& view) {
     destroyImage(*ctx, view.hdrTarget);
 }
 
-// Set on this translation unit alone, because it is the only path here that varies with
-// the configured game and a define on the target would recompile the whole library on a
-// toggle. Empty when no game is configured or the game brings no shaders.
+// Set on this translation unit alone: a define on the target recompiles the whole library
+// on a game toggle. Empty when no game is configured or the game brings no shaders.
 #ifndef SUBSTRATE_GAME_SHADER_SRC_DIR
 #define SUBSTRATE_GAME_SHADER_SRC_DIR ""
 #endif
 
-// The two shader trees, and what each may include. The engine's -I list is its own tree
-// only; the game's is its own and then the engine's, so a game shader can include
-// frame.glsl while an engine shader can never reach into a game -- the same direction the
-// static library enforces in C++. Both the flags and the .vert/.frag/.comp filter below
-// duplicate the CMake rules, and the two have to agree or a reload compiles something the
-// build would not have.
+// The engine's -I list is its own tree only; the game's is its own and then the engine's,
+// so a game shader can include frame.glsl while an engine shader can never reach into a
+// game. Both these flags and the .vert/.frag/.comp filter below duplicate the CMake rules,
+// and the two have to agree or a reload compiles something the build would not have.
 //
-// Guarded by the same condition as the two functions that read it, and that is the whole
-// reason the guard is here: this is namespace scope, so without it the source directories
-// and the glslang path have to exist for the file to compile at all, and a release build
-// -- which must not bake a developer's home directory or a build machine's glslang into a
-// shipped binary -- could not turn them off. `-USUBSTRATE_GLSLANG` on Linux is the cheap
-// way to prove that still holds.
+// The guard has to stay at namespace scope: without it the source directories and the
+// glslang path must exist for the file to compile at all, and a release package must bake
+// neither a developer's home directory nor a build machine's glslang into the binary.
 #if defined(SUBSTRATE_SHADER_SRC_DIR) && defined(SUBSTRATE_GLSLANG)
 
 namespace {
@@ -2907,12 +2466,9 @@ struct ShaderTree {
     const char* includes;
 };
 
-// No output directory, and that absence is the point: a reload compiles to a temp file it
-// then deletes and publishes the bytes to gfx::overrideShaderBinary, so this table names
-// no path the build system owns and nothing here can leave an artifact in build/<cfg>/.
 // The game's tree comes second so that, where both trees hold a shader of the same name,
-// the game's is the one left in the override table -- which is the precedence
-// readShaderBinary already gives the game's directory over the engine's.
+// the game's is the one left in the override table -- the precedence readShaderBinary
+// already gives the game's directory. Reversing the order inverts it.
 constexpr ShaderTree kShaderTrees[] = {
     {SUBSTRATE_SHADER_SRC_DIR, "-I" SUBSTRATE_SHADER_SRC_DIR},
     {SUBSTRATE_GAME_SHADER_SRC_DIR, "-I" SUBSTRATE_GAME_SHADER_SRC_DIR " -I" SUBSTRATE_SHADER_SRC_DIR},
@@ -2926,16 +2482,9 @@ bool Renderer::recompileShaders() const {
 #if defined(SUBSTRATE_SHADER_SRC_DIR) && defined(SUBSTRATE_GLSLANG)
     namespace fs = std::filesystem;
 
-    // glslang has to be given a file to write, so it is given one nothing owns and nothing
-    // searches: a single path in the OS temp directory, reused by every shader in the pass
-    // and unlinked as soon as its bytes have been read. The build's shader directories are
-    // not named here at all, which is what makes "a reloaded shader leaves no artifact" a
-    // property of the code rather than a promise about it.
-    //
     // The pid is in the name because two engines reloading at the same instant would
     // otherwise read each other's module -- silently, and with a picture neither source
-    // explains. Nothing ever reads this path back: it is not on either search path, so
-    // even a file left behind by a crash mid-compile is unreachable rather than stale.
+    // explains.
     std::error_code tmpEc;
     const fs::path tmpDir = fs::temp_directory_path(tmpEc);
     if (tmpEc) {
@@ -2972,13 +2521,9 @@ bool Renderer::recompileShaders() const {
 
             std::error_code ignored;
             if (status != 0) {
-                // glslang echoes the file name on its first line whether or not it failed,
-                // so the message is the interesting part and it is already in `output`.
-                //
-                // Nothing is published, so the module already bound stays bound -- which is
-                // what the write-aside-and-rename dance used to buy by leaving the built
-                // SPIR-V on disk, now for free. glslang truncates its output before it
-                // knows whether the parse succeeded, and this deletes it either way.
+                // glslang truncates its output file before it knows whether the parse
+                // succeeded, so the remove below has to run on the failure path too --
+                // otherwise the next shader in the pass reads a zero-length module.
                 core::Logger::error(core::LogCategory::Render, "Shader reload failed: %s\n%s", src.filename().string().c_str(),
                               output.c_str());
                 fs::remove(tmp, ignored);
@@ -2986,9 +2531,8 @@ bool Renderer::recompileShaders() const {
                 continue;
             }
 
-            // Read, then removed, whether or not the read worked -- the next shader in the
-            // pass compiles to this same path, and a leftover would only be read by the
-            // compile that is about to overwrite it.
+            // Removed whether or not the read worked: the next shader in the pass compiles
+            // to this same path.
             const bool published = overrideShaderBinary(src.filename().string(), tmp);
             fs::remove(tmp, ignored);
             if (!published) {
@@ -3000,11 +2544,8 @@ bool Renderer::recompileShaders() const {
     }
     return ok;
 #else
-    // Qualified, like every other call in this file. It reads as pedantry and is not: this
-    // branch compiles only when SUBSTRATE_SHADER_HOT_RELOAD is off, which is only ever in a
-    // `build_release.sh` package -- so D2's namespace pass could not see it, and it has been
-    // a compile error in the portable configuration ever since. D9 found it by being the
-    // first row since to run a package build.
+    // This branch compiles only in a `build_release.sh` package, so a tree-wide edit that
+    // skips it stays green here and breaks the portable configuration alone.
     core::Logger::warn(core::LogCategory::Render,
                        "Shader hot reload needs the source path baked in at build time");
     return false;
@@ -3012,23 +2553,19 @@ bool Renderer::recompileShaders() const {
 }
 
 void Renderer::pollShaderReload() {
-    // Above the once-a-second gate, so the per-frame miss is in the table beside the hit.
-    // The miss is what says the stat sweep is cheap; the max is what says a recompile is
-    // not, and a zone that only appeared on the hit would report the second as the median.
+    // Above the once-a-second gate, so the per-frame miss lands in the table beside the
+    // hit; a zone that only appeared on the hit would report the recompile as the median.
     auto s = core::Profiler::scope("pollShaderReload");
 #if defined(SUBSTRATE_SHADER_SRC_DIR) && defined(SUBSTRATE_GLSLANG)
     namespace fs = std::filesystem;
 
-    // Once a second. The scan is a stat per file over ~30 files, which is cheap, but
-    // it is cheap in the same sense that a per-frame allocation is small.
     const auto now = std::chrono::steady_clock::now();
     if (now - lastShaderPoll < std::chrono::seconds(1)) return;
     lastShaderPoll = now;
 
-    // INT64_MIN means "nothing seen yet", and 0 would not have done. libstdc++ puts
-    // file_clock's epoch in 2174, so every real file's tick count is *negative* -- a
-    // zero initialiser here left the maximum pinned at zero and the poll never fired,
-    // which looks exactly like hot reload being off.
+    // INT64_MIN for "nothing seen yet", not 0: libstdc++ puts file_clock's epoch in 2174,
+    // so every real file's tick count is *negative*. A zero initialiser pins the maximum
+    // at zero and the poll never fires, which looks exactly like hot reload being off.
     int64_t newest = INT64_MIN;
     std::error_code ec;
     for (const ShaderTree& tree : kShaderTrees) {
@@ -3055,17 +2592,13 @@ void Renderer::pollShaderReload() {
 
     vkDeviceWaitIdle(ctx->device);
 
-    // Everything, in the order init() builds it. Render targets come down as well
-    // because the bloom and SSAO descriptor sets live there and were written with the
-    // sampler destroyBloomPipelines() is about to free.
+    // Render targets come down too: the bloom and SSAO descriptor sets live there and were
+    // written with the sampler destroyBloomPipelines() is about to free.
     destroyPipelines();
     destroyViewTargets();
     destroyBloomPipelines();
     destroySsaoPipelines();
     destroyTaaPipeline();
-    // Not the acceleration structures: they are the scene's geometry, not a shader
-    // artefact, and rebuilding them on every hot reload would add a second of blocking
-    // work to a path whose whole point is that it takes about one.
     destroyIblResources();
 
     createBloomPipelines();
@@ -3086,7 +2619,6 @@ VkPipelineLayout Renderer::createLayout(const char* pass, std::initializer_list<
                                         std::initializer_list<VkDescriptorSetLayout> sets,
                                         std::initializer_list<VkPushConstantRange> pushConstants,
                                         size_t constantCount) const {
-    // One list, counted by the language rather than by hand.
     const std::vector<VkDescriptorSetLayout> setList(sets);
     const std::vector<VkPushConstantRange> ranges(pushConstants);
 
@@ -3129,9 +2661,8 @@ void Renderer::verifyShaderBindings([[maybe_unused]] const char* pass,
             }
 
             const auto layoutIt = layoutBindings.find(setList[b.set]);
-            // A layout nobody registered -- there are none today, since setScene()
-            // registers the scene's. Skipped rather than failed, so adding a layout
-            // elsewhere loses the check but does not break the build.
+            // Skipped rather than failed: a layout created without a `record` call loses
+            // the check silently rather than breaking the build.
             if (layoutIt == layoutBindings.end()) continue;
 
             const auto& declared = layoutIt->second;
@@ -3143,9 +2674,9 @@ void Renderer::verifyShaderBindings([[maybe_unused]] const char* pass,
                 continue;
             }
 
-            // MAX_ENUM is "the reflector has no opinion" -- an acceleration structure,
-            // say. Not a mismatch, and treating it as one would make every future
-            // descriptor type an abort until this file learned about it.
+            // MAX_ENUM is "the reflector has no opinion" -- an acceleration structure, say.
+            // Treating it as a mismatch makes every descriptor type this file has not
+            // learned about an abort.
             if (b.type != VK_DESCRIPTOR_TYPE_MAX_ENUM && b.type != match->descriptorType) {
                 core::Logger::critical(core::LogCategory::Render, "%s: %s declares set %u binding %u as descriptor type %d, layout says %d",
                                  pass, name.c_str(), b.set, b.binding, static_cast<int>(b.type),
@@ -3166,9 +2697,9 @@ void Renderer::verifyShaderBindings([[maybe_unused]] const char* pass,
             }
         }
 
-        // The 2.7 half of the check. An unsupplied specialisation constant keeps the
-        // default the GLSL declares, and every default in this engine is the "feature
-        // on" case -- so forgetting one does not fail, it silently ignores the toggle.
+        // An unsupplied specialisation constant keeps the default the GLSL declares, and
+        // every default in this engine is the "feature on" case -- so forgetting one does
+        // not fail, it silently ignores the toggle.
         for (const uint32_t id : module.specConstantIds) {
             if (id >= constantCount) {
                 core::Logger::critical(core::LogCategory::Render,
@@ -3181,8 +2712,8 @@ void Renderer::verifyShaderBindings([[maybe_unused]] const char* pass,
 }
 
 uint64_t Renderer::featureKey() const {
-    // Order is arbitrary; only "changed or not" is read off it. The sample count needs
-    // more than one bit, so it goes in the low byte and the flags stack above it.
+    // The sample count needs more than one bit, so it takes the low byte and the flags
+    // stack above it.
     uint64_t key = static_cast<uint32_t>(msaaSamples);
     uint32_t bit = 8;
     for (const bool flag : {ssaoEnabled, bloomEnabled, specularAaStrength > 0.0f, edgeMsaaEnabled, rtEnabled,
@@ -3200,10 +2731,9 @@ uint32_t Renderer::addShaderVariant(ShaderVariant variant) {
                          variant.forwardFragment.c_str());
     variants.push_back(Variant{std::move(variant)});
 
-    // Forces the next updateInstances() to re-read every material's variant index. A
-    // game that creates a material *before* registering the variant it names would
-    // otherwise have had that index clamped to 0 once and never looked at again -- an
-    // ordering trap worth one assignment to remove rather than one paragraph to document.
+    // Forces the next updateInstances() to re-read every material's variant index.
+    // Without it, a game that creates a material *before* registering the variant it names
+    // keeps the index clamped to 0 forever.
     seenMaterialRevision = 0;
     return index;
 }
@@ -3225,23 +2755,16 @@ GraphicsPipelineDesc Renderer::variantDesc(const ShaderVariant& v, VariantPass p
         desc.colorFormats = {kAlbedoFormat, kNormalFormat, kOrmFormat, kEmissiveFormat};
         desc.depthFormat = kDepthFormat;
         desc.samples = msaaSamples;
-        // Sponza is correctly wound, and culling backfaces makes the G-buffer pass 2.4x
-        // cheaper (1.601 -> 0.674 ms at 4x) with pixel-identical output. Per variant
-        // since G5, which is what a single-sided leaf card needs -- and the default is
-        // still BACK_BIT, so a scene that never registers a variant pays nothing.
         desc.cullMode = v.cullMode;
         // The contract's id space: ENABLE_GSAA at 0, and nothing else the engine owns.
         desc.constants = {specularAaStrength > 0.0f ? 1u : 0u};
         break;
 
     case VariantPass::Shadow:
-        // Depth-only: no colour attachment, no blend state, and the fragment stage exists
-        // solely to discard alpha-masked texels -- without it Sponza's foliage casts solid
-        // rectangles, which is more obviously wrong than no shadows at all.
+        // The fragment stage exists solely to discard alpha-masked texels. Dropping it
+        // has Sponza's foliage cast solid rectangles.
         desc.vertexShader = "shadow.vert";
         desc.fragmentShader = v.shadowFragment;
-        // The same interleaved Vertex the G-buffer reads, but only the two attributes this
-        // pass touches: the position it projects and the UV the alpha-mask discard needs.
         desc.vertexAttributes = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(scene::Vertex, position)},
                                  {3, 0, VK_FORMAT_R32G32_SFLOAT, offsetof(scene::Vertex, uv)}};
         desc.depthFormat = kShadowFormat;
@@ -3251,35 +2774,18 @@ GraphicsPipelineDesc Renderer::variantDesc(const ShaderVariant& v, VariantPass p
         // Forward-Z in this map, so LESS rather than the GREATER the camera passes use.
         desc.depthCompare = VK_COMPARE_OP_LESS;
         /**
-         * Neither face is culled, and that is a *parity* decision rather than a quality
-         * one. Do not "optimise" it back to BACK_BIT, and note that it deliberately
-         * ignores `ShaderVariant::cullMode` for the same reason.
-         *
-         * A ray query has no notion of facing: a triangle is hit from either side, so under
-         * ray tracing every surface occludes. A raster shadow pass that culls back faces
-         * disagrees with the traced path for exactly the geometry whose front faces the light
-         * cannot see -- single-sided walls, open shells, anything enclosing a light.
-         *
-         * Rendering both faces costs no correctness for closed geometry: depth is LESS, so
-         * the nearer face wins and the recorded depth is the one BACK_BIT would have left.
-         * What it adds is the open and enclosing geometry culling silently dropped.
-         *
-         * The case that exposed it -- a point light inside the emissive sphere that
-         * represents it -- is no longer what this defends against: emissive geometry is
-         * masked out of shadows on both paths now (shadow.frag, and non-opaque BLAS geometry
-         * in AccelStruct). This remains because *non-emissive* single-sided geometry has the
-         * same asymmetry and nothing else fixes it.
-         *
-         * Acne is handled by the world-unit biases in shadow.glsl, which is where that job
-         * belongs -- front-face culling "fixes" acne by moving every depth sample a whole
-         * wall away from the surface being tested, and that detaches contact shadows.
+         * NONE, and deliberately ignoring `ShaderVariant::cullMode`. A ray query has no
+         * notion of facing, so under ray tracing every surface occludes; culling back faces
+         * here disagrees with the traced path for exactly the single-sided geometry whose
+         * front faces the light cannot see. Closed geometry loses nothing -- depth is LESS,
+         * so the nearer face still wins. Acne belongs to the world-unit biases in
+         * shadow.glsl: front-face culling "fixes" it by moving every depth sample a whole
+         * wall away from the surface under test, which detaches contact shadows.
          */
         desc.cullMode = VK_CULL_MODE_NONE;
         break;
 
     case VariantPass::Forward:
-        // Same four sets as lighting, but with the scene in slot 1 instead of the
-        // G-buffer: this pass has the surface in hand and does not read one.
         desc.vertexShader = "forward.vert";
         desc.fragmentShader = v.forwardFragment;
         desc.vertexAttributes = variantDesc(v, VariantPass::GBuffer).vertexAttributes;
@@ -3287,9 +2793,8 @@ GraphicsPipelineDesc Renderer::variantDesc(const ShaderVariant& v, VariantPass p
         desc.depthFormat = kDepthFormat;
         // Single-sample, matching hdrTarget. This is what forces the depth resolve.
         desc.samples = VK_SAMPLE_COUNT_1_BIT;
-        // No culling, and this one really is fixed rather than inherited from the
-        // variant. A translucent surface is visible from both sides by definition, and
-        // culling one of them turns a pane of glass into a one-way mirror.
+        // Fixed rather than inherited from the variant: a translucent surface is visible
+        // from both sides, and culling one turns a pane of glass into a one-way mirror.
         desc.cullMode = VK_CULL_MODE_NONE;
         // Test against the opaque depth so blended surfaces are hidden behind walls, but
         // never write: two blended surfaces must both contribute, and a depth write would
@@ -3302,10 +2807,7 @@ GraphicsPipelineDesc Renderer::variantDesc(const ShaderVariant& v, VariantPass p
     }
 
     // A variant's own constants sit above the engine's reserved eight, so an id a game
-    // writes cannot collide with one the engine adds later. Appended only when there are
-    // any: padding an empty list to eight would put a VkSpecializationInfo on every
-    // pipeline in the engine to say nothing, and the point of the reservation is the id
-    // space rather than the array length.
+    // writes cannot collide with one the engine adds later.
     if (!v.constants.empty()) {
         desc.constants.resize(kVariantConstantBase, 0u);
         desc.constants.insert(desc.constants.end(), v.constants.begin(), v.constants.end());
@@ -3327,12 +2829,9 @@ VkPipeline Renderer::variantPipeline(uint32_t variant, VariantPass pass) {
 
     const GraphicsPipelineDesc desc = variantDesc(v.desc, pass);
 
-    // The reflection check, per variant rather than per family, and this is where it
-    // earns most: a family's layout was written by hand in this file and its shaders
-    // reviewed beside it, while a variant's GLSL arrives from a game and is compiled
-    // against a layout its author never saw. A binding it invents, a descriptor type it
-    // disagrees about, or a `constant_id` below the reserved base aborts in Debug naming
-    // the shader -- rather than rendering a black surface with no explanation.
+    // Per variant, not per family: a variant's GLSL arrives from a game and is compiled
+    // against a layout its author never saw, so an invented binding aborts in Debug naming
+    // the shader rather than rendering a black surface.
     const char* named = v.desc.name.empty() ? "variant" : v.desc.name.c_str();
     if (pass == VariantPass::Forward) {
         verifyShaderBindings(
@@ -3351,79 +2850,46 @@ VkPipeline Renderer::variantPipeline(uint32_t variant, VariantPass pass) {
 
 std::vector<uint32_t> Renderer::shadingConstants() const {
     /**
-     * The shading id space, from features.glsl -- index is the constant_id. Shared by
-     * the deferred and forward paths because they gate the same features; forward.frag
-     * simply never reads SAMPLE_COUNT or ENABLE_SSAO, which costs it nothing.
-     *
-     * ENABLE_PUNCTUAL_SHADOWS follows updateLights(): it assigns atlas layers only
-     * when both toggles are on, so a constant that said otherwise would have the
-     * shader looking up layers nothing ever wrote.
-     *
-     * A method rather than a local in createPipelines() since G5: a variant's forward
-     * pipeline is built lazily, long after that function returned, and it shares this
-     * id space. `rtActive` is a member for the same reason and is decided there.
+     * The shading id space, from features.glsl -- the index *is* the constant_id, and the
+     * deferred and forward paths share it.
      */
     return {
         static_cast<uint32_t>(msaaSamples),
         ssaoEnabled ? 1u : 0u,
-        // Id 2 is vacant -- see features.glsl. The element stays because the index *is*
-        // the constant_id, so dropping it would renumber every constant below it; the
-        // value is ignored, since a map entry for an id no module declares does nothing.
+        // Id 2 is vacant -- see features.glsl. The element stays because dropping it
+        // renumbers every constant below it.
         0u,
         edgeMsaaEnabled ? 1u : 0u,
-        // Read only by the non-traced variants -- the ray-query files shadow
-        // unconditionally, because `render.rt` selecting the file is the same decision.
+        // Read only by the non-traced variants; the ray-query files shadow unconditionally.
         shadowsEnabled ? 1u : 0u,
         // Both, because updateLights assigns atlas layers only when both are on.
         (punctualShadowsEnabled && shadowsEnabled) ? 1u : 0u,
-        // The traced counterpart, read only by the ray-query variants. Supplied to every
-        // pipeline sharing this id space regardless -- forward.frag never reads it, and a
-        // constant nobody reads costs nothing.
+        // The traced counterpart, read only by the ray-query variants.
         rtShadowsEnabled ? 1u : 0u,
-        // `shadowMaskActive`, not the row: the pass runs only where there is a ray to
-        // share and more than one sample to share it between, and the shader reading a
-        // mask no pass wrote is the SSAO failure again.
+        // `shadowMaskActive`, not `rtShadowMaskEnabled`: the shader would otherwise read a
+        // mask on configurations where no pass writes one.
         shadowMaskActive ? 1u : 0u,
     };
 }
 
 void Renderer::createPipelines() {
-    // Shader module reads, SPIR-V reflection, and every graphics and compute pipeline.
-    // Also the largest single thing a hot reload pays for, which is why the zone is on
-    // the function rather than on the startup call site -- `pollShaderReload` reaches it
-    // mid-run and wants the same number.
     auto pipelineZone = core::Profiler::scope("createPipelines");
     destroyPipelines();
     builtFeatureKey = featureKey();
 
-    // Whether any traced path can run at all, decided once here so the ENABLE_RT
-    // constant, the SSR variant selection, and the record path that writes the ambient
-    // buffer cannot disagree -- a shader reading a buffer no pass filled is the failure
-    // this mirrors from SSAO.
+    // Decided once, so the ENABLE_RT constant, the SSR variant selection and the record
+    // path that writes the ambient buffer cannot disagree about whether a traced path ran.
     rtActive = rtEnabled && ctx->rayQuerySupported && accel.valid();
 
-    // Decided here, beside `rtActive`, and for the same reason: `shadingConstants()` is
-    // read below and again from every lazily-built forward pipeline, and the pass that
-    // fills the mask is chosen from this member at record time. At 1x there is one sample
-    // per pixel, so the resolve loop never runs and there is no second ray to share --
-    // running the pass there would be a full-screen trace to save nothing.
+    // A member rather than a local, because `shadingConstants()` is read again from every
+    // lazily-built forward pipeline and the pass that fills the mask is chosen from it at
+    // record time. At 1x there is no second sample to share a ray with.
     shadowMaskActive =
         rtActive && rtShadowsEnabled && rtShadowMaskEnabled && msaaSamples != VK_SAMPLE_COUNT_1_BIT;
 
-    // ------------------------------------------------- the three variant families
-    // Layouts here, pipelines in variantPipeline(): what a shader variant may change is
-    // its shaders, its cull mode and its blend, and what it may not is the layout it is
-    // compiled against. Building the layout once per family and the pipeline once per
-    // (family, variant) is that division expressed in code.
-    //
-    // Variant 0's three are built eagerly, because they are the engine's own and every
-    // scene draws them on its first frame -- creating them lazily would buy nothing and
-    // put a hitch on frame one. Every other variant waits until a draw needs it.
-    //
-    // No push constant range on the G-buffer or forward layouts. Everything that used to
-    // be pushed per draw is in the instance buffer at set 0 binding 3 (0.11). The shadow
-    // layout keeps one: the sun needs no index, the atlas does, and both go through the
-    // one family.
+    // A variant may change its shaders, its cull mode and its blend; it may not change the
+    // layout it is compiled against, which is why the layout is per family and the
+    // pipeline per (family, variant).
     shadowLayout = createLayout("shadow", {}, {frameSetLayout, scene->descriptorSetLayout(), overlaySetLayout},
                                 {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(uint32_t) * 2}});
     variantPipeline(0, VariantPass::Shadow);
@@ -3431,10 +2897,7 @@ void Renderer::createPipelines() {
     gbufferLayout = createLayout("gbuffer", {}, {frameSetLayout, scene->descriptorSetLayout(), overlaySetLayout}, {});
     variantPipeline(0, VariantPass::GBuffer);
 
-    // ------------------------------------------------------------------ decals
-    // Same sample count as the G-buffer, because it draws into it, and alpha-blended so
-    // a decal composites over the albedo already there rather than replacing it.
-
+    // Same sample count as the G-buffer, because it draws into it.
     GraphicsPipelineDesc decalDesc;
     decalDesc.vertexShader = "fullscreen.vert";
     decalDesc.fragmentShader = "decal.frag";
@@ -3449,23 +2912,16 @@ void Renderer::createPipelines() {
                                {{VK_SHADER_STAGE_FRAGMENT_BIT, 0, sizeof(DecalPush)}}, 0);
     decalPipeline = createGraphicsPipeline(*ctx, decalLayout, decalDesc);
 
-    // -------------------------------------------------------------- lighting pass
-
     GraphicsPipelineDesc lightingDesc;
     lightingDesc.vertexShader = "fullscreen.vert";
     // A 1x G-buffer is genuinely single-sampled, and single-sample images cannot bind
     // to sampler2DMS descriptors — the 1x baseline needs its own shader variant.
     const bool single = msaaSamples == VK_SAMPLE_COUNT_1_BIT;
-    // Four variants, from two independent binary facts. The sample count picks between
-    // the sampler2DMS and sampler2D pair; `rtActive` picks whether the acceleration
-    // structure at set 2 binding 2 is declared at all. Neither can be a specialisation
-    // constant -- one changes a descriptor's *type*, the other its existence.
-    //
-    // Ray tracing is one switch. Where it is on, this file traces both its shadows and
-    // the reflection pass beside it; where it is off, the cascade path below runs and the
-    // SSR march samples an image those cascades already shadowed. There is deliberately no
-    // state where one of the two is traced and the other is not -- that is the
-    // reflected-shadows-do-not-match-the-world bug, expressed as a configuration.
+    // Four files, not one shader with constants: the sample count changes a descriptor's
+    // *type* and `rtActive` changes whether the acceleration structure at set 2 binding 2
+    // exists at all, and a specialisation constant can express neither. Shadows and
+    // reflections move together on `rtActive` -- splitting them is the reflected-shadows-
+    // do-not-match-the-world bug, expressed as a configuration.
     if (rtActive) {
         lightingDesc.fragmentShader = single ? "lighting1x_rt.frag" : "lighting_rt.frag";
     } else {
@@ -3484,27 +2940,18 @@ void Renderer::createPipelines() {
                                   {}, lightingDesc.constants.size());
     lightingPipeline = createGraphicsPipeline(*ctx, lightingLayout, lightingDesc);
 
-    // ------------------------------------------------- light tile build (C35)
-    // Beside the lighting pass rather than with the other compute passes, because it takes
-    // the same multisampled/1x split for the same reason: it reads gDepth through
-    // `gbufferSetLayout`, and a 1x G-buffer cannot bind to a sampler2DMS descriptor. The
-    // sample count itself is a push constant, not a specialisation one -- see
-    // createComputePipeline.
+    // Takes the same multisampled/1x split as the lighting pass, and for the same reason:
+    // it reads gDepth through `gbufferSetLayout`, which a 1x G-buffer cannot bind to a
+    // sampler2DMS descriptor.
     const char* tileShader = single ? "light_tile1x.comp" : "light_tile.comp";
     lightTileLayout = createLayout("light tiles", {tileShader},
                                       {frameSetLayout, gbufferSetLayout, lightTileSetLayout},
                                       {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(LightTilePush)}});
     lightTilePipeline = createComputePipeline(*ctx, lightTileLayout, tileShader);
 
-    // --------------------------------------------------------- shadow mask pass
-    // Built only where it will run. The mask is read through a specialisation constant
-    // the same value decided, so a pipeline that exists without the constant set, or the
-    // reverse, is not a state this can reach.
-    //
-    // **No colour attachment.** The output is the storage image at set 3, so the pass
-    // rasterises a fullscreen triangle purely for the fragment invocations and the
-    // interpolated `vUV` -- which is the whole reason it is a draw and not a dispatch;
-    // shadowmask.frag says why.
+    // No colour attachment: the output is the storage image at set 3, and the fullscreen
+    // triangle is rasterised purely for the fragment invocations and the interpolated
+    // `vUV`. shadowmask.frag says why that has to be a draw and not a dispatch.
     if (shadowMaskActive) {
         GraphicsPipelineDesc maskDesc;
         maskDesc.vertexShader = "fullscreen.vert";
@@ -3521,27 +2968,13 @@ void Renderer::createPipelines() {
         shadowMaskPipeline = createGraphicsPipeline(*ctx, shadowMaskLayout, maskDesc);
     }
 
-    // ------------------------------------------------------------------- ssr pass
-    // Two pipelines: a compute march that writes reflected radiance, and a fullscreen
-    // additive draw that adds it back. Built here rather than beside the bloom and TAA
-    // pipelines because the march reads the G-buffer, so it takes the same
-    // multisampled/1x shader split the lighting pass does and has to be rebuilt when
-    // the sample count changes.
-    // Three extra sets in the ray-traced variant: the TLAS at set 3, the IBL layout at
-    // set 4 and the bindless scene set at set 5. The layout differs, so the pipeline
-    // does, so the *file* does -- the same reason the lighting pass has four variants
-    // rather than one with a constant.
-    //
-    // Sets 4 and 5 are what shading a hit costs. The environment cube alone would have
-    // done for the old reprojecting path; evaluating a BRDF at the hit needs the whole
-    // split-sum chain and the material array the G-buffer pass already binds.
+    // The march reads the G-buffer, so it takes the same multisampled/1x split the
+    // lighting pass does and has to be rebuilt when the sample count changes. The
+    // ray-traced variant takes three further sets -- the TLAS at 3, IBL at 4, the bindless
+    // scene set at 5 -- so the layout differs, and therefore the file does.
     const char* ssrShader = single ? "ssr1x.comp" : "ssr.comp";
     if (rtActive) ssrShader = single ? "ssr1x_rt.comp" : "ssr_rt.comp";
 
-    // The sharpest case D4 had: a six-entry array, a `setLayoutCount = rtActive ? 6 : 3`
-    // beside it, and the same two lists spelled out again for verification -- four
-    // statements of one fact, and the count was the one nothing checked. One list per
-    // branch now, and the branch is the thing that actually differs.
     constexpr VkPushConstantRange ssrRange{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(SsrPush)};
     if (rtActive) {
         ssrLayout = createLayout("ssr", {ssrShader},
@@ -3567,10 +3000,9 @@ void Renderer::createPipelines() {
     ssrCompositeLayout = createLayout("composite", {"fullscreen.vert", "composite.frag"}, {singleImageSetLayout});
     ssrCompositePipeline = createGraphicsPipeline(*ctx, ssrCompositeLayout, ssrCompositeDesc);
 
-    // Built only where a reduced ssrTarget will actually be composited, and the test is
-    // `builtSsrScale` rather than `ssrScale` because this runs on its own whenever
-    // `pipelinesDirty` fires -- a scene change, a shader reload -- on a frame where the
-    // image has not been rebuilt. `builtSsrScale` is what the live image is.
+    // `builtSsrScale`, not `ssrScale`: this runs whenever `pipelinesDirty` fires, which
+    // includes frames where the image has not been rebuilt, and only `builtSsrScale`
+    // describes the image that actually exists.
     if (builtSsrScale < 1.0f) {
         const char* upsampleShader = single ? "ssr_upsample1x.frag" : "ssr_upsample.frag";
         GraphicsPipelineDesc upsampleDesc = ssrCompositeDesc;
@@ -3580,35 +3012,20 @@ void Renderer::createPipelines() {
         ssrUpsamplePipeline = createGraphicsPipeline(*ctx, ssrUpsampleLayout, upsampleDesc);
     }
 
-    // ------------------------------------------------------------------- fog pass
     fogLayout = createLayout("fog", {"fog.comp"}, {frameSetLayout, computeImageSetLayout},
                              {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(FogPush)}});
     fogPipeline = createComputePipeline(*ctx, fogLayout, "fog.comp");
 
-    // Same layout and same shader as the SSR composite; only the blend differs, and
-    // that difference is the whole reason fog is not simply additive.
     GraphicsPipelineDesc fogCompositeDesc = ssrCompositeDesc;
     fogCompositeDesc.blend = GraphicsPipelineDesc::Blend::PremultipliedOver;
     fogCompositePipeline = createGraphicsPipeline(*ctx, ssrCompositeLayout, fogCompositeDesc);
 
-    // -------------------------------------------------------------- velocity pass
-    // One set, and it is the frame set: everything this pass reads -- the two camera
-    // matrices, the instance transforms, last frame's transforms -- is already there.
-    // No scene set, because it never touches a material; no shadow or IBL set, because
-    // it computes no radiance at all. It is the smallest pipeline layout in the engine
-    // and that is a property of the pass rather than an economy.
-
     GraphicsPipelineDesc velocityDesc;
     velocityDesc.vertexShader = "velocity.vert";
     velocityDesc.fragmentShader = "velocity.frag";
-    // The G-buffer's *binding* -- same buffer, same stride, so one vertex buffer still
-    // binds for every geometry pass -- but only the attribute this shader actually reads.
-    //
-    // Describing attributes the shader ignores is legal, and it is not free of meaning:
-    // it hands the driver inputs nothing consumes and trusts it to discard them, which is
-    // a behaviour to rely on rather than a decision to make. The validation layer says so
-    // outright, three times per pipeline build. Naming position alone states what this
-    // pass needs, and the stride in the binding is what keeps the layouts in step.
+    // Position alone. Declaring attributes this shader ignores is legal but draws a
+    // validation warning three times per pipeline build; the stride in the binding is what
+    // keeps this in step with the G-buffer's layout.
     velocityDesc.vertexBindings = {sceneVertexBinding()};
     velocityDesc.vertexAttributes = {{0, 0, VK_FORMAT_R32G32B32_SFLOAT, offsetof(scene::Vertex, position)}};
     velocityDesc.colorFormats = {VK_FORMAT_R16G16_SFLOAT};
@@ -3616,11 +3033,8 @@ void Renderer::createPipelines() {
     // Single-sample, which is what forces it to be its own pass and to test against the
     // resolved depth -- the same constraint and the same depth the forward pass took.
     velocityDesc.samples = VK_SAMPLE_COUNT_1_BIT;
-    // The G-buffer's cull mode, spelled out rather than read off variant 0's: this pass
-    // corrects the motion of surfaces the G-buffer kept, so culling the same faces is
-    // what keeps the two agreeing. A variant drawing both faces is not followed here --
-    // the extra fragments it writes are behind ones this already covered, and the depth
-    // test rejects them.
+    // The G-buffer's cull mode: this pass corrects the motion of surfaces the G-buffer
+    // kept, so culling different faces makes the two disagree.
     velocityDesc.cullMode = VK_CULL_MODE_BACK_BIT;
     // Test, never write. The depth is the G-buffer's, already resolved; a dynamic
     // fragment that is behind the surface the G-buffer kept must not write a correction
@@ -3630,24 +3044,14 @@ void Renderer::createPipelines() {
     velocityLayout = createLayout("velocity", {"velocity.vert", "velocity.frag"}, {frameSetLayout});
     velocityPipeline = createGraphicsPipeline(*ctx, velocityLayout, velocityDesc);
 
-    // --------------------------------------------------------------- forward pass
-    // Same four sets as lighting, but with the scene in slot 1 instead of the
-    // G-buffer: this pass has the surface in hand and does not read one.
-    //
-    // Set 4 is the opaque depth this pass is already testing against, bound so a fragment
-    // can also *read* how far away whatever is behind it is -- an intersection highlight, a
-    // soft particle, a water line. Legal against the same image the depth attachment names
-    // because that attachment is read-only here: DEPTH_READ_ONLY_OPTIMAL and STORE_OP_NONE
-    // are what make the feedback loop allowed rather than undefined. The engine's own
-    // `forward.frag` declares nothing at this set, so it costs a bound descriptor and no
-    // sample.
-
+    // Set 4 is the same opaque depth this pass tests against, bound so a fragment can also
+    // read it -- an intersection highlight, a soft particle, a water line. The feedback
+    // loop is legal only because that attachment is read-only here: DEPTH_READ_ONLY_OPTIMAL
+    // and STORE_OP_NONE. Give the pass depth writes and it becomes undefined.
     forwardLayout = createLayout(
         "forward", {},
         {frameSetLayout, scene->descriptorSetLayout(), tlasSetLayout, iblSetLayout, singleImageSetLayout}, {});
     variantPipeline(0, VariantPass::Forward);
-
-    // --------------------------------------------------------------- tonemap pass
 
     GraphicsPipelineDesc tonemapDesc;
     tonemapDesc.vertexShader = "fullscreen.vert";
@@ -3661,8 +3065,6 @@ void Renderer::createPipelines() {
     tonemapLayout = createLayout("tonemap", {tonemapDesc.vertexShader.c_str(), tonemapDesc.fragmentShader.c_str()},
                                  {frameSetLayout, hdrSetLayout}, {}, tonemapDesc.constants.size());
     tonemapPipeline = createGraphicsPipeline(*ctx, tonemapLayout, tonemapDesc);
-
-    // --------------------------------------------------------------- overlay pass
 
     GraphicsPipelineDesc overlayDesc;
     overlayDesc.vertexShader = "overlay.vert";
@@ -3684,11 +3086,6 @@ void Renderer::createPipelines() {
                                  {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(OverlayPush)}}, 0);
     overlayPipeline = createGraphicsPipeline(*ctx, overlayLayout, overlayDesc);
 
-    // ----------------------------------------------------- debug lines (S4.5)
-    // No descriptor set at all: a line needs a view-projection and its own colour, and
-    // taking the frame set to get the first would mean declaring the light buffer and
-    // the shadow matrices in a shader that reads neither.
-
     GraphicsPipelineDesc debugLineDesc;
     debugLineDesc.vertexShader = "debug_line.vert";
     debugLineDesc.fragmentShader = "debug_line.frag";
@@ -3700,9 +3097,8 @@ void Renderer::createPipelines() {
     };
     debugLineDesc.colorFormats = {swap.format};
     debugLineDesc.cullMode = VK_CULL_MODE_NONE;
-    // No depth attachment and no test -- see the note on `Renderer::debugLines`. A
-    // collider is inside the mesh it describes, so a depth-tested wireframe of one is
-    // hidden by exactly the geometry it is being compared against.
+    // No depth test: a collider is inside the mesh it describes, so a depth-tested
+    // wireframe of one is hidden by exactly the geometry it is being compared against.
     debugLineDesc.depthTest = false;
     debugLineDesc.depthWrite = false;
     debugLineDesc.blend = GraphicsPipelineDesc::Blend::AlphaOver;
@@ -3711,23 +3107,15 @@ void Renderer::createPipelines() {
                                    {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(glm::mat4)}});
     debugLinePipeline = createGraphicsPipeline(*ctx, debugLineLayout, debugLineDesc);
 
-    // ------------------------------------------------------------------ sprites (P4)
-    // Unconditional, beside the two above and for the same reason: one pipeline over two
-    // small shaders, against a lazily-created pipeline in the hot-reload path.
-
     GraphicsPipelineDesc spriteDesc;
     spriteDesc.vertexShader = "sprite.vert";
     spriteDesc.fragmentShader = "sprite.frag";
-    // No vertex bindings at all: the six corners come from `gl_VertexIndex` and everything
-    // else from the storage buffer, which is `particle.vert`'s shape and the argument for
-    // this one.
     spriteDesc.colorFormats = {swap.format};
     spriteDesc.cullMode = VK_CULL_MODE_NONE; // a flipped sprite winds the other way
     // No depth attachment and no test: the CPU sort is the order. See `recordSprites`.
     spriteDesc.depthTest = false;
     spriteDesc.depthWrite = false;
-    // Premultiplied over, matching what `sprite.frag` writes, and additive for free where a
-    // sprite's alpha is zero. One blend state, therefore one draw, therefore one sort.
+    // Premultiplied, matching what `sprite.frag` writes.
     spriteDesc.blend = GraphicsPipelineDesc::Blend::PremultipliedOver;
     spriteLayout = createLayout("sprite", {spriteDesc.vertexShader.c_str(), spriteDesc.fragmentShader.c_str()},
                                 {overlaySetLayout, spriteSetLayout},
@@ -3735,21 +3123,12 @@ void Renderer::createPipelines() {
     spritePipeline = createGraphicsPipeline(*ctx, spriteLayout, spriteDesc);
     setObjectName(*ctx, reinterpret_cast<uint64_t>(spritePipeline), VK_OBJECT_TYPE_PIPELINE, "sprite");
 
-    // -------------------------------------------------------------- particles (S3)
-    // Conditional on the scene having emitters rather than on a config flag, which is
-    // the same rule the skinning pass follows: five pipelines nobody will bind are five
-    // pipelines not worth compiling. Sponza builds none of them.
     if (particleCapacity > 0) createParticlePipelines();
 }
 
 void Renderer::destroyPipelines() {
     destroyParticlePipelines();
 
-    // Every variant's three, the engine's own included -- variant 0 is not a special
-    // case here and nulling the handles is the whole of a variant's teardown. That is
-    // what makes a feature toggle, a resize and a shader hot reload rebuild a game's
-    // shaders on exactly the same path as the engine's: they are forgotten, and the next
-    // draw that wants one builds it against whatever the constants now say.
     for (Variant& v : variants) {
         for (VkPipeline* pipeline : {&v.gbuffer, &v.shadow, &v.forward}) {
             vkDestroyPipeline(ctx->device, *pipeline, nullptr);
@@ -3757,11 +3136,9 @@ void Renderer::destroyPipelines() {
         }
     }
 
-    // Here rather than beside the shadow *image*, because this is a pipeline layout and
-    // createPipelines() begins by calling this. Freed with the image instead, it survived
-    // every rebuild that a feature toggle or a resize triggers and only the last one ever
-    // got destroyed -- validation caught it as a VkPipeline and a VkPipelineLayout
-    // outliving the device.
+    // Here rather than beside the shadow *image*: createPipelines() begins by calling this,
+    // so a layout freed with the image survives every feature toggle and resize and only
+    // the last one is ever destroyed.
     vkDestroyPipelineLayout(ctx->device, shadowLayout, nullptr);
     shadowLayout = VK_NULL_HANDLE;
 
@@ -3902,9 +3279,6 @@ void Renderer::shutdown() {
     destroyShadowResources();
     vkDestroyDescriptorSetLayout(ctx->device, iblSetLayout, nullptr);
     iblSetLayout = VK_NULL_HANDLE;
-    // The one handle in this function that was destroyed and not cleared, which is the
-    // defect the removed `!= VK_NULL_HANDLE` guards were hiding: 82 of them read as
-    // careful code and none of them checked the thing that actually goes wrong.
     vkDestroyDescriptorSetLayout(ctx->device, computeImageSetLayout, nullptr);
     computeImageSetLayout = VK_NULL_HANDLE;
     vkDestroyDescriptorSetLayout(ctx->device, particleSetLayout, nullptr);
@@ -3916,21 +3290,16 @@ void Renderer::shutdown() {
     vkDestroySampler(ctx->device, fontSampler, nullptr);
     fontSampler = VK_NULL_HANDLE;
 
-    // Freed with the pool above rather than individually, like every other set the
-    // renderer holds for its whole life; only the handle needs clearing.
     tlasSet = VK_NULL_HANDLE;
 
     swap.destroy(*ctx);
 }
 
 void Renderer::updateSunShadow(FrameUniforms& u) {
-    // There is no camera argument, and that is the entire point of this function. The
-    // cascades this replaced fitted their boxes to the view frustum, so the projection a
-    // surface was shadowed by depended on where the viewer stood; crossing a split
-    // changed the world size of a texel, the world distance the depth bias pushed an
-    // occluder, and the width the filter spanned, and the shadow slid across the wall as
-    // you walked towards it. Fitting to the scene instead makes that unrepresentable.
-
+    // No camera argument, deliberately: a box fitted to the view frustum makes the world
+    // size of a texel, the world distance the bias pushes an occluder, and the filter
+    // width all depend on where the viewer stands, and the shadow slides across the wall
+    // as you walk towards it.
     glm::vec3 boundsMin(-20.0f);
     glm::vec3 boundsMax(20.0f);
     if (scene != nullptr) {
@@ -3941,13 +3310,11 @@ void Renderer::updateSunShadow(FrameUniforms& u) {
     const glm::vec3 centre = (boundsMin + boundsMax) * 0.5f;
 
     // The sphere through the bounds' corners, not the box: a sphere is invariant under
-    // rotation, so swinging the sun cannot resize the box. A box fit would change the
-    // texel size with the sun's heading, which is the same crawl the cascades had, just
-    // driven by the light instead of the camera.
+    // rotation, so swinging the sun cannot resize it. A box fit changes the texel size
+    // with the sun's heading, and the shadow crawls.
     float radius = glm::length(boundsMax - boundsMin) * 0.5f;
 
-    // A cap, not a reach. Past this the world is simply outside the map and reads as
-    // lit -- worth it only for a scene far larger than the part anyone looks at.
+    // A cap, not a reach: past this the world is outside the map and reads as lit.
     if (shadowDistance > 0.0f) radius = std::min(radius, shadowDistance * 0.5f);
 
     const glm::vec3 lightDir = glm::normalize(sunDirection); // points *toward* the light
@@ -3962,8 +3329,7 @@ void Renderer::updateSunShadow(FrameUniforms& u) {
 
     u.sunViewProj = lightProj * lightView;
 
-    // View 1 is the sun's box. Fitted to the scene it rejects little, but the dispatch
-    // runs per view either way and a capped `shadowDistance` gives it something to do.
+    // Cull view 1 is the sun's box; 0 is the camera and 2.. the atlas layers.
     cullViewProj[1] = u.sunViewProj;
 
     // Both biases arrive in metres and leave in the units the shader compares in. The
@@ -3975,49 +3341,31 @@ void Renderer::updateSunShadow(FrameUniforms& u) {
 }
 
 void Renderer::updateLights(uint32_t slot, const glm::vec3& viewPosition, const glm::mat4& viewProj) {
-    // The one zone on this list that is not a spike. It is a CPU cull and two sorts over
-    // the light list, so its cost is a function of light count -- invisible on Sponza, a
-    // frame budget on a level with a thousand lights, and read by median rather than max.
     auto s = core::Profiler::scope("updateLights");
     lightScratch.clear();
     lightSourceScratch.clear();
 
-    // **Every view runs the whole of this** (C38); only the shadow *assignment* below is
-    // the primary's. The cull, the budget and the ranking are all functions of the matrix
-    // and position they were handed, so a view looking somewhere else shades the lights it
-    // can see rather than the ones the presenting camera could.
+    // Every view runs the whole of this; only the shadow *assignment* below is the
+    // primary's.
     const bool primary = view.primary;
 
-    // The sun goes in first and always, as its own member rather than as lights[0].
+    // The sun is always slot 0 of the buffer, ahead of any scene light.
     lightScratch.push_back(makeDirectionalLight(sunDirection, sunColorValue, sunIntensity));
     lightSourceScratch.push_back(kNoLightSource);
 
-    // ------------------------------------------------------ the shading budget (0.9)
-    // Clamped to what the buffer was actually allocated for at init. They agree unless
-    // someone raised the budget after init, and that case reports rather than writing
-    // past the mapping.
-    // **The buffer's own size, and there is no second number to disagree with it** (C40).
-    // `lightBudget` is a floor read once at init; what binds here is what the buffer was
-    // actually allocated for, and `growLightBuffer` raises that at the top of the next frame
-    // when the block below finds it short.
+    // The buffer's own size, not `lightBudget`: that is a floor read once at init, and
+    // `growLightBuffer` raises the allocation at the top of the next frame when the block
+    // below finds it short. Writing past this is writing past the mapping.
     const uint32_t budget = lightBufferCapacity;
 
-    // ------------------------------------------------------- volume culling (C8)
-    // Before the budget, and that ordering is the whole row: the budget used to rank
-    // every light in the *scene*, so a lamp behind the camera cost a slot a lamp in front
-    // of it wanted. Culling first turns it into a cap on lights that can affect this view.
-    //
-    // `lightVisible` is conservative and exact -- it rejects only lights whose own volume
-    // cannot reach any visible surface -- so this changes which lights are *considered*
-    // without changing which are *shaded* in any scene that fits the budget. That is why
-    // the golden set stays byte-identical across C8.
+    // Ahead of the budget: ranking before culling lets a lamp behind the camera take a
+    // slot from one in front of it.
     const Frustum frustum = extractFrustum(viewProj);
     lightVisibleScratch.clear();
     for (uint32_t i = 0; i < static_cast<uint32_t>(lights.size()); ++i) {
         if (lightVisible(lights[i], frustum)) lightVisibleScratch.push_back(i);
     }
-    // The presenting view's number, and only its: this is what the overlay reports, and a
-    // mirror's cull is not the frame's.
+    // The presenting view's number only -- this is what the overlay reports.
     if (primary) culledLights = static_cast<uint32_t>(lights.size() - lightVisibleScratch.size());
 
     // The sun has already taken a slot, so this is what is left for the scene's lights.
@@ -4026,26 +3374,21 @@ void Renderer::updateLights(uint32_t slot, const glm::vec3& viewPosition, const 
     const uint32_t dropped = sceneLights > room ? sceneLights - room : 0;
 
     if (dropped == 0) {
-        // Everything fits, so there is nothing to rank. Emitting in scene order rather
-        // than importance order is not laziness: the shader accumulates radiance in
-        // buffer order, floating-point addition is not associative, and reordering a
-        // set nobody is dropping from would move pixels to no purpose -- which 5.3's
-        // golden images would report as a regression, correctly.
-        // Scene order, which for the visible set is ascending index -- see above for why
-        // the order the shader sums in has to be stable.
+        // Scene order, not importance order: the shader accumulates radiance in buffer
+        // order and floating-point addition is not associative, so reordering a set
+        // nothing is dropped from moves pixels.
         for (uint32_t i : lightVisibleScratch) {
             lightScratch.push_back(lights[i]);
             lightSourceScratch.push_back(i);
         }
     } else {
-        // Rank, take the top `room`, then put the survivors back into scene order for
-        // the reason above: importance decides *which* lights, never in what order they
-        // are summed.
+        // Importance decides *which* lights survive, never the order they are summed in --
+        // hence the second sort back into scene order below.
         lightRankScratch = lightVisibleScratch;
 
-        // stable_sort, so equal-importance lights keep scene order and the frame stays
-        // bit-identical run to run. std::sort would pick between them by whatever the
-        // introsort pivot happened to do.
+        // stable_sort: equal-importance lights keep scene order and the frame stays
+        // bit-identical run to run. std::sort picks between them by whatever the introsort
+        // pivot happened to do.
         std::stable_sort(lightRankScratch.begin(), lightRankScratch.end(), [&](uint32_t a, uint32_t b) {
             return lightImportance(lights[a], viewPosition) > lightImportance(lights[b], viewPosition);
         });
@@ -4058,15 +3401,13 @@ void Renderer::updateLights(uint32_t slot, const glm::vec3& viewPosition, const 
         }
     }
 
-    // **What this view actually wanted, which is what grows the buffer** (C40). Taken across
-    // every view rather than the primary's alone -- a mirror seeing more lights than the
-    // camera is still a view that needs the room -- and acted on at the top of the next
-    // frame, because the buffer cannot be reallocated from inside a frame that is recording
-    // against it. So a light is dropped for one frame and shaded from then on.
+    // Taken across every view, not the primary's alone, and acted on at the top of the
+    // next frame -- the buffer cannot be reallocated from inside a frame recording against
+    // it, so a light is dropped for one frame and shaded from then on.
     if (dropped > 0) lightsWanted = std::max(lightsWanted, sceneLights + 1);
 
-    // Gated for the reason it is rate-limited at all: four views over budget would say the
-    // same thing four times a frame, each disagreeing with the last about the count.
+    // `primary` gates the log: four views over budget would say the same thing four times
+    // a frame, each disagreeing with the last about the count.
     if (primary && dropped != reportedLightDrops) {
         if (dropped > 0) {
             core::Logger::status(core::LogCategory::Render,
@@ -4080,24 +3421,13 @@ void Renderer::updateLights(uint32_t slot, const glm::vec3& viewPosition, const 
         reportedLightDrops = dropped;
     }
 
-    // ------------------------------------------------------- the shadow atlas
-    // A spot needs one projection, a point six. Lights that do not fit keep params.w at
-    // -1 and simply do not occlude: the alternative, dropping the light, changes the
-    // image far more than losing its shadow does.
+    // A spot needs one atlas projection, a point six; `params.w` at -1 is the sentinel for
+    // a light that did not fit and does not occlude.
     //
-    // Assignment is in light order rather than by importance. Ranking with hysteresis is
-    // what a scene that *overflows* needs -- otherwise the set of shadowed lights flips
-    // as the camera crosses the plane where two of them tie -- and it belongs here, on
-    // this loop, when a scene first needs it. Until then the overflow is reported and
-    // the order is the scene's.
-    //
-    // **The primary assigns; every other view looks its lights up** (C38). The atlas holds
-    // one assignment and `recordPunctualShadows` has already rendered it by the time a
-    // secondary chain reaches here, so a second assignment would put matrices in this
-    // view's buffer describing layers the atlas does not hold. A light this view ranked and
-    // the primary did not therefore illuminates without occluding -- exactly the
-    // degradation an atlas overflow already produces, and the same one this comment's
-    // first paragraph accepts for a light that did not fit.
+    // The primary assigns and every other view looks its lights up. The atlas holds one
+    // assignment, already rendered by `recordPunctualShadows` before a secondary chain
+    // reaches here, so a second assignment writes matrices describing layers the atlas
+    // does not hold.
     if (primary) {
         shadowMatrixScratch.clear();
         lightShadowLayer.assign(lights.size(), -1.0f);
@@ -4178,10 +3508,6 @@ void Renderer::updateLights(uint32_t slot, const glm::vec3& viewPosition, const 
             }
         }
 
-        // An error rather than a warning, and the level is the point: a scene that
-        // overflows has lights whose shadows switch on and off as the camera moves. It
-        // is a scene that needs fixing, not a condition to live with. Still not fatal --
-        // the frame renders and the lights that missed out illuminate without occluding.
         if (unshadowed != reportedShadowDrops) {
             if (unshadowed > 0) {
                 const auto used = static_cast<uint32_t>(shadowMatrixScratch.size());
@@ -4200,8 +3526,6 @@ void Renderer::updateLights(uint32_t slot, const glm::vec3& viewPosition, const 
         for (GpuLight& light : lightScratch) light.params.w = -1.0f;
     }
 
-    // Into this view's blocks. The selection above ranked and culled against the camera it
-    // was given, so what it produced describes one view and not the frame.
     std::memcpy(frames[slot].lightBuffer[view.uniformSlot].mapped, lightScratch.data(),
                 lightScratch.size() * sizeof(GpuLight));
     if (!shadowMatrixScratch.empty()) {
@@ -4209,40 +3533,23 @@ void Renderer::updateLights(uint32_t slot, const glm::vec3& viewPosition, const 
                     shadowMatrixScratch.size() * sizeof(glm::mat4));
     }
 
-    // Everything below belongs to the atlas, and the atlas is the primary's: it was
-    // rendered before this frame's first secondary chain recorded, so rewriting the
-    // staleness cache here would leave the next frame comparing its matrices against a
-    // mirror's -- and the cull views 2..2+layers against a projection nothing renders.
+    // Everything below belongs to the atlas, and the atlas is the primary's. Letting a
+    // secondary through rewrites the staleness cache with a mirror's matrices, and points
+    // cull views 2..2+layers at projections nothing renders.
     if (!primary) return;
 
-    // ----------------------------------------- which atlas layers need re-rendering
-    // Decided here because this is where the matrices exist; recordPunctualShadows only
-    // reads the answer. A layer is stale when its matrix changed, when it is newly
-    // assigned, or when anything in the scene moved.
-    //
-    // Geometry is all-or-nothing: a revision bump says *something* moved, not what or
-    // where, so every layer has to assume it was in shot. Narrowing that to the layers
-    // whose frustum the moved geometry actually touches needs skinned instances to
-    // report real world bounds, which today they do not.
     const auto layerCount = static_cast<uint32_t>(shadowMatrixScratch.size());
 
-    // Views 2..2+layers are the atlas layers, culled against their own frustum. Unused
-    // layers get the sun's box rather than a stale matrix: they are never drawn, and a
-    // matrix left over from a previous assignment would have the dispatch building a
-    // command list for a projection nothing renders through.
+    // Unused layers get the sun's box rather than a stale matrix: one left over from a
+    // previous assignment has the dispatch build a command list for a projection nothing
+    // renders through.
     for (uint32_t l = 0; l < kMaxShadowLayers; ++l) {
         cullViewProj[2 + l] = l < layerCount ? shadowMatrixScratch[l] : cullViewProj[1];
     }
 
-    // Two ways geometry can move, and the revision only catches one. A transform change
-    // bumps it; a *skinned* pose does not -- the instance stays where it is and only its
-    // bone matrices change, so a walking character kept a frozen shadow while its body
-    // animated out of it. Any skinned draw therefore dirties the atlas every frame.
-    //
-    // Conservative, and knowingly so: it re-renders every layer for one moving character,
-    // because a skinned instance reports an infinite world box today and so intersects
-    // every light there is. Narrowing this to the layers a mover actually touches is the
-    // optimisation, and it is blocked on those bounds being real.
+    // The instance revision catches a transform change but not a *skinned* pose: the
+    // instance stays where it is and only its bone matrices move, so a walking character
+    // keeps a frozen shadow. Any skinned draw therefore dirties the atlas every frame.
     const bool skinnedPresent = frames[slot].opaqueCommandCount > frames[slot].staticCommandCount;
     const bool geometryChanged =
         skinnedPresent || (instances != nullptr && instances->revision() != punctualCacheRevision);
@@ -4265,22 +3572,17 @@ void Renderer::ensureInstanceCapacity(uint32_t slots) {
     const uint32_t need = std::max(slots, 1u);
     if (need <= instanceCapacity) return;
 
-    // Double, so a table filled one instance at a time does not reallocate on every
-    // create(). The first call sizes exactly, because that one is the scene load and
-    // there is nothing to guess.
     const uint32_t grown = instanceCapacity == 0 ? need : std::max(need, instanceCapacity * 2);
 
-    // The buffers being replaced may be read by a frame still in flight. There is no
-    // per-frame retirement list in this engine and adding one to serve an event that
-    // happens at load time would be machinery for nothing.
+    // The buffers being replaced may still be read by a frame in flight.
     if (instanceCapacity != 0) {
         vkDeviceWaitIdle(ctx->device);
         core::Logger::status(core::LogCategory::Render, "Instance buffers grown: %u -> %u slots", instanceCapacity, grown);
     }
 
-    // Five regions, each rounded up so the next one starts on an offset a descriptor
-    // and an indirect draw will both accept. The CPU-written four come first so the
-    // staging copy is one range.
+    // Each region is rounded up so the next starts on an offset a descriptor and an
+    // indirect draw will both accept. Every CPU-written region comes before `stagedBytes`,
+    // which is what keeps the staging copy a single range.
     auto align = [](VkDeviceSize v) {
         return (v + kInstanceRegionAlign - 1) & ~(kInstanceRegionAlign - 1);
     };
@@ -4290,9 +3592,7 @@ void Renderer::ensureInstanceCapacity(uint32_t slots) {
     blendedRegion = align(templateRegion + cmdBytes);
     jointRegion = align(blendedRegion + cmdBytes);
     weightRegion = align(jointRegion + sizeof(glm::mat4) * std::max(jointCapacity, 1u));
-    // 3.4's previous transforms. Inside the staged range because the CPU writes it, and
-    // last within it because it was the last to arrive -- the ordering carries no other
-    // meaning, since every consumer addresses its region by offset.
+    // Last frame's transforms. Inside the staged range because the CPU writes it.
     prevRegion = align(weightRegion + sizeof(float) * std::max(weightCapacity, 1u));
     velocityCmdRegion = align(prevRegion + sizeof(glm::mat4) * grown);
     outRegion = align(velocityCmdRegion + cmdBytes);
@@ -4315,14 +3615,10 @@ void Renderer::ensureInstanceCapacity(uint32_t slots) {
                                          VMA_ALLOCATION_CREATE_HOST_ACCESS_SEQUENTIAL_WRITE_BIT |
                                              VMA_ALLOCATION_CREATE_MAPPED_BIT,
                                          "instanceStaging");
-        // HOST_ACCESS_RANDOM, not SEQUENTIAL_WRITE: the CPU reads this back. Sequential
-        // write maps write-combined memory, where a read is an order of magnitude
-        // slower than the atomic that produced the value.
-        // Two counters per list: instances, then the triangles those instances actually
-        // draw at the level the cull selected for them (C17). The second is the only place
-        // an LOD win is *measurable* rather than asserted -- the CPU's `stats.triangles` is
-        // what the scene holds, and the whole point of a chain is that a draw stops being
-        // that number.
+        // HOST_ACCESS_RANDOM, not SEQUENTIAL_WRITE: the CPU reads this back, and
+        // sequential write maps write-combined memory where a read is an order of
+        // magnitude slower than the atomic that produced the value. Two counters per list:
+        // instances, then the triangles those instances draw at the level the cull chose.
         f.cullStats = createBuffer(*ctx, sizeof(uint32_t) * kCullCommandLists * 2,
                                    VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
                                    VMA_MEMORY_USAGE_AUTO,
@@ -4334,9 +3630,9 @@ void Renderer::ensureInstanceCapacity(uint32_t slots) {
             VkDescriptorBufferInfo{f.instanceData.buffer, 0, sizeof(scene::GpuInstance) * grown},
             VkDescriptorBufferInfo{f.instanceData.buffer, prevRegion, sizeof(glm::mat4) * grown}};
 
-        // Into every view's copy of the set. The instance table is *not* per view -- one
-        // table feeds all of them -- but bindings 3 and 4 live in the frame set, and a
-        // view whose set still named the pre-growth buffer would draw from freed memory.
+        // Every view's copy of the set. One instance table feeds all of them, but bindings
+        // 3 and 4 live in the *frame* set, and a view still naming the pre-growth buffer
+        // draws from freed memory.
         std::array<VkWriteDescriptorSet, 2> tableWrites{};
         for (uint32_t v = 0; v < kMaxViews; ++v) {
             for (uint32_t i = 0; i < 2; ++i) {
@@ -4358,10 +3654,9 @@ void Renderer::ensureInstanceCapacity(uint32_t slots) {
             vkCheck(vkAllocateDescriptorSets(ctx->device, &setInfo, &f.cullSet), "vkAllocateDescriptorSets(cull)");
         }
 
-        // Grown with the command capacity, and zero-filled to "visible" rather than to
-        // zero: an empty visibility set would make the first frame after every resize draw
-        // nothing in phase 0 and everything in phase 1, which is correct but is a frame
-        // that skips the cheap path entirely.
+        // `commandVisibilityInit` fills this to "visible" rather than zero: an empty
+        // visibility set has the first frame after every resize draw nothing in phase 0
+        // and everything in phase 1, skipping the cheap path entirely.
         destroyBuffer(*ctx, f.commandVisibility);
         f.commandVisibility = createBuffer(*ctx, sizeof(uint32_t) * std::max(grown, 1u),
                                            VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -4386,11 +3681,9 @@ void Renderer::ensureInstanceCapacity(uint32_t slots) {
         }
         vkUpdateDescriptorSets(ctx->device, 5, cullWrites.data(), 0, nullptr);
 
-        // The skinning set, when there is a rig. Bound to this frame's joint matrices,
-        // which is why it is per frame -- but two of its six bindings are the *scene's*
-        // buffers, which is why writing it lives in its own function now (G4): those
-        // buffers move when the scene's geometry grows, and this is not the only place
-        // that has to notice.
+        // Per frame because it names this frame's joint matrices, but two of its six
+        // bindings are the *scene's* buffers, which move when the scene's geometry grows --
+        // so `writeSkinSet` has callers beyond this one.
         writeSkinSet(static_cast<uint32_t>(&f - &frames[0]), true);
 
         // Whatever these buffers held belonged to the old allocation.
@@ -4410,11 +3703,9 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
     jointCapacity = 0;
     weightCapacity = 0;
 
-    // **Cloth is a reason for this buffer to exist that has nothing to do with an
-    // animator** (C19). Before it, no rig meant no deformed vertex buffer at all, and a
-    // scene whose only moving geometry is a curtain has no rig -- so the gate is now "does
-    // anything deform" rather than "is there a skeleton", and the animator is allowed to be
-    // null the whole way down.
+    // The gate is "does anything deform", not "is there a skeleton": a scene whose only
+    // moving geometry is a curtain has no rig, so `animator` is allowed to be null the
+    // whole way down from here.
     const bool hasCloth = clothSystem != nullptr && !clothSystem->empty();
     const bool posed = animator != nullptr && (!s->skinVertices().empty() || !s->morphDeltas().empty());
     if (instances == nullptr || s == nullptr || (!posed && !hasCloth)) {
@@ -4427,9 +3718,9 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
     jointCapacity = animator != nullptr ? std::max(animator->totalJoints(), 1u) : 1u;
     weightCapacity = animator != nullptr ? std::max(animator->totalWeights(), 1u) : 1u;
 
-    // One output range per deformed *instance*, in slot order. Two copies of the same
-    // skinned mesh are two poses, so they cannot share vertices -- which is also why
-    // these instances are excluded from 4.5's run merging.
+    // One output range per deformed *instance*, in slot order: two copies of the same
+    // skinned mesh are two poses and cannot share vertices, which is also why these
+    // instances are excluded from run merging.
     skinDestBase.assign(instances->slotCount(), UINT32_MAX);
     for (uint32_t slot = 0; slot < instances->slotCount(); ++slot) {
         if ((instances->slot(slot).meta.z & scene::kInstanceDeformed) == 0u) continue;
@@ -4443,7 +3734,7 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
     }
 
     // The same conditional the scene's own buffers carry: an acceleration-structure
-    // build reads these vertices (S2.5), and the flags that say so are only legal when
+    // build reads these vertices, and the flags that say so are only legal when
     // VK_KHR_acceleration_structure is enabled.
     VkBufferUsageFlags rtUsage = 0;
     if (ctx->rayQuerySupported) {
@@ -4452,19 +3743,15 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
     }
 
     // TRANSFER_DST because cloth is the third producer of this buffer and the only one
-    // that is a copy rather than a dispatch (C19).
+    // that is a copy rather than a dispatch.
     skinnedVertices = createBuffer(*ctx, sizeof(scene::Vertex) * skinnedVertexCount,
                                    VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
                                        VK_BUFFER_USAGE_TRANSFER_DST_BIT | rtUsage,
                                    VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0, "skinnedVertices");
 
-    // One host-visible staging buffer per frame in flight, sized for every cloth vertex in
-    // the scene. Created here rather than in `createFrameResources` for the reason the
-    // particle buffers are: the size comes from the scene, so it has to be able to change
-    // without the frame resources being torn down.
-    // Already freed by the `destroySkinResources()` at the top of this function, which is
-    // where every other buffer here is released and where a teardown that is not a reload
-    // reaches them too.
+    // Created here rather than in `createFrameResources` because the size comes from the
+    // scene, so it has to change without the frame resources being torn down. Released by
+    // the `destroySkinResources()` at the top of this function.
     if (hasCloth) {
         const VkDeviceSize clothBytes =
             std::max<VkDeviceSize>(clothSystem->vertexCount(), 1) * sizeof(scene::Vertex);
@@ -4477,10 +3764,8 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
         }
     }
 
-    // Both influence arrays are allocated with a floor of one element. A scene with
-    // morph targets and no skin has nothing to put in the first, and a zero-sized
-    // storage buffer is not a binding Vulkan accepts -- the descriptor still has to
-    // point somewhere even though `influenceBase`'s sentinel means nothing reads it.
+    // A floor of one element: a scene with morph targets and no skin has nothing to put
+    // here, and a zero-sized storage buffer is not a binding Vulkan accepts.
     const size_t influenceBytes = std::max<size_t>(s->skinVertices().size(), 1) * sizeof(scene::SkinVertex);
     skinInfluences = createBuffer(*ctx, influenceBytes,
                                   VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
@@ -4499,18 +3784,14 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
                                s->morphDeltas().size() * sizeof(scene::MorphDelta));
     }
 
-    // The joint and weight regions live inside instanceData, so they are staged and
-    // copied by the machinery already there rather than by a second one of their own.
-    // Re-sizing the buffers is what puts them there -- and the capacity is reset first
-    // because `ensureInstanceCapacity` returns early when the slot count already fits,
-    // which it does: the regions moved, not the number of instances.
+    // The joint and weight regions live inside instanceData, so re-sizing is what puts
+    // them there. The capacity is zeroed first because `ensureInstanceCapacity` returns
+    // early when the slot count already fits -- and here it does: the regions moved, not
+    // the number of instances.
     const uint32_t slots = std::max(instanceCapacity, instances->slotCount());
     instanceCapacity = 0;
     ensureInstanceCapacity(slots);
 
-    // Where each cloth's vertices land, resolved once here rather than searched for per
-    // frame. Indexed by cloth, holding a byte offset into `skinnedVertices` -- so the
-    // per-frame copy is a memcpy and a `VkBufferCopy` with nothing to look up.
     clothDestBase.assign(hasCloth ? clothSystem->count() : 0u, UINT32_MAX);
     for (uint32_t c = 0; c < clothDestBase.size(); ++c) {
         const uint32_t slot = clothSystem->at(c).instance;
@@ -4524,8 +3805,8 @@ void Renderer::setAnimator(const scene::SceneAnimator* a, const scene::GltfScene
                    animator != nullptr ? animator->characterCount() : 0u,
                    hasCloth ? clothSystem->count() : 0u);
 
-    // The dynamic tier of 3.9 is built over the buffer that was just created, so it
-    // could not exist until now (S2.5).
+    // The acceleration structure's dynamic tier is built over the buffer created above,
+    // so it could not exist before this point.
     if (ctx->rayQuerySupported) {
         buildAccelerationStructures();
         pipelinesDirty = true;
@@ -4577,21 +3858,15 @@ void Renderer::drawSceneIndirect(VkCommandBuffer cmd, uint32_t slot, uint32_t vi
     const VkDeviceSize stride = sizeof(VkDrawIndexedIndirectCommand);
     const VkDeviceSize zero = 0;
 
-    // One indirect call per variant group rather than one per half, and both state
-    // changes bound lazily. Binding unconditionally is not free: doing it per group
-    // measured as most of a 0.1 ms regression on the punctual atlas pass, where a
-    // twenty-four-layer loop multiplies whatever this does by twenty-four.
-    //
-    // A scene using one variant -- which is every scene that has not registered any --
-    // therefore records exactly what it recorded before variants existed: one pipeline
-    // bind, one indirect draw, and the vertex buffer left as the caller bound it.
+    // Both binds are lazy. Binding unconditionally measured as most of a 0.1 ms regression
+    // on the punctual atlas pass, where a twenty-four-layer loop multiplies whatever this
+    // does by twenty-four.
     uint32_t boundVariant = UINT32_MAX;
     bool boundSkinned = false;
 
     for (const VariantRange& r : f.opaqueRanges) {
-        // The skinned half, out of the buffer skinning.comp wrote. Absent means the
-        // dispatch never ran, and drawing those commands from the scene's vertex buffer
-        // would give a character somebody else's silhouette.
+        // A null `skinnedVertices` means the dispatch never ran; drawing those commands
+        // from the scene's vertex buffer gives a character somebody else's silhouette.
         const bool skinned = r.first >= f.staticCommandCount;
         if (skinned && skinnedVertices.buffer == VK_NULL_HANDLE) continue;
 
@@ -4609,9 +3884,8 @@ void Renderer::drawSceneIndirect(VkCommandBuffer cmd, uint32_t slot, uint32_t vi
                                  r.count, stride);
     }
 
-    // Left bound, the skinned buffer would leak into whatever the caller records next.
-    // Restoring is one call against a class of bug that only shows up in the *following*
-    // pass -- which is exactly how it was found.
+    // Left bound, the skinned buffer leaks into whatever the caller records next -- a bug
+    // that only shows up in the *following* pass.
     if (boundSkinned) {
         VkBuffer sceneVb = scene->vertexBuffer();
         vkCmdBindVertexBuffers(cmd, 0, 1, &sceneVb, &zero);
@@ -4621,15 +3895,9 @@ void Renderer::drawSceneIndirect(VkCommandBuffer cmd, uint32_t slot, uint32_t vi
 /**
  * @brief Stage every cloth's solved vertices for this frame. True when there is a copy.
  *
- * The CPU half of the third producer: `ClothSystem::update` has already read the solve back
- * and reshaded it, so all that happens here is a `memcpy` per cloth into the frame's mapped
- * staging buffer and one `VkBufferCopy` region per cloth built beside it.
- *
- * One region per cloth rather than one covering everything, because the destinations are
- * whatever `skinDestBase` handed out and there is no reason two cloths' ranges are
- * adjacent. `clothCopies` is a member so the regions are built into storage that stops
- * growing after the first frame -- the pose-resolve row measured an allocation per body per
- * step at 179 ns and 2.4%, and this is the same shape one subsystem along.
+ * One copy region per cloth, not one covering everything: the destinations are whatever
+ * `skinDestBase` handed out, and nothing makes two cloths' ranges adjacent. `clothCopies`
+ * is a member so the regions stop reallocating after the first frame.
  */
 bool Renderer::recordClothUpload(uint32_t slot) {
     clothCopies.clear();
@@ -4656,24 +3924,19 @@ void Renderer::recordSkinning(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("Skinning");
     const bool dispatching = !skinBatches.empty() && skinPipeline != VK_NULL_HANDLE;
     const bool copying = recordClothUpload(slot);
-    // **The early-out tests both producers, and it used to test only the dispatch** -- so a
-    // scene whose only deformed geometry is cloth returned here and never emitted the
-    // barrier its copy needs (C19).
+    // Both producers, not just the dispatch: a scene whose only deformed geometry is cloth
+    // would otherwise return before the barrier its copy needs.
     if (!dispatching && !copying) return;
 
     GpuScope zone(gpuProfiler, cmd, slot, "Skinning");
 
     /*
-     * The transfer half, recorded before the dispatches so that one barrier covers both.
-     * The two write **disjoint ranges** of `skinnedVertices` -- `skinDestBase` hands every
-     * deformed instance its own -- so they need no barrier between them, only the one
-     * after, and that is the property that lets cloth be a third producer of one buffer
-     * rather than a second buffer.
+     * Recorded before the dispatches so one barrier covers both. The two write **disjoint
+     * ranges** of `skinnedVertices` -- `skinDestBase` hands every deformed instance its
+     * own -- so they need no barrier between them, only the one after.
      *
-     * A host-visible staging buffer per frame in flight and one `vkCmdCopyBuffer`, which is
-     * the pattern debug lines, sprites and particle spawns all use. Deliberately **not**
-     * `gfx::Uploader`, whose own header says every submit blocks and it is "fine for load
-     * time, never for the frame loop".
+     * Deliberately not `gfx::Uploader`: every submit it makes blocks, which its own header
+     * says is fine for load time and never for the frame loop.
      */
     if (copying) {
         FrameSync& f = frames[slot];
@@ -4682,8 +3945,8 @@ void Renderer::recordSkinning(VkCommandBuffer cmd, uint32_t slot) {
     }
 
     if (!dispatching) {
-        // Written by copy, read as vertex input. The same destination scope the dispatch
-        // path uses, because the consumers are the same passes.
+        // The same destination scope the dispatch path below uses: the consumers are the
+        // same passes.
         bufferBarrier(cmd, {skinnedVertices.buffer}, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                       VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
         return;
@@ -4692,12 +3955,6 @@ void Renderer::recordSkinning(VkCommandBuffer cmd, uint32_t slot) {
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skinPipeline);
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, skinLayout, 0, 1, &frames[slot].skinSet, 0, nullptr);
 
-    // One dispatch per skinned instance. That is per *object*, not per draw per pass:
-    // a scene with twenty characters records twenty dispatches once and then draws them
-    // through thirteen passes with two indirect calls each. Folding them into a single
-    // dispatch would mean every thread binary-searching a batch table to find out which
-    // instance it belongs to, which is machinery bought with a real cost to save a
-    // handful of push-constant writes.
     for (const SkinBatch& b : skinBatches) {
         SkinPush push{b.sourceBase, b.destBase,  b.influenceBase, b.jointBase,
                       b.vertexCount, b.morphBase, b.morphTargets,  b.weightBase};
@@ -4705,16 +3962,13 @@ void Renderer::recordSkinning(VkCommandBuffer cmd, uint32_t slot) {
         vkCmdDispatch(cmd, (b.vertexCount + 63) / 64, 1, 1);
     }
 
-    // Written by compute **and by the copy above**, read as vertex input by every geometry
-    // pass below. Both source scopes are named in one barrier rather than barriered
-    // separately: it is one buffer, two disjoint sets of ranges, and one consumer (C19).
+    // Both source scopes in one barrier: one buffer, two disjoint sets of ranges, one
+    // consumer. Naming only the compute half leaves the copy unordered against the draw.
     bufferBarrier(cmd, {skinnedVertices.buffer},
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_COPY_BIT,
                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_VERTEX_ATTRIBUTE_INPUT_BIT, VK_ACCESS_2_VERTEX_ATTRIBUTE_READ_BIT);
 }
-
-// ------------------------------------------------------------------ particles (S3)
 
 void Renderer::setParticles(const scene::ParticleSystem* system) {
     particles = system;
@@ -4723,9 +3977,6 @@ void Renderer::setParticles(const scene::ParticleSystem* system) {
     particleCapacity = system != nullptr ? system->capacity() : 0;
 
     if (particleCapacity == 0) {
-        // Every scene in this repository but one. Nothing is allocated, no pipeline is
-        // built, and recordParticles returns on its first line -- which is the whole of
-        // what "the pass costs nothing when the scene has no emitters" means.
         pipelinesDirty = true;
         return;
     }
@@ -4734,9 +3985,8 @@ void Renderer::setParticles(const scene::ParticleSystem* system) {
     while ((1u << particleIndexBits) < particleCapacity) ++particleIndexBits;
 
     createParticleResources();
-    // The pipelines are built in createPipelines(), which is where a feature toggle or
-    // a shader reload would rebuild them too. Marking dirty rather than calling it
-    // directly keeps that one path.
+    // Marked rather than built here, so a feature toggle, a shader reload and this all
+    // rebuild through the one path.
     pipelinesDirty = true;
 
     core::Logger::status(core::LogCategory::Render,
@@ -4749,8 +3999,6 @@ void Renderer::setParticles(const scene::ParticleSystem* system) {
 void Renderer::growLightBuffer() {
     if (ctx == nullptr || lightsWanted <= lightBufferCapacity) return;
 
-    // Doubled until it fits, as the physics world and the particle pool are: a scene lighting
-    // up gradually would otherwise reallocate every frame.
     uint32_t next = std::max(lightBufferCapacity, 1u);
     while (next < lightsWanted) next *= 2u;
 
@@ -4761,9 +4009,6 @@ void Renderer::growLightBuffer() {
     lightBufferCapacity = next;
     lightTileWords = (lightBufferCapacity + 31) / 32;
     if (lightTileWords > kLightTileMaxWords) {
-        // The stated consequence rather than a silent cap, exactly as at init: past what the
-        // build shader's shared mask can index, every light in the view is shaded by the
-        // deferred loop instead of being dropped from the image.
         core::Logger::warn(core::LogCategory::Render,
                            "Light buffer grew to %u, past the %u lights tiled assignment can index; "
                            "running the deferred loop over every light in the view instead.",
@@ -4771,9 +4016,8 @@ void Renderer::growLightBuffer() {
         lightTileWords = 0;
     }
 
-    // **Nothing is carried across.** Unlike the particle pool, the light buffer holds no
-    // state between frames: `updateLights` refills it from `lights` every frame for every
-    // view, so a fresh allocation is a correct one.
+    // Nothing is carried across: `updateLights` refills this from `lights` every frame for
+    // every view, so a fresh allocation is already a correct one.
     for (FrameSync& f : frames) {
         for (uint32_t v = 0; v < kMaxViews; ++v) {
             destroyBuffer(*ctx, f.lightBuffer[v]);
@@ -4806,20 +4050,15 @@ void Renderer::resizeParticlePool() {
     const uint32_t want = particles->capacity();
     if (want == particleCapacity) return;
     if (particleCapacity == 0) {
-        // Nothing to carry, so this is just the ordinary pairing.
         setParticles(particles);
         return;
     }
 
-    // **The pool is the one buffer with state in it.** Every sort key is rewritten from
-    // scratch by `particle_simulate.comp` each frame, and the spawn and emitter buffers are
-    // filled per frame from the CPU -- so the copy below is the whole of what a resize has to
-    // preserve. Without it a growth is a burst of particles vanishing at the moment the pool
-    // filled up, which is precisely the moment somebody is looking at it.
+    // The pool is the one buffer here with state in it -- keys are rewritten each frame by
+    // `particle_simulate.comp`, spawns and emitters from the CPU -- so this copy is the
+    // whole of what a resize has to preserve. Without it, growth is a burst of particles
+    // vanishing at the moment the pool filled up.
     const uint32_t carried = std::min(particleCapacity, want);
-    // Moved out of the member so the teardown below cannot free it. `destroyParticleResources`
-    // early-outs on `particlePool.buffer`, so the handle has to be put back before the call
-    // and taken away again after -- which is why this is a swap rather than a copy.
     GpuBuffer oldPool = particlePool;
     destroyParticleResourcesKeepingPool();
 
@@ -4845,14 +4084,10 @@ void Renderer::resizeParticlePool() {
 }
 
 void Renderer::createParticleResources() {
-    // Device-local and cleared to zero. Zero is a lifetime of zero, which is exactly
-    // what `particle_simulate.comp` reads as a dead slot -- so the pool starts empty
-    // without a shader or a fill pass to make it so. VMA zero-initialises a dedicated
-    // allocation on this driver, and the explicit fill below removes the "on this
-    // driver".
-    // `TRANSFER_SRC` as well as `DST`, because `resizeParticlePool` copies the old pool into
-    // the new one -- a pool that could only be written to would lose every particle in
-    // flight at the moment it grew.
+    // Zero is a lifetime of zero, which `particle_simulate.comp` reads as a dead slot, so
+    // the fill below is what makes the pool start empty on any driver rather than on this
+    // one. `TRANSFER_SRC` as well as `DST` because `resizeParticlePool` copies the old
+    // pool into the new one.
     particlePool = createBuffer(*ctx, static_cast<VkDeviceSize>(particleCapacity) * sizeof(scene::GpuParticle),
                                 VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                     VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
@@ -4862,19 +4097,14 @@ void Renderer::createParticleResources() {
                                 VMA_MEMORY_USAGE_AUTO, 0, "particleKeys");
 
     {
-        // One blocking submit, once, at load. The alternative -- a "first frame" flag
-        // threaded through recordParticles -- is a branch every frame to describe an
-        // event that happens once.
         VkCommandBuffer cmd = uploader->beginImmediate(*ctx);
         vkCmdFillBuffer(cmd, particlePool.buffer, 0, VK_WHOLE_SIZE, 0);
         vkCmdFillBuffer(cmd, particleKeys.buffer, 0, VK_WHOLE_SIZE, 0xFFFFFFFFu);
         uploader->endImmediate(*ctx);
     }
 
-    // Sized for the worst frame there is: every free slot filled at once. That is
-    // `capacity` spawns, and at 32 bytes each it is 128 KB for a 4096-slot pool -- far
-    // cheaper than the alternative, which is a cap on births per frame that nothing
-    // would report exceeding.
+    // Sized for the worst frame there is -- every free slot filled at once -- so nothing
+    // downstream needs a cap on births per frame.
     const VkDeviceSize spawnBytes = static_cast<VkDeviceSize>(particleCapacity) * sizeof(scene::GpuSpawn);
     const VkDeviceSize emitterBytes =
         std::max<VkDeviceSize>(particles->emitters().size(), 1) * sizeof(scene::GpuEmitter);
@@ -4921,9 +4151,7 @@ void Renderer::destroyParticleResources() {
     destroyParticleResourcesKeepingPool();
 }
 
-/// Everything but `particlePool`, which `resizeParticlePool` is about to copy out of. Split
-/// from `destroyParticleResources` rather than given a flag, because a flag on a teardown is
-/// read as "sometimes leaks" until somebody checks.
+/// Everything but `particlePool`, which `resizeParticlePool` is about to copy out of.
 void Renderer::destroyParticleResourcesKeepingPool() {
     if (ctx == nullptr) return;
 
@@ -4945,16 +4173,14 @@ void Renderer::destroyParticleResourcesKeepingPool() {
 }
 
 void Renderer::createParticlePipelines() {
-    // Five sets and the order is not free: ibl.glsl declares its set index and
-    // set 2 and ibl.glsl the environment cubes at set 3, and those two files are shared
-    // with the lighting passes. Renumbering them so the particle layout could be
-    // "tidier" would be changing four shaders to move one.
+    // The set order is not free: the .glsl files these shaders include declare these set
+    // indices, and they are shared with the lighting passes -- renumbering here changes
+    // four shaders to move one.
     const VkDescriptorSetLayout computeSets[] = {frameSetLayout, particleSetLayout, tlasSetLayout, iblSetLayout,
                                                  singleImageSetLayout};
 
-    // One range covering the largest of the three compute pushes. Vulkan allows a
-    // pipeline to push fewer bytes than its layout declares, so three layouts differing
-    // only in a size would buy nothing.
+    // One range covering the largest of the three compute pushes: Vulkan allows a pipeline
+    // to push fewer bytes than its layout declares.
     particleComputeLayout = createLayout("particle compute", {}, {computeSets[0], computeSets[1], computeSets[2],
                                                                 computeSets[3], computeSets[4]},
                                          {{VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(ParticleSimPush)}});
@@ -4969,7 +4195,6 @@ void Renderer::createParticlePipelines() {
     particleSortPipeline = createComputePipeline(*ctx, particleComputeLayout, "particle_sort.comp");
     particleSortLocalPipeline = createComputePipeline(*ctx, particleComputeLayout, "particle_sort_local.comp");
 
-    // ------------------------------------------------------------------- the draw
     particleDrawLayout = createLayout("particle draw", {},
                                       {frameSetLayout, particleSetLayout, scene->descriptorSetLayout()},
                                       {{VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(ParticleDrawPush)}});
@@ -4977,17 +4202,15 @@ void Renderer::createParticlePipelines() {
     GraphicsPipelineDesc desc;
     desc.vertexShader = "particle.vert";
     desc.fragmentShader = "particle.frag";
-    // No vertex bindings at all: the six corners come from `gl_VertexIndex` and
-    // everything else from the pool. There is no per-particle vertex buffer to keep in
-    // step with a simulation that runs entirely on the device.
+    // particle.vert takes its six corners from `gl_VertexIndex` and everything else from
+    // the pool, so there are deliberately no vertex bindings to keep in step with it.
     desc.colorFormats = {kHdrFormat};
     desc.depthFormat = kDepthFormat;
     desc.samples = VK_SAMPLE_COUNT_1_BIT; // hdrTarget is already resolved
     desc.cullMode = VK_CULL_MODE_NONE;    // a billboard has no back
     desc.depthTest = true;
     desc.depthWrite = false; // a blended surface must not occlude the ones behind it
-    // Premultiplied over, which is additive for a particle whose alpha is zero. One
-    // blend state, therefore one draw, therefore one global sort -- see particle.frag.
+    // Premultiplied, matching what particle.frag writes.
     desc.blend = GraphicsPipelineDesc::Blend::PremultipliedOver;
     particleDrawPipeline = createGraphicsPipeline(*ctx, particleDrawLayout, desc);
 
@@ -5013,10 +4236,8 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
 
     GpuScope zone(gpuProfiler, cmd, slot, "Particles");
 
-    // --------------------------------------------------------------- host uploads
-    // Straight into mapped memory during recording, exactly as the overlay's vertices
-    // are: this slot's fence was waited on at the top of drawFrame, so nothing in
-    // flight is reading them.
+    // Written into mapped memory during recording: this slot's fence was waited on at the
+    // top of drawFrame, so nothing in flight is reading them.
     const std::vector<scene::ParticleEmitter>& emitterList = particles->emitters();
     if (particleEmitterBuffers[slot].mapped != nullptr && !emitterList.empty()) {
         particles->writeGpuEmitters(static_cast<scene::GpuEmitter*>(particleEmitterBuffers[slot].mapped));
@@ -5027,8 +4248,6 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
         std::memcpy(particleSpawnBuffers[slot].mapped, spawns.data(), spawns.size() * sizeof(scene::GpuSpawn));
     }
 
-    // Reported once per change, not once per frame -- 0.9's rule, and for the same
-    // reason: a pool permanently over budget at 600 FPS would bury the log.
     if (particles->droppedSpawns() != reportedParticleDrops) {
         reportedParticleDrops = particles->droppedSpawns();
         core::Logger::warn(core::LogCategory::Render,
@@ -5040,16 +4259,14 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
     const VkDescriptorSet sets[] = {frames[slot].frameSet[view.uniformSlot], particleSets[slot], tlasSet, iblSet, view.sceneDepthSet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, particleComputeLayout, 0, 5, sets, 0, nullptr);
 
-    /// Storage write -> storage read/write, over both buffers. Every stage below is
-    /// separated from the next by exactly this, which is why it is a lambda rather than
-    /// four copies of eleven lines.
+    /// Storage write -> storage read/write, over both buffers. Every stage below has to be
+    /// separated from the next by exactly this.
     const auto computeBarrier = [&] {
         bufferBarrier(cmd, {particlePool.buffer, particleKeys.buffer}, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                       VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
     };
 
-    // ------------------------------------------------------------- simulate (S3.2)
     {
         ParticleSimPush push{};
         push.dt = particles->step();
@@ -5066,10 +4283,8 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
         vkCmdDispatch(cmd, (particleCapacity + 63) / 64, 1, 1);
     }
 
-    // ----------------------------------------------------------------- emit (S3.2)
-    // After simulate, never before: a slot freed this frame is reused this frame, and
-    // the other order would have simulate integrate and then kill the newborn sitting
-    // in it. particle_emit.comp carries the argument.
+    // After simulate, never before: a slot freed this frame is reused this frame, and the
+    // other order has simulate integrate and then kill the newborn sitting in it.
     if (!spawns.empty()) {
         computeBarrier();
 
@@ -5084,18 +4299,11 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
         vkCmdDispatch(cmd, (push.spawnCount + 63) / 64, 1, 1);
     }
 
-    // ----------------------------------------------------------------- sort (S3.3)
-    //
     // A bitonic network: log2(N) stages, stage k made of the passes j = k/2 .. 1. The
-    // passes with j < BLOCK stay inside one workgroup and are collapsed into a single
-    // shared-memory dispatch, which is what turns 78 dispatches into 15 at 4096
-    // particles. Everything is a fixed comparison network, so the result is
-    // bit-identical run to run and a particle scene can join the golden set.
+    // passes with j < BLOCK stay inside one workgroup and collapse into a single
+    // shared-memory dispatch. It is a fixed comparison network, so the result is
+    // bit-identical run to run -- which is what lets a particle scene be a golden case.
     {
-        // Its own zone inside the outer one, because the sort is the half of this pass
-        // whose cost is a *choice* -- the simulation is one dispatch over the pool and
-        // the sort is a whole bitonic network over it, and a number that added them
-        // together could not say which one to attack.
         GpuScope sortZone(gpuProfiler, cmd, slot, "ParticleSort");
 
         computeBarrier();
@@ -5112,8 +4320,7 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
             computeBarrier();
         };
 
-        // Stage 0: every stage up to BLOCK, entirely in shared memory. Nine dispatches
-        // become one.
+        // Every stage up to BLOCK, entirely in shared memory: nine dispatches become one.
         uint32_t firstGlobalStage = 2;
         if (!particleSortEnabled) firstGlobalStage = particleCapacity * 2;
         if (useLocal && particleSortEnabled) {
@@ -5131,7 +4338,6 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
         }
     }
 
-    // ----------------------------------------------------------------- draw (S3.5)
     const uint32_t aliveCount = particles->aliveCount();
     if (aliveCount == 0) return;
 
@@ -5175,10 +4381,6 @@ void Renderer::recordParticles(VkCommandBuffer cmd, uint32_t slot) {
     push.indexBits = particleIndexBits;
     vkCmdPushConstants(cmd, particleDrawLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(push), &push);
 
-    // Six vertices, `aliveCount` instances, and the instance count comes from the CPU
-    // rather than from an indirect buffer -- it is the tally the slot allocator already
-    // keeps, so reading it back off the device would be asking the GPU a question the
-    // host answered first.
     vkCmdDraw(cmd, 6, aliveCount, 0, 0);
 
     vkCmdEndRendering(cmd);
@@ -5230,10 +4432,9 @@ void Renderer::destroyCullPipeline() {
 }
 
 void Renderer::recordCull(VkCommandBuffer cmd, uint32_t slot, uint32_t phase, CullViews which) {
-    // Three names, not two. `CullView` is a second view's list-0 pass and is **never
-    // recorded in a one-view frame**, so the trace and the baseline table's `Cull` column
-    // keep meaning exactly what they meant -- a zone that only exists once something asks
-    // for it cannot move a published number.
+    // `CullView` is a second view's list-0 pass and is never recorded in a one-view frame,
+    // so `Cull` in the trace and in `scripts/baseline.py`'s table still means what it did
+    // before views existed. Merging the two names moves a published number.
     const char* zoneName = phase != 0 ? "CullHiZ" : (which == CullViews::Scene ? "Cull" : "CullView");
     auto cpuZone = core::Profiler::scope(zoneName);
     FrameSync& f = frames[slot];
@@ -5242,10 +4443,9 @@ void Renderer::recordCull(VkCommandBuffer cmd, uint32_t slot, uint32_t phase, Cu
 
     GpuScope zone(gpuProfiler, cmd, slot, zoneName);
 
-    // First use of a freshly made visibility buffer. Filled with 1 -- "everything was
-    // visible" -- so phase 0 draws the whole frustum set and the occlusion test only ever
-    // *removes* from a complete starting point. Filling with 0 would be equally correct
-    // and would make the first frame draw everything twice.
+    // Filled with 1, "everything was visible", so phase 0 starts from the whole frustum set
+    // and the occlusion test only ever removes. Filling with 0 is equally correct and makes
+    // the first frame draw everything twice.
     if (phase == 0 && f.commandVisibilityInit) {
         f.commandVisibilityInit = false;
         vkCmdFillBuffer(cmd, f.commandVisibility.buffer, 0, VK_WHOLE_SIZE, 1u);
@@ -5272,13 +4472,9 @@ void Renderer::recordCull(VkCommandBuffer cmd, uint32_t slot, uint32_t phase, Cu
     // instead of by hoping the host got there first.
     if (phase == 0) vkCmdFillBuffer(cmd, f.cullStats.buffer, 0, sizeof(uint32_t) * kCullCommandLists * 2, 0);
 
-    // ALL_TRANSFER rather than CLEAR, and the distinction is not pedantry: sync
-    // validation attributes `vkCmdFillBuffer`'s write to the *copy* stage, so a barrier
-    // sourced at CLEAR alone covers none of it and reports `write_barriers: 0` -- a
-    // barrier that is present, looks right, and orders nothing. ALL_TRANSFER spans
-    // COPY, BLIT, RESOLVE and CLEAR, so it is correct whichever stage the fill is
-    // attributed to. Found with SYNCHRONIZATION_VALIDATION on; standard validation
-    // never mentions it.
+    // ALL_TRANSFER rather than CLEAR: sync validation attributes `vkCmdFillBuffer`'s write
+    // to the *copy* stage, so a barrier sourced at CLEAR alone covers none of it and
+    // reports `write_barriers: 0` -- present, plausible, and ordering nothing.
     bufferBarrier(cmd, {f.cullStats.buffer}, VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_STORAGE_READ_BIT | VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
@@ -5287,13 +4483,10 @@ void Renderer::recordCull(VkCommandBuffer cmd, uint32_t slot, uint32_t phase, Cu
     const VkDescriptorSet cullSets[] = {f.cullSet, view.hizSet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_COMPUTE, cullLayout, 0, 2, cullSets, 0, nullptr);
 
-    // One dispatch per view -- which, since the shadow views were ripped out with the
-    // shadow system, is one: the camera.
     const uint32_t groups = (count + 63) / 64;
 
-    // Phase 1 is the camera alone. The shadow views have no depth pyramid of their own and
-    // no second draw to feed, so re-running them would be 25 dispatches writing commands
-    // nothing reads. A `Camera` pass is the camera alone by definition.
+    // Phase 1 is the camera alone: the shadow views have no depth pyramid and no second
+    // draw to feed, so re-running them writes commands nothing reads.
     const uint32_t firstView = 0u;
     const uint32_t viewCount = (phase == 0 && which == CullViews::Scene) ? kCullViews : 1u;
     for (uint32_t v = firstView; v < firstView + viewCount; ++v) {
@@ -5316,9 +4509,8 @@ void Renderer::recordCull(VkCommandBuffer cmd, uint32_t slot, uint32_t phase, Cu
         vkCmdDispatch(cmd, groups, 1, 1);
     }
 
-    // Written by compute, read by the command processor. This is the one barrier the
-    // whole feature needs, and getting its dstStage wrong shows up as last frame's
-    // visibility rather than as a validation error.
+    // Written by compute, read by the command processor. Getting the dstStage wrong here
+    // shows up as last frame's visibility rather than as a validation error.
     bufferBarrier(cmd, {f.instanceData.buffer}, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                   VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT,
                   VK_ACCESS_2_INDIRECT_COMMAND_READ_BIT, outRegion, instanceDataBytes - outRegion);
@@ -5328,10 +4520,9 @@ void Renderer::writeSkinSet(uint32_t slot, bool allocate) {
     FrameSync& f = frames[slot];
     if (skinPipeline == VK_NULL_HANDLE || skinnedVertices.buffer == VK_NULL_HANDLE || scene == nullptr) return;
     if (f.skinSet == VK_NULL_HANDLE) {
-        // Only the capacity path allocates. Called from `setScene`, a slot with no set is
-        // a slot whose instance buffers do not exist yet, and it will be written when they
-        // are -- allocating here would leave a set bound to a buffer that is about to be
-        // replaced.
+        // Only the capacity path allocates: from `setScene`, a slot with no set is a slot
+        // whose instance buffers do not exist yet, so allocating here binds the set to a
+        // buffer that is about to be replaced.
         if (!allocate) return;
         VkDescriptorSetAllocateInfo skinAlloc{VK_STRUCTURE_TYPE_DESCRIPTOR_SET_ALLOCATE_INFO};
         skinAlloc.descriptorPool = descriptorPool;
@@ -5367,11 +4558,8 @@ void Renderer::recordMaterialUpload(VkCommandBuffer cmd, uint32_t slot) {
     if (count == 0 || f.materialRevision == scene->materialRevision()) return;
     f.materialRevision = scene->materialRevision();
 
-    // `vkCmdUpdateBuffer` rather than a staging buffer, and the reason is the size: a
-    // material is 96 bytes, so a scene with a hundred of them is ten kilobytes -- inside
-    // the 65536-byte limit the command carries and cheaper than owning a staging
-    // allocation per frame slot for a table that usually never moves. A scene past that
-    // limit is written in chunks rather than truncated.
+    // 65536 is the limit `vkCmdUpdateBuffer` itself carries; a table past it is written in
+    // chunks rather than truncated.
     constexpr VkDeviceSize kMaxUpdate = 65536;
     const auto* bytes = reinterpret_cast<const std::byte*>(scene->materialData());
     const VkDeviceSize total = static_cast<VkDeviceSize>(count) * sizeof(scene::GpuMaterial);
@@ -5395,27 +4583,22 @@ void Renderer::recordInstanceUpload(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("InstanceUpload");
     FrameSync& f = frames[slot];
 
-    // The one zone deliberately *outside* `Frame`: this runs before the frame scope opens,
-    // and moving either the call or the scope would change what the published `Frame`
-    // number means. Named anyway, because a copy of the whole instance table plus the
-    // material updates is the only GPU work in the command buffer nothing else measures.
-    // Unconditional, above both early-outs, so a frame that uploads nothing reads as a
-    // named zero rather than as an absent zone.
+    // Deliberately outside `Frame`: this runs before the frame scope opens, and moving
+    // either the call or the scope changes what the published `Frame` number means.
+    // Unconditional and above both early-outs, so a frame that uploads nothing reads as a
+    // named zero rather than as a missing zone.
     GpuScope zone(gpuProfiler, cmd, slot, "InstanceUpload");
 
     recordMaterialUpload(cmd, slot);
     if (!f.instanceUploadPending) return;
     f.instanceUploadPending = false;
 
-    // One region covering all four. They were all written this frame -- the blended
-    // commands unconditionally, the rest whenever the table moved -- and splitting the
-    // copy to skip a few kilobytes would cost more in barriers than it saves in bytes.
     VkBufferCopy region{0, 0, stagedBytes};
     vkCmdCopyBuffer(cmd, f.instanceStaging.buffer, f.instanceData.buffer, 1, &region);
 
-    // Read by vertex shaders (the instance record), by the command processor (the
-    // indirect commands) and by compute (4.2's culling, against the bounds). All three
-    // are named here rather than barriered separately: it is one buffer and one copy.
+    // Three consumers in one barrier: vertex shaders read the instance record, the command
+    // processor the indirect commands, and compute the bounds. It is one buffer and one
+    // copy, so naming only one of them leaves the other two unordered.
     bufferBarrier(cmd, {f.instanceData.buffer}, VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                   VK_PIPELINE_STAGE_2_VERTEX_SHADER_BIT | VK_PIPELINE_STAGE_2_DRAW_INDIRECT_BIT |
                       VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -5426,9 +4609,8 @@ void Renderer::updateInstances(uint32_t slot) {
     auto cpuZone = core::Profiler::scope("updateInstances");
     FrameSync& f = frames[slot];
 
-    // Reported every frame, recomputed only when the table moves. These are properties
-    // of the table rather than of a frame slot, which is why they are not simply
-    // accumulated by whichever slot happened to rebuild.
+    // Properties of the table, not of a frame slot: reported every frame, recomputed only
+    // when the table moves.
     stats.drawCalls = opaqueDrawCalls;
     stats.primitives = opaqueInstanceCount;
     stats.triangles = opaqueTriangles;
@@ -5449,25 +4631,21 @@ void Renderer::updateInstances(uint32_t slot) {
         f.instanceUploadPending = true;
     }
 
-    // Last frame's transforms, every frame and *not* gated on the revision below --
-    // which is the one thing about this upload worth stating. The history changes at the
-    // end of every frame whether or not the table did, so a slot that skipped the copy
-    // because the revision matched would keep serving the history from two frames before
-    // it last uploaded. That reads as a stationary object smearing, intermittently, on
-    // whichever slot is stale: 64 bytes a slot is far cheaper than that bug.
+    // Not gated on the revision below: the history changes at the end of every frame
+    // whether or not the table did, so a slot that skipped the copy serves the history
+    // from two frames before it last uploaded -- a stationary object smearing,
+    // intermittently, on whichever slot is stale.
     if (taaEnabled && instances->dynamicCount() > 0) {
         std::memcpy(static_cast<std::byte*>(f.instanceStaging.mapped) + prevRegion, instances->previousData(),
                     instances->previousBytes());
         f.instanceUploadPending = true;
     }
 
-    // ---------------------------------------------------- which variant draws what (G5)
-    // Refreshed when the material table moves, and `variantAssignment` bumped only when
-    // the answer actually changed. Both halves matter. A game animating a material's
-    // colour bumps the material revision every frame, and regrouping every command for a
-    // value that did not move is exactly what the revision gate below exists to avoid;
-    // conversely a material that *does* change variant regroups the whole list without
-    // any instance having moved, which the table's own revision would never report.
+    // Both halves matter. A game animating a material's colour bumps the material revision
+    // every frame, so bumping `variantAssignment` unconditionally regroups every command
+    // for a value that did not move; conversely a material that *does* change variant
+    // regroups the whole list without any instance moving, which the table's own revision
+    // would never report.
     if (scene != nullptr && seenMaterialRevision != scene->materialRevision()) {
         seenMaterialRevision = scene->materialRevision();
         const uint32_t count = scene->materialTableCount();
@@ -5476,9 +4654,9 @@ void Renderer::updateInstances(uint32_t slot) {
         for (uint32_t m = 0; m < count; ++m) {
             uint32_t want = scene->material(m).shader;
             if (want >= variants.size()) {
-                // Clamped rather than fatal: a material naming a variant nobody
-                // registered renders as the default, which is wrong-looking and
-                // recoverable, where an abort takes down a game over one asset.
+                // Clamped rather than fatal: a material naming an unregistered variant
+                // renders as the default, which is wrong-looking and recoverable, where an
+                // abort takes down a game over one asset.
                 if (!reportedVariantOverflow) {
                     reportedVariantOverflow = true;
                     core::Logger::warn(core::LogCategory::Render,
@@ -5496,25 +4674,16 @@ void Renderer::updateInstances(uint32_t slot) {
         if (changed) ++variantAssignment;
     }
 
-    // The table is written once per revision per frame slot, not once per frame. A
-    // static scene therefore costs two memcpys at load and nothing afterwards, and a
-    // scene where one object moves costs the whole array -- which is the trade a flat
-    // uploadable array makes, and the reason the arrays are split by consumer.
+    // Once per revision per frame slot, not once per frame.
     if (f.instanceRevision == instances->revision() && f.variantAssignment == variantAssignment) return;
 
     auto* base = static_cast<std::byte*>(f.instanceStaging.mapped);
     std::memcpy(base, instances->shadingData(), instances->shadingBytes());
 
-    // ------------------------------------------------------- opaque draw commands
-    // One command per live opaque instance, `firstInstance` naming the slot the
-    // vertex shader will read its transform from. Runs of consecutive slots sharing a
-    // primitive collapse into a single instanced command (4.5): the shader reads
-    // `gl_InstanceIndex`, which counts up from `firstInstance` across the run, so N
-    // copies of one mesh cost one command and N transforms rather than N commands.
-    //
-    // Each command's bounds go out beside it, as the union over its run -- that is
-    // what the cull dispatch tests, and it is why a run is capped rather than merged
-    // without limit.
+    // `firstInstance` names the slot the vertex shader reads its transform from, and
+    // `gl_InstanceIndex` counts up from it across a merged run. Each command's bounds are
+    // the union over its run, which is what the cull dispatch tests -- and why a run is
+    // capped rather than merged without limit.
     auto* cmds = reinterpret_cast<VkDrawIndexedIndirectCommand*>(base + templateRegion);
     auto* cbounds = reinterpret_cast<GpuCommandBounds*>(base + boundsRegion);
     uint32_t count = 0;
@@ -5525,24 +4694,15 @@ void Renderer::updateInstances(uint32_t slot) {
     f.opaqueRanges.clear();
     skinBatches.clear();
 
-    // A slot's variant is its material's. An index past the cache -- a material created
-    // since the last refresh -- reads as the default, which is what an unassigned
-    // material is anyway, and the next refresh puts it in its real group.
+    // An index past the cache -- a material created since the last refresh -- reads as the
+    // default, and the next refresh puts it in its real group.
     const auto slotVariant = [&](const scene::GpuInstance& inst) {
         return inst.meta.y < materialVariant.size() ? materialVariant[inst.meta.y] : 0u;
     };
 
-    // The LOD chain for the command just written at `c` (C17).
-    //
-    // **Level 0 is read out of `cmds[c]` and not out of anything else.** The command is the
-    // authority on what it draws, so copying its range into the chain's first slot in the
-    // same statement that wrote it is the one spelling where the two cannot disagree --
-    // including for the deformed half, whose range is not the primitive's at all.
-    //
-    // The coarser levels come off the primitive the instance names, which is the second half
-    // of the same property: there is no per-command LOD array laid out beside `cmds`, so
-    // there is nothing for a merged run, a variant sweep or a later append to get out of
-    // step with. A chain travels inside the record that describes it.
+    /// The LOD chain for the command just written at `c`. Level 0 has to come out of
+    /// `cmds[c]` rather than off the primitive: the deformed half's range is not the
+    /// primitive's at all, and reading it from anywhere else lets the two disagree.
     const auto writeLodChain = [&](uint32_t c, const scene::GpuInstance& inst, bool allowChain) {
         cbounds[c].lods[0] = glm::uvec2(cmds[c].firstIndex, cmds[c].indexCount);
         cbounds[c].lodLevels = 1;
@@ -5560,24 +4720,9 @@ void Renderer::updateInstances(uint32_t slot) {
         cbounds[c].lodLevels = 1 + levels;
     };
 
-    // The walk that turns slots into commands, run once per (variant, mask) group so
-    // that each group comes out as a contiguous range. Two facts make that free rather
-    // than a cost: a run only ever merges slots drawing the *same primitive* --
-    // `firstIndex` and `indexCount` must both match below -- and one primitive has one
-    // material, which has one variant and one alpha mode. So a run was already
-    // all-one-variant and already all-masked or all-unmasked; splitting the walk does
-    // not split any run that would have formed on its own.
-    //
-    // What it does cost is runs that would have formed *across* a boundary, since a
-    // merge also requires slots to be adjacent. That grows with the number of groups, so
-    // an instance-heavy scene using many variants fragments more than the old two-group
-    // walk did. On Sponza it is worth nothing either way: its 103 primitives are all
-    // distinct and nothing merges at all.
-    // Which variants the live instances actually use. The sweep below is a walk over
-    // every slot, run once per variant, so a game that registers forty and uses two would
-    // otherwise walk the table forty times to find thirty-eight of them empty. One
-    // O(slots) pass to find out is the whole of the fix, and it is why registering a
-    // variant a level never places costs nothing on the CPU either.
+    // Which variants the live instances actually use. `sweep` walks every slot once per
+    // variant, so without this a game that registers forty and uses two walks the table
+    // forty times to find thirty-eight of them empty.
     variantsPresent.assign(variants.size(), 0u);
     for (uint32_t s = 0; s < instances->slotCount(); ++s) {
         const scene::GpuInstance& inst = instances->slot(s);
@@ -5603,41 +4748,33 @@ void Renderer::updateInstances(uint32_t slot) {
                 const scene::GpuInstanceBounds& b = instances->slotBounds(s);
 
                 if (wantDeformed) {
-                    // Its vertices come out of the buffer skinning.comp wrote, so this
-                    // half is never merged into a run and every command needs the rebase
-                    // and the batch record below.
+                    // Vertices come out of the buffer skinning.comp wrote, so this half is
+                    // never merged into a run: every command needs its own rebase and
+                    // batch record below.
                     if (s >= skinDestBase.size()) continue;
                     const uint32_t dest = skinDestBase[s];
                     if (dest == UINT32_MAX) continue;
 
-                    // Indices in the shared buffer are absolute, so shifting the whole
-                    // primitive to its own skinned range is exactly what a
-                    // negative-or-positive vertexOffset does. No index rewriting, no
-                    // second index buffer.
+                    // Indices in the shared buffer are absolute, so a signed vertexOffset
+                    // shifts the whole primitive to its own skinned range -- no index
+                    // rewriting and no second index buffer.
                     cmds[count] = {ranges[s].indexCount, 1, ranges[s].firstIndex,
                                    static_cast<int32_t>(dest) - static_cast<int32_t>(ranges[s].baseVertex), s};
 
-                    // Never culled. A skinned mesh's world bounds are a per-frame quantity
-                    // that nothing here computes -- the bind-pose box is wrong the moment
-                    // the animation leaves it, and a box that is wrong in the *small*
-                    // direction makes a character vanish. An infinite box is the honest
-                    // answer until something computes the real one; the cost is one
-                    // command per character.
+                    // An infinite box, so it is never culled. The bind-pose box is wrong
+                    // the moment the animation leaves it, and a box wrong in the *small*
+                    // direction makes a character vanish.
                     cbounds[count].boundsMin = glm::vec4(-1e30f, -1e30f, -1e30f, 0.0f);
                     cbounds[count].boundsMax = glm::vec4(1e30f, 1e30f, 1e30f, 0.0f);
-                    // Never LOD'd either, and for the same reason it is never culled: this
-                    // command draws out of the buffer `skinning.comp` wrote, whose contents
-                    // are the *bind-pose* indices shifted by `vertexOffset`. A simplified
-                    // level indexes vertices the skinning dispatch was never asked to
-                    // deform, so it would draw a character out of somebody else's pose.
+                    // Never LOD'd: this command draws out of the buffer `skinning.comp`
+                    // wrote, so a simplified level indexes vertices the dispatch was never
+                    // asked to deform and draws a character out of somebody else's pose.
                     writeLodChain(count, inst, false);
                     ++count;
 
-                    // **A cloth's vertices arrive by transfer, so there is no dispatch to
-                    // record.** This is the one site in the renderer that names the flag:
-                    // everything else about a cloth instance is `kInstanceDeformed`, which
-                    // it already carries, and gets the command, the rebase, the infinite
-                    // box and the skipped LOD chain above for free.
+                    // A cloth's vertices arrive by transfer, so there is no dispatch to
+                    // record. This is the only site in the renderer that names the flag;
+                    // everything else a cloth needs comes from `kInstanceDeformed` above.
                     if ((inst.meta.z & scene::kInstanceCloth) != 0u) continue;
 
                     const uint32_t character = inst.meta.w;
@@ -5654,11 +4791,9 @@ void Renderer::updateInstances(uint32_t slot) {
                            cmds[count - 1].indexCount == ranges[s].indexCount &&
                            cmds[count - 1].firstInstance + cmds[count - 1].instanceCount == s &&
                            cmds[count - 1].instanceCount < kMaxInstancesPerCommand) {
-                    // Extend the previous command: this slot is the next one along and
-                    // draws exactly the same geometry. Materials may still differ, since
-                    // the fragment stage reads its material out of the instance record
-                    // rather than out of the command -- but not their variants, which is
-                    // what the group this run lives in already guarantees.
+                    // Materials may differ across a merged run -- the fragment stage reads
+                    // its material out of the instance record, not out of the command --
+                    // but variants may not, which the group this run lives in guarantees.
                     cmds[count - 1].instanceCount++;
                     cbounds[count - 1].boundsMin = glm::min(cbounds[count - 1].boundsMin, b.worldMin);
                     cbounds[count - 1].boundsMax = glm::max(cbounds[count - 1].boundsMax, b.worldMax);
@@ -5673,11 +4808,8 @@ void Renderer::updateInstances(uint32_t slot) {
                 ++drawnInstances;
                 triangles += ranges[s].indexCount / 3;
             }
-            // Where this group's unmasked run ends. Guarding the merge on
-            // `count > groupStart` above is what stops the first masked command extending
-            // the last unmasked one: they cannot draw the same primitive, so it could not
-            // happen today, but the boundary is load-bearing and saying so costs one
-            // comparison.
+            // The `count > groupStart` guard on the merge above is what stops the first
+            // masked command extending the last unmasked one across this boundary.
             if (group == 0) unmasked = count - groupFirst;
         }
         if (count > groupFirst) f.opaqueRanges.push_back({variant, groupFirst, count - groupFirst, unmasked});
@@ -5687,36 +4819,30 @@ void Renderer::updateInstances(uint32_t slot) {
         if (variantsPresent[variant] != 0u) sweep(variant, false);
     }
 
-    // The w components carry the per-instance bounding radius, which means nothing for
-    // a union. Zeroed so a capture does not show a number that looks meaningful. Only the
-    // static commands need it: the deformed ones below write an explicit infinite box.
+    // The w components carry the per-instance bounding radius, which means nothing for a
+    // union. Zeroed so a capture does not show a number that looks meaningful.
     for (uint32_t i = 0; i < count; ++i) {
         cbounds[i].boundsMin.w = 0.0f;
         cbounds[i].boundsMax.w = 0.0f;
     }
 
-    // -------------------------------------------- deformed commands (4.4, S2.1)
-    // After every static one, so a pass can draw [0, staticCount) with the scene's
-    // vertex buffer and the rest with the deformed one.
+    // Deformed commands go after every static one, so a pass can draw [0, staticCount)
+    // with the scene's vertex buffer and the rest with the deformed one.
     f.staticCommandCount = count;
     const auto staticRangeCount = static_cast<ptrdiff_t>(f.opaqueRanges.size());
 
-    // `deforms()` rather than `animator != nullptr`, because cloth is a deformed instance
-    // with no rig behind it and this gate used to be the reason it drew out of the scene's
-    // vertex buffer instead of its own (C19).
+    // `deforms()`, not `animator != nullptr`: cloth is a deformed instance with no rig
+    // behind it, and testing the animator draws it out of the scene's vertex buffer.
     if (deforms()) {
         for (uint32_t variant = 0; variant < variants.size(); ++variant) {
             if (variantsPresent[variant] != 0u) sweep(variant, true);
         }
     }
 
-    // Two lists, each already ascending by variant, merged into one. This is the whole
-    // reason a range carries `first` rather than being read off a running total: the
-    // command *buffer* has to stay static-then-skinned, because that split is what lets a
-    // pass bind one vertex buffer per half, while the *walk* wants to be variant-major so
-    // the pipeline bind -- the expensive state change -- happens once per variant instead
-    // of once per half per variant. Stable, so a variant's static range still precedes
-    // its skinned one and the vertex buffer changes at most twice within it.
+    // Why a range carries `first` rather than a running total: the command *buffer* stays
+    // static-then-skinned so a pass binds one vertex buffer per half, while the *range
+    // list* is variant-major so the pipeline bind happens once per variant. The merge is
+    // stable, so a variant's static range still precedes its skinned one.
     std::inplace_merge(f.opaqueRanges.begin(), f.opaqueRanges.begin() + staticRangeCount, f.opaqueRanges.end(),
                        [](const VariantRange& a, const VariantRange& b) { return a.variant < b.variant; });
 
@@ -5724,9 +4850,8 @@ void Renderer::updateInstances(uint32_t slot) {
     f.instanceRevision = instances->revision();
     f.variantAssignment = variantAssignment;
 
-    // Two different numbers, and the overlay reports both: `drawCalls` is what the CPU
-    // submits and `primitives` is what the GPU draws. Instancing is exactly the gap
-    // between them, so collapsing them into one figure would hide the thing 4.5 buys.
+    // Two numbers the overlay reports separately: `drawCalls` is what the CPU submits and
+    // `primitives` what the GPU draws. Instancing is exactly the gap between them.
     opaqueDrawCalls = count;
     opaqueInstanceCount = drawnInstances;
     opaqueTriangles = triangles;
@@ -5737,16 +4862,9 @@ void Renderer::updateInstances(uint32_t slot) {
 
 uint32_t Renderer::buildBlendedCommands(uint32_t slot, const scene::Camera& camera) {
     auto cpuZone = core::Profiler::scope("buildBlendedCommands");
-    // Sort back to front. A blended surface reads whatever is already in the target,
-    // so the far ones have to land first; with depth writes off there is nothing to
-    // sort it out afterwards. The key is the instance's world-bounds centre along the
-    // view direction, which is per-object and so gets interpenetrating geometry wrong
-    // -- the standard trade, and the reason this is a sort and not a solution.
-    //
-    // This is the one pass whose commands the CPU must build every frame, and the one
-    // place 0.11 does not make recording O(passes): a sort is O(n log n) in the number
-    // of blended objects wherever it runs, and moving it to the GPU is a sort kernel
-    // rather than a culling one.
+    // Back to front: a blended surface reads whatever is already in the target, and with
+    // depth writes off nothing sorts it out afterwards. The key is the instance's
+    // world-bounds centre along the view direction, so interpenetrating geometry is wrong.
     forwardOrder.clear();
     const glm::vec3 eye = camera.position();
     const glm::vec3 forward = camera.forward();
@@ -5770,11 +4888,9 @@ uint32_t Renderer::buildBlendedCommands(uint32_t slot, const scene::Camera& came
     for (const auto& entry : forwardOrder) {
         const auto& r = instances->drawRanges()[entry.second];
 
-        // Variant *runs*, not variant groups, and this is the one pass where they cannot
-        // be groups: depth order is the whole point here, so the list may not be sorted
-        // by anything else and a variant that appears twice in that order gets two
-        // entries. A scene whose blended surfaces all use one variant still yields one
-        // range and one indirect draw, which is what it yielded before variants existed.
+        // Variant *runs*, not variant groups: depth order is the whole point here, so the
+        // list may not be sorted by anything else and a variant appearing twice in that
+        // order gets two entries.
         const uint32_t variant =
             instances->slot(entry.second).meta.y < materialVariant.size()
                 ? materialVariant[instances->slot(entry.second).meta.y]
@@ -5788,12 +4904,10 @@ uint32_t Renderer::buildBlendedCommands(uint32_t slot, const scene::Camera& came
         stats.triangles += r.indexCount / 3;
     }
 
-    // No run-merging here, deliberately. Depth order is the whole point of this pass
-    // and two adjacent slots being adjacent in *depth* is a coincidence.
     stats.blendedDrawCalls = count;
 
-    // Unconditional: these are rewritten every frame, so the copy is owed even when
-    // the table itself has not moved.
+    // Unconditional: these are rewritten every frame, so the copy is owed even when the
+    // table itself has not moved.
     frames[slot].instanceUploadPending = true;
     return count;
 }
@@ -5805,16 +4919,8 @@ uint32_t Renderer::buildVelocityCommands(uint32_t slot) {
     const auto& ranges = instances->drawRanges();
     uint32_t count = 0;
 
-    // Static half first, deformed second, so `recordVelocity` binds two vertex buffers
-    // and never four. No masked/unmasked split, unlike the opaque list: this pass has no
-    // alpha-test variant to select between -- a correction written for a texel the
-    // G-buffer discarded is rejected by the depth test rather than by a fragment shader.
-    //
-    // No run-merging either. A run's members must be adjacent slots drawing one
-    // primitive *and* share a command, and a command's instances share one draw -- but
-    // `prevInstances[gl_InstanceIndex]` differs per instance and is read per vertex, so
-    // merging would be correct here and buys nothing on any scene that exists: dynamic
-    // instances are characters and bodies, which are distinct meshes.
+    // Static half first, deformed second, so `recordVelocity` binds two vertex buffers and
+    // never four.
     for (uint32_t s = 0; s < instances->slotCount(); ++s) {
         const scene::GpuInstance& inst = instances->slot(s);
         constexpr uint32_t kWant = scene::kInstanceLive | scene::kInstanceDynamic;
@@ -5836,8 +4942,8 @@ uint32_t Renderer::buildVelocityCommands(uint32_t slot) {
             const uint32_t dest = skinDestBase[s];
             if (dest == UINT32_MAX) continue;
 
-            // The same rebase the opaque list applies, and it has to be the same or the
-            // pass draws a character's silhouette out of somebody else's vertices.
+            // Has to be the same rebase the opaque list applies, or this pass draws a
+            // character's silhouette out of somebody else's vertices.
             cmds[count++] = {ranges[s].indexCount, 1, ranges[s].firstIndex,
                              static_cast<int32_t>(dest) - static_cast<int32_t>(ranges[s].baseVertex), s};
         }
@@ -5856,9 +4962,8 @@ void Renderer::recordVelocity(VkCommandBuffer cmd, uint32_t slot) {
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
 
-    // CLEAR, and the clear value is the whole static-geometry path: zero means "the
-    // reprojection taa.comp already computed was right". Nothing has to draw to say so,
-    // which is why a scene with nothing dynamic in it pays a clear and no draws.
+    // The clear value is the whole static-geometry path: zero means "the reprojection
+    // taa.comp already computed was right", so nothing has to draw to say so.
     VkRenderingAttachmentInfo color = colorAttachment(view.velocityTarget.view, {{0.0f, 0.0f, 0.0f, 0.0f}});
 
     // The resolved depth, in the same read-only layout the forward pass tests against.
@@ -5910,8 +5015,7 @@ void Renderer::recordVelocity(VkCommandBuffer cmd, uint32_t slot) {
 }
 
 /// Per *pass*, not per draw: it names the matrix every draw in the indirect buffer
-/// projects through. One vkCmdPushConstants before one vkCmdDrawIndexedIndirect covers a
-/// whole layer.
+/// projects through.
 struct ShadowPush {
     /// Ignored when `usePunctual` is 0 -- the sun has one matrix and needs no index.
     uint32_t matrixIndex;
@@ -5921,30 +5025,24 @@ struct ShadowPush {
 void Renderer::recordPunctualShadows(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("PunctualShadows");
     // A depth map is a function of the matrix it was rendered through and the geometry it
-    // saw, so a layer whose matrix and geometry are unchanged still holds the right
-    // answer. On a scene with static lights that is every layer, every frame after the
-    // first -- nineteen full re-renders of Sponza producing exactly what is already
-    // there. updateLights decided which layers are stale; this only acts on it.
+    // saw, so a layer whose matrix and geometry are unchanged still holds the right answer.
+    // `updateLights` decided which layers are stale; this only acts on it.
     uint32_t dirtyCount = 0;
     for (uint32_t l = 0; l < kMaxShadowLayers; ++l) dirtyCount += punctualLayerDirty[l] ? 1u : 0u;
     punctualLayersRendered = dirtyCount;
 
-    // Nothing to do: no barriers, no render passes. The image is already in
-    // DEPTH_READ_ONLY_OPTIMAL from whichever frame last wrote it, which is the layout the
-    // descriptor declares, so the lighting pass reads it exactly as it would have.
-    //
-    // The zone is still opened, deliberately: a pass that vanishes from the trace looks
-    // to scripts/baseline.py like a broken capture, where a 0.001 ms zone is the honest
-    // report of a frame that had no work to do.
+    // No barriers and no render passes: the image is already in DEPTH_READ_ONLY_OPTIMAL
+    // from whichever frame last wrote it, which is what the descriptor declares. The zone
+    // is still opened -- a pass that vanishes from the trace reads to scripts/baseline.py
+    // as a broken capture.
     if (dirtyCount == 0 && !punctualCacheCold) {
         GpuScope zone(gpuProfiler, cmd, slot, "PunctualShadows");
         return;
     }
 
-    // UNDEFINED *discards* the contents, which is right exactly once -- when there is
-    // nothing worth keeping. Every other frame must come from DEPTH_READ_ONLY_OPTIMAL so
-    // the layers this frame is not redrawing survive the transition. The difference
-    // between a cache and a corrupt atlas is this one constant.
+    // UNDEFINED *discards* the contents, which is right only on the cold frame. Every
+    // other frame has to come from DEPTH_READ_ONLY_OPTIMAL or the layers this frame is not
+    // redrawing do not survive the transition.
     const VkImageLayout entryLayout =
         punctualCacheCold ? VK_IMAGE_LAYOUT_UNDEFINED : VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL;
     transitionImage(cmd, punctualShadowMap.image, entryLayout, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
@@ -5955,9 +5053,8 @@ void Renderer::recordPunctualShadows(VkCommandBuffer cmd, uint32_t slot) {
     GpuScope zone(gpuProfiler, cmd, slot, "PunctualShadows");
 
     const VkExtent2D extent{kPunctualShadowSize, kPunctualShadowSize};
-    // Set 2 is the game's image array (P6): a variant that shades from an image a game
-    // loaded rather than from one a glTF brought. `overlaySet` is reallocated when the
-    // array grows, so it is read here per frame rather than cached.
+    // `overlaySet` is reallocated when the image array grows, so it has to be read here
+    // per frame rather than cached.
     const VkDescriptorSet sets[] = {frames[slot].frameSet[view.uniformSlot], scene->descriptorSet(), overlaySet};
     const VkDeviceSize zero = 0;
     VkBuffer vb = scene->vertexBuffer();
@@ -5966,10 +5063,8 @@ void Renderer::recordPunctualShadows(VkCommandBuffer cmd, uint32_t slot) {
     // A pass per layer, for the reason recordShadows gives: a layered attachment loses
     // the per-layer depth compression that makes each of these cheap.
     for (uint32_t layer = 0; layer < kMaxShadowLayers; ++layer) {
-        // A clean layer is skipped entirely -- no pass, no clear, no draws. On a cold
-        // cache every layer is dirty, which clears all twenty-four so none is left
-        // UNDEFINED under a descriptor the lighting pipeline has bound, and the unused
-        // ones read as "nothing occludes".
+        // On a cold cache every layer is dirty, so all of them get cleared and none is
+        // left UNDEFINED under a descriptor the lighting pipeline has bound.
         if (!punctualCacheCold && !punctualLayerDirty[layer]) continue;
 
         VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -5988,9 +5083,6 @@ void Renderer::recordPunctualShadows(VkCommandBuffer cmd, uint32_t slot) {
         setViewportScissor(cmd, extent);
 
         if (layer < layerCount && frames[slot].opaqueCommandCount > 0) {
-            // No pipeline bind here: drawSceneIndirect binds one per variant group, and
-            // for a scene with no game variants that is the same single bind this line
-            // used to make.
             vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowLayout, 0, 3, sets, 0, nullptr);
             vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &zero);
             vkCmdBindIndexBuffer(cmd, scene->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
@@ -6023,9 +5115,8 @@ void Renderer::recordShadows(VkCommandBuffer cmd, uint32_t slot) {
                     VK_IMAGE_ASPECT_DEPTH_BIT);
 
     const VkExtent2D extent{kShadowMapSize, kShadowMapSize};
-    // Set 2 is the game's image array (P6): a variant that shades from an image a game
-    // loaded rather than from one a glTF brought. `overlaySet` is reallocated when the
-    // array grows, so it is read here per frame rather than cached.
+    // `overlaySet` is reallocated when the image array grows, so it has to be read here
+    // per frame rather than cached.
     const VkDescriptorSet sets[] = {frames[slot].frameSet[view.uniformSlot], scene->descriptorSet(), overlaySet};
     const VkDeviceSize zero = 0;
     VkBuffer vb = scene->vertexBuffer();
@@ -6035,8 +5126,8 @@ void Renderer::recordShadows(VkCommandBuffer cmd, uint32_t slot) {
     depth.imageLayout = VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL;
     depth.loadOp = VK_ATTACHMENT_LOAD_OP_CLEAR;
     depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
-    // Forward-Z, unlike the main camera: orthographic depth is spread evenly, so
-    // reverse-Z buys nothing and a plain LESS compare is what the sampler wants.
+    // Forward-Z, unlike the main camera: the sampler compares LESS_OR_EQUAL, so a
+    // reverse-Z clear here makes every surface shadowed.
     depth.clearValue.depthStencil = {1.0f, 0};
 
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -6047,9 +5138,9 @@ void Renderer::recordShadows(VkCommandBuffer cmd, uint32_t slot) {
     vkCmdBeginRendering(cmd, &rendering);
     setViewportScissor(cmd, extent);
 
-    // With shadows off the pass still runs and still clears. Skipping it would leave
-    // the map UNDEFINED for a descriptor the lighting pipeline has bound, and a clear
-    // to 1.0 means "nothing occludes anything" -- the right answer anyway.
+    // With shadows off the pass still runs and still clears: skipping it leaves the map
+    // UNDEFINED under a descriptor the lighting pipeline has bound, and 1.0 already means
+    // "nothing occludes anything".
     if (shadowsEnabled && frames[slot].opaqueCommandCount > 0) {
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, shadowLayout, 0, 3, sets, 0, nullptr);
         vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &zero);
@@ -6075,16 +5166,11 @@ void Renderer::updateUniforms(const scene::Camera& camera, uint32_t slot) {
 
     FrameUniforms u{};
 
-    // TAA jitter (3.4). A sub-pixel offset applied in *clip* space, as a translation
-    // proportional to w. Nudging the projection matrix directly would be the usual
-    // trick and is wrong here, because what is in hand is already a view-projection:
-    // its column 2 is not the projection's, so the offset would scale with view-space
-    // z rather than with w.
-    //
-    // **Which is also why it composes with any projection**, and why an orthographic
-    // camera needed nothing here (P3): this post-multiplies a finished view-projection
-    // rather than reaching into how one was built, and it leaves rows 2 and 3 -- the
-    // whole of the depth mapping -- exactly as the matrix produced them.
+    // The TAA jitter is applied in *clip* space, as a translation proportional to w.
+    // Nudging the projection matrix is the usual trick and is wrong here: what is in hand
+    // is already a view-projection, whose column 2 is not the projection's, so the offset
+    // would scale with view-space z instead. Post-multiplying leaves rows 2 and 3 -- the
+    // whole depth mapping -- exactly as the camera produced them.
     const glm::mat4 unjittered = camera.viewProjection(aspect);
     glm::mat4 jitter(1.0f);
     if (view.taaActive) {
@@ -6106,22 +5192,15 @@ void Renderer::updateUniforms(const scene::Camera& camera, uint32_t slot) {
     u.sunDirection = glm::vec4(glm::normalize(sunDirection), sunIntensity);
     u.sunColor = glm::vec4(sunColorValue, 1.0f);
 
-    // w is spare and reads as zero -- frame.glsl says so and nothing samples it. It was
-    // documented here as the SSR roughness cutoff and in Renderer.h as an intensity, and
-    // was neither; a row wanting a per-frame float gets its own vec4 rather than this one.
+    // w is spare and reads as zero -- frame.glsl declares it that way.
     u.ambient = glm::vec4(ambientColor, 0.0f);
 
-    // Fits the sun's box to the scene and fills cullViewProj[1] with the same matrix,
-    // along with the biases converted out of world units. Takes no camera and runs
-    // whether or not shadows are on: the pass still clears the map, and a stale matrix
-    // in the cull views would have view 1 drawing against last frame's box.
+    // Runs whether or not shadows are on: it fills cullViewProj[1], and a stale matrix
+    // there has view 1 drawing against last frame's box.
     updateSunShadow(u);
 
-    // **Every view ranks its own lights** (C38): this culls against the matrix and ranks
-    // against the position it is handed, so a view looking elsewhere shades what it can see
-    // rather than what the presenting camera could. What it does *not* do for a secondary
-    // is assign atlas layers -- see the shadow-atlas section of `updateLights` for why that
-    // one half stays the primary's, and for what a light only this view chose loses.
+    // The *unjittered* matrix: culling against a sub-pixel offset makes the decision
+    // flicker on the TAA period.
     updateLights(slot, camera.position(), unjittered);
     const uint32_t lightCount = static_cast<uint32_t>(lightScratch.size());
 
@@ -6130,14 +5209,11 @@ void Renderer::updateUniforms(const scene::Camera& camera, uint32_t slot) {
     u.params = glm::vec4(exposure, static_cast<float>(lightCount), specularAaStrength, bloomStrength);
 
     // `render.lightCutoff` is stated in post-exposure radiance -- what tonemap.frag sees
-    // after its `hdr *= frame.params.x` -- and the light loop compares scene-referred
-    // radiance, so the division happens here rather than per light per sample. Squared to
-    // meet the `dot(radiance, radiance)` the loop already computes.
-    //
-    // **The zero has to survive exactly**: at the default the shader's compare must be
-    // against 0.0 and not against something a division rounded, or the row stops being the
-    // no-op the golden set proves. An exposure of 0 renders black anyway, so guarding it
-    // costs nothing and keeps a NaN out of the uniform.
+    // after `hdr *= frame.params.x` -- and the light loop compares scene-referred radiance,
+    // so the division happens once here. Squared to meet the `dot(radiance, radiance)` the
+    // loop already computes. The zero has to survive exactly: the shader's compare must be
+    // against 0.0 and not against something a division rounded, and the `exposure > 0`
+    // guard keeps a NaN out of the uniform.
     const float cutoff = lightCutoff > 0.0f && exposure > 0.0f ? lightCutoff / exposure : 0.0f;
     u.lightParams = glm::vec4(cutoff * cutoff, 0.0f, 0.0f, 0.0f);
 
@@ -6148,10 +5224,9 @@ void Renderer::updateUniforms(const scene::Camera& camera, uint32_t slot) {
                          (ssrEnabled && rtActive) ? 1u : 0u,
                          camera.projectionMode == scene::Camera::Projection::Orthographic ? 1u : 0u);
 
-    // Tiled light assignment (C35). Decided here rather than in `recordLightTiles`
-    // because this is where the stride the shading passes index by is written, and the two
-    // are one decision: `tileParams.z` is non-zero exactly when a dispatch will have
-    // filled the buffer by the time anything reads it.
+    // Decided here rather than in `recordLightTiles` because this is where the stride the
+    // shading passes index by is written: `tileParams.z` has to be non-zero exactly when a
+    // dispatch will have filled the buffer by the time anything reads it.
     lightTilesActive = lightTilesEnabled && lightTileWords > 0 &&
                           lightTilePipeline != VK_NULL_HANDLE && view.lightTiles.buffer != VK_NULL_HANDLE;
     u.tileParams = lightTilesActive
@@ -6160,10 +5235,8 @@ void Renderer::updateUniforms(const scene::Camera& camera, uint32_t slot) {
 
     std::memcpy(frames[slot].uniforms[view.uniformSlot].mapped, &u, sizeof(u));
 
-    // ------------------------------------------------------------- cull views (4.2)
-    // Just the camera, since the shadow views went with the shadow system. Unjittered:
-    // a sub-pixel offset cannot change what is visible, and using the jittered matrix
-    // would make culling decisions flicker on the TAA period.
+    // Unjittered: a sub-pixel offset cannot change what is visible, and the jittered matrix
+    // makes culling decisions flicker on the TAA period.
     cullViewProj[0] = unjittered;
 
     // Unjittered, because it is what next frame's TAA reprojects into: the history
@@ -6215,8 +5288,7 @@ void Renderer::recordGBuffer(VkCommandBuffer cmd, uint32_t slot, uint32_t phase)
     depth.storeOp = VK_ATTACHMENT_STORE_OP_STORE;
     depth.clearValue.depthStencil = {0.0f, 0}; // reverse-Z: far is 0
 
-    // Resolve depth on store, for the forward pass to test against. Free in the sense
-    // that matters: it rides the store the pass was already doing.
+    // Resolve depth on store, for the forward pass to test against.
     if (view.gDepthResolved.image != VK_NULL_HANDLE) {
         depth.resolveMode = depthResolveMode;
         depth.resolveImageView = view.gDepthResolved.view;
@@ -6233,9 +5305,8 @@ void Renderer::recordGBuffer(VkCommandBuffer cmd, uint32_t slot, uint32_t phase)
     vkCmdBeginRendering(cmd, &rendering);
     setViewportScissor(cmd, view.renderExtent);
 
-    // Set 2 is the game's image array (P6): a variant that shades from an image a game
-    // loaded rather than from one a glTF brought. `overlaySet` is reallocated when the
-    // array grows, so it is read here per frame rather than cached.
+    // `overlaySet` is reallocated when the image array grows, so it has to be read here
+    // per frame rather than cached.
     const VkDescriptorSet sets[] = {frames[slot].frameSet[view.uniformSlot], scene->descriptorSet(), overlaySet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, gbufferLayout, 0, 3, sets, 0, nullptr);
 
@@ -6244,19 +5315,13 @@ void Renderer::recordGBuffer(VkCommandBuffer cmd, uint32_t slot, uint32_t phase)
     vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
     vkCmdBindIndexBuffer(cmd, scene->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
-    // The whole scene in one command per variant group, and the pipelines bound there
-    // too. Whatever the draw count is, this loop is not one: the stats the overlay
-    // reports were counted when the commands were written, and they are what the GPU
-    // will execute rather than what the CPU submitted.
     drawSceneIndirect(cmd, slot, phase == 0 ? 0u : kOcclusionView, VariantPass::GBuffer);
 
     vkCmdEndRendering(cmd);
 
-    // The single-sample depth -- the resolve at MSAA, gDepth itself at 1x -- is read
-    // by SSAO and tested by the forward pass. Transitioning it once here rather than
-    // in each consumer is what keeps those two passes free of a sample-count branch;
-    // the alternative was every downstream pass having to know which image it got and
-    // therefore which layout that image was already in.
+    // The single-sample depth, moved once here rather than in each consumer: that is what
+    // keeps SSAO and the forward pass free of a sample-count branch, since neither has to
+    // know which image it got or which layout that image was already in.
     transitionImage(cmd, view.forwardDepth, VK_IMAGE_LAYOUT_DEPTH_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_DEPTH_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_LATE_FRAGMENT_TESTS_BIT,
                     VK_ACCESS_2_DEPTH_STENCIL_ATTACHMENT_WRITE_BIT,
@@ -6269,15 +5334,9 @@ void Renderer::recordDecals(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("Decals");
     GpuScope zone(gpuProfiler, cmd, slot, "Decals");
 
-    // gAlbedo is *still a colour attachment* here: recordGBuffer transitions only the
-    // depth target, and the lighting pass moves the colour ones to SHADER_READ_ONLY
-    // later. So this is an execution barrier within one layout, not a transition -- the
-    // decal blend has to see the G-buffer's writes, and nothing more.
-    //
-    // Only albedo is written. Projecting a normal map would mean blending octahedral
-    // coordinates, which is not a meaningful operation across the encoding's fold, and a
-    // decal that changes roughness without changing colour is a feature nobody has asked
-    // for yet.
+    // gAlbedo is *still a colour attachment* here -- recordGBuffer moves only the depth
+    // target -- so this is an execution barrier within one layout rather than a
+    // transition. The decal blend has to see the G-buffer's writes, and nothing more.
     transitionImage(cmd, view.gAlbedo.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -6311,19 +5370,18 @@ void Renderer::recordDecals(VkCommandBuffer cmd, uint32_t slot) {
     }
 
     vkCmdEndRendering(cmd);
-    // Left as a colour attachment, exactly as it was found. recordLighting owns the
-    // transition to SHADER_READ_ONLY and does not need to know this pass ran.
+    // Left a colour attachment, as it was found: `recordGbufferRead` owns the move to
+    // SHADER_READ_ONLY and must not have to know whether this pass ran.
 }
 
 void Renderer::recordSsao(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("SSAO");
     if (!ssaoEnabled) {
-        // As with bloom: the lighting set binds the AO texture whether or not this ran,
-        // so it has to be in the layout that descriptor declares. The contents are
-        // undefined here, which is why flags.z gates the *read* -- an earlier version
-        // left the shader sampling this and disabling SSAO came out brighter than
-        // enabling it, because uninitialised occlusion reads as zero and takes the
-        // whole ambient term with it.
+        // The lighting set binds the AO texture whether or not this ran, so the image has
+        // to reach the layout that descriptor declares. Its contents are undefined here,
+        // which is why the *read* is gated by a specialisation constant: uninitialised
+        // occlusion reads as zero and takes the whole ambient term with it, so a shader
+        // that sampled it anyway came out brighter with SSAO off than on.
         transitionImage(cmd, view.ssaoBlurred.image, VK_IMAGE_LAYOUT_UNDEFINED,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
@@ -6349,8 +5407,8 @@ void Renderer::recordSsao(VkCommandBuffer cmd, uint32_t slot) {
     push.intensity = ssaoIntensity;
     push.sampleCount = ssaoSamples;
 
-    // Both dispatches below share these and the push constant above, so the blur follows
-    // the trace onto the half-resolution grid without a second decision.
+    // Shared by both dispatches, so the blur follows the trace onto the half-resolution
+    // grid without a second decision.
     const uint32_t groupsX = (view.ssaoExtent.width + 7) / 8;
     const uint32_t groupsY = (view.ssaoExtent.height + 7) / 8;
 
@@ -6377,20 +5435,16 @@ void Renderer::recordSsao(VkCommandBuffer cmd, uint32_t slot) {
 }
 
 void Renderer::recordGbufferRead(VkCommandBuffer cmd) {
-    // **COMPUTE as well as FRAGMENT, and this is the only barrier that says so.** The
-    // shadow mask and the lighting pass read these in the fragment stage, but the SSR
-    // march binds the same `gbufferSet` to a compute dispatch and samples albedo,
-    // normal, ORM and depth out of it -- and nothing re-barriers the G-buffer between
-    // here and there, so a FRAGMENT-only destination scope leaves that read unordered
-    // against this transition. Naming one stage reads as correct and orders half of it.
+    // COMPUTE as well as FRAGMENT, and this is the only barrier that says so: the SSR
+    // march binds the same `gbufferSet` to a compute dispatch, and nothing re-barriers the
+    // G-buffer between here and there. A FRAGMENT-only destination scope reads as correct
+    // and orders half of it.
     constexpr VkPipelineStageFlags2 kReaders =
         VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
 
-    // `SHADER_READ` rather than `SHADER_SAMPLED_READ`, for the reason
-    // `recordDepthPyramidLayout` gives about the pyramid: a combined image sampler is
-    // attributed to *storage* read, so a barrier naming only the sampled form covers none
-    // of it and sync validation reports a hazard at every pass that binds this set --
-    // the lighting draw, the SSR march and the tile build alike.
+    // `SHADER_READ` rather than `SHADER_SAMPLED_READ`: a combined image sampler is
+    // attributed to *storage* read, so the sampled form alone covers none of it and sync
+    // validation reports a hazard at every pass that binds this set.
     constexpr VkAccessFlags2 kReadAccess = VK_ACCESS_2_SHADER_READ_BIT;
 
     for (GpuImage* img : {&view.gAlbedo, &view.gNormal, &view.gOrm, &view.gEmissive}) {
@@ -6414,20 +5468,17 @@ void Renderer::recordLightTiles(VkCommandBuffer cmd, uint32_t slot) {
 
     GpuScope zone(gpuProfiler, cmd, slot, "LightTiles");
 
-    // One workgroup per tile, one invocation per pixel. The dispatch and
-    // `frame.tileParams` are both derived from `view.lightTileGrid` so the grid the shader
-    // writes and the grid the shading passes index are the same grid.
+    // The dispatch and `frame.tileParams` both derive from `view.lightTileGrid`, so the
+    // grid the shader writes and the grid the shading passes index cannot disagree.
     LightTilePush push{};
     push.extent = {view.renderExtent.width, view.renderExtent.height};
     push.tiles = {view.lightTileGrid.width, view.lightTileGrid.height};
     push.samples = static_cast<uint32_t>(msaaSamples);
 
-    // The buffer is per view, not per frame slot, so with two frames in flight the
-    // dispatch below overwrites what the *previous* frame's lighting draw is still
-    // reading. A pipeline barrier's first scope covers everything already submitted to
-    // this queue, so one execution dependency here closes that write-after-read; there is
-    // no second copy of the buffer to make it unnecessary, exactly as there is no second
-    // G-buffer.
+    // The buffer is per view, not per frame slot, so with two frames in flight the dispatch
+    // below overwrites what the *previous* frame's lighting draw is still reading. A
+    // barrier's first scope covers everything already submitted to this queue, so this one
+    // execution dependency closes that write-after-read.
     {
         VkMemoryBarrier2 war{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
         war.srcStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT;
@@ -6447,9 +5498,8 @@ void Renderer::recordLightTiles(VkCommandBuffer cmd, uint32_t slot) {
     vkCmdPushConstants(cmd, lightTileLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
     vkCmdDispatch(cmd, view.lightTileGrid.width, view.lightTileGrid.height, 1);
 
-    // Written by compute, read by the fragment stage of the two passes below it. A buffer
-    // barrier rather than a full one so this orders the mask and nothing else -- the
-    // G-buffer reads it depends on were ordered by `recordGbufferRead` already.
+    // A buffer barrier rather than a full one, so this orders the tile buffer and nothing
+    // else: `recordGbufferRead` already ordered the G-buffer reads it depends on.
     VkBufferMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER_2};
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT;
@@ -6470,14 +5520,10 @@ void Renderer::recordLightTiles(VkCommandBuffer cmd, uint32_t slot) {
 void Renderer::recordShadowMask(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("ShadowMask");
 
-    // UNDEFINED every frame, whether or not the pass runs. Nothing reads what the last
-    // frame left -- the pass rewrites every texel the lighting pass will index -- and the
-    // descriptor names GENERAL, so the image has to arrive in it either way.
-    //
-    // STORAGE_READ as well as STORAGE_WRITE, which is what the *inactive* path needs: the
-    // lighting pipeline declares this descriptor whichever way `shadowMaskActive` went, so
-    // where the pass returns below the only thing this barrier is ordering is that read.
-    // The AO buffer's disabled path grants its declared read for the same reason.
+    // Runs whether or not the pass does: the descriptor names GENERAL, so the image has to
+    // arrive in it either way. STORAGE_READ as well as STORAGE_WRITE is what the
+    // *inactive* path needs -- the lighting pipeline declares this descriptor whichever way
+    // `shadowMaskActive` went, and the read below is all this barrier then orders.
     transitionImage(cmd, view.shadowMask.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT | VK_ACCESS_2_SHADER_STORAGE_READ_BIT);
@@ -6486,8 +5532,6 @@ void Renderer::recordShadowMask(VkCommandBuffer cmd, uint32_t slot) {
 
     GpuScope zone(gpuProfiler, cmd, slot, "ShadowMask");
 
-    // No attachment at all: the fragment shader's only output is the storage image, and a
-    // colour target would be a full-screen write of a value nothing reads.
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
     rendering.renderArea = {{0, 0}, view.renderExtent};
     rendering.layerCount = 1;
@@ -6541,26 +5585,18 @@ void Renderer::recordLighting(VkCommandBuffer cmd, uint32_t slot) {
 
 void Renderer::recordForward(VkCommandBuffer cmd, uint32_t slot, const scene::Camera& camera) {
     auto cpuZone = core::Profiler::scope("Forward");
-    // The sort and the commands were written before recording began; this pass only
-    // submits them. `camera` stays in the signature because the pass is conceptually
-    // view-dependent and hiding that would be worse than one unused parameter.
     (void)camera;
     if (blendedCommandCount == 0) return;
 
     GpuScope zone(gpuProfiler, cmd, slot, "Forward");
 
-    // hdrTarget already holds the lit opaque scene and stays in COLOR_ATTACHMENT_
-    // OPTIMAL; this is a write-after-write against the lighting pass, so it needs the
-    // dependency even though the layout does not change.
+    // A write-after-write against the lighting pass: the dependency is needed even though
+    // the layout does not change.
     transitionImage(cmd, view.hdrTarget.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
 
-    // recordGBuffer left this in DEPTH_READ_ONLY and SSAO may have sampled it since;
-    // this is the execution dependency for the depth test, not a layout change.
-
-    // blend over the lit scene
     VkRenderingAttachmentInfo color = colorAttachment(view.hdrTarget.view);
 
     VkRenderingAttachmentInfo depth{VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO};
@@ -6588,11 +5624,8 @@ void Renderer::recordForward(VkCommandBuffer cmd, uint32_t slot, const scene::Ca
     vkCmdBindVertexBuffers(cmd, 0, 1, &vb, &offset);
     vkCmdBindIndexBuffer(cmd, scene->indexBuffer(), 0, VK_INDEX_TYPE_UINT32);
 
-    // In depth order, because that is the order buildBlendedCommands() wrote them in.
-    // An indirect draw executes its commands in buffer order, which is what makes a
-    // sorted pass expressible as one submission at all -- and why the variant runs here
-    // are walked in that same order rather than gathered by pipeline: reordering them to
-    // save a bind would put a far surface over a near one.
+    // Walked in the order buildBlendedCommands() wrote them, not gathered by pipeline:
+    // reordering the runs to save a bind puts a far surface over a near one.
     uint32_t boundVariant = UINT32_MAX;
     for (const VariantRange& r : blendedRanges) {
         if (r.variant != boundVariant) {
@@ -6611,11 +5644,10 @@ void Renderer::recordForward(VkCommandBuffer cmd, uint32_t slot, const scene::Ca
 void Renderer::recordBloom(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("Bloom");
     if (!bloomEnabled) {
-        // Not a no-op, even though nothing reads the result. The tonemap set binds the
-        // chain unconditionally, and `params.w == 0` skips the sample at runtime
-        // rather than statically -- so the descriptor is still "used" as far as
-        // validation is concerned and must point at an image in the layout it
-        // declares. UNDEFINED as the source discards contents nobody is going to read.
+        // Not a no-op even though nothing reads the result: the tonemap set binds the chain
+        // unconditionally and `params.w == 0` skips the sample at runtime rather than
+        // statically, so validation still counts the descriptor as used and it must point
+        // at an image in the layout it declares.
         transitionImage(cmd, view.bloomChain.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                         VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, kBloomMips);
@@ -6624,30 +5656,23 @@ void Renderer::recordBloom(VkCommandBuffer cmd, uint32_t slot) {
 
     GpuScope zone(gpuProfiler, cmd, slot, "Bloom");
 
-    // Every mip goes to GENERAL and stays there for the whole chain. Alternating
-    // between GENERAL and SHADER_READ_ONLY per step would be one barrier per mip per
-    // direction for no benefit: GENERAL is a valid layout for both the storage writes
-    // and the sampled reads this pass does.
+    // Every mip goes to GENERAL and stays there for the whole chain, which is valid for
+    // both the storage writes and the sampled reads this pass makes.
     transitionImage(cmd, view.bloomChain.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 0, kBloomMips);
 
-    // hdrTarget was left in COLOR_ATTACHMENT_OPTIMAL by lighting or the forward pass.
-    //
-    // FRAGMENT too, because this transition is the *only* one hdrTarget gets before the
-    // tonemap draw samples it -- recordTonemap deliberately re-barriers it only on the
-    // `!bloomEnabled` path, on the argument that bloom already moved it. Bloom moved the
-    // layout; a COMPUTE-only destination scope does not order the fragment read that
-    // follows.
+    // FRAGMENT too: this is the *only* transition hdrTarget gets before the tonemap draw
+    // samples it, since recordTonemap re-barriers it only on the `!bloomEnabled` path. A
+    // COMPUTE-only destination scope moves the layout and orders nothing.
     transitionImage(cmd, view.hdrTarget.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                     VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT | VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT,
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
 
-    // Each step reads what the previous one wrote, so every dispatch needs the write
-    // to have landed and be visible. One image barrier over the whole chain is simpler
-    // than tracking which mip each step touched, and the chain is five small images.
+    // Each step reads what the previous one wrote, so every dispatch needs the write to
+    // have landed and be visible.
     auto chainBarrier = [&] {
         transitionImage(cmd, view.bloomChain.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_GENERAL,
                         VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
@@ -6657,8 +5682,8 @@ void Renderer::recordBloom(VkCommandBuffer cmd, uint32_t slot) {
                         VK_IMAGE_ASPECT_COLOR_BIT, 0, kBloomMips);
     };
 
-    // Mip m of a half-resolution chain, floor-divided and floored at 1 -- the same
-    // rule vkCreateImage used to size the levels, so the dispatch matches the image.
+    // Floor-divided and floored at 1 -- the same rule vkCreateImage used to size the
+    // levels, so the dispatch grid matches the image.
     auto mipExtent = [&](uint32_t m) {
         return VkExtent2D{std::max(1u, view.bloomChain.extent.width >> m), std::max(1u, view.bloomChain.extent.height >> m)};
     };
@@ -6678,22 +5703,19 @@ void Renderer::recordBloom(VkCommandBuffer cmd, uint32_t slot) {
         vkCmdDispatch(cmd, (dst.width + 7) / 8, (dst.height + 7) / 8, 1);
     };
 
-    // Down: threshold the HDR target into mip 0, then halve repeatedly.
     dispatch(bloomThresholdPipeline, view.bloomDownSets[0], 0, 0.0f);
     for (uint32_t m = 1; m < kBloomMips; ++m) {
         chainBarrier();
         dispatch(bloomDownPipeline, view.bloomDownSets[m], m, static_cast<float>(m - 1));
     }
 
-    // Up: add each mip back onto the one above it, so mip 0 ends up holding the sum of
-    // every level. Progressive, not a single wide blur -- that is what gives bloom a
-    // falloff with both a tight core and a long tail.
+    // Each mip is added back onto the one above it, so mip 0 ends up holding the sum of
+    // every level -- which is what the tonemap set samples at LOD 0.
     for (uint32_t m = kBloomMips - 1; m-- > 0;) {
         chainBarrier();
         dispatch(bloomUpPipeline, view.bloomUpSets[m], m, static_cast<float>(m + 1));
     }
 
-    // Hand mip 0 to the tonemap pass as a sampled image.
     transitionImage(cmd, view.bloomChain.image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT, VK_ACCESS_2_SHADER_SAMPLED_READ_BIT,
@@ -6722,26 +5744,22 @@ void Renderer::recordSsr(VkCommandBuffer cmd, uint32_t slot) {
     // renderExtent at a reduced ssrExtent would march the top-left corner of the frame.
     push.texel = glm::vec2(1.0f / static_cast<float>(view.ssrExtent.width),
                            1.0f / static_cast<float>(view.ssrExtent.height));
-    // The two techniques bound their reach with different numbers because they pay for
-    // it differently. `ssrMaxDistance` divides into a fixed step count, so raising it
-    // coarsens the march; a ray query costs the same whatever the range, so it gets one
-    // large enough to reach the far wall. Sharing the march budget is what confined a
-    // ray-traced reflection to an 8-metre bubble and made everything past it read as sky.
+    // Two numbers, because the techniques pay for reach differently: `ssrMaxDistance`
+    // divides into a fixed step count, so raising it coarsens the march, while a ray query
+    // costs the same whatever the range. Sharing one confines a traced reflection to an
+    // 8-metre bubble and makes everything past it read as sky.
     push.maxDistance = rtActive ? rtMaxDistance : ssrMaxDistance;
     push.thickness = ssrThickness;
     push.intensity = ssrIntensity;
     push.roughnessCutoff = ssrRoughnessCutoff;
     push.stepCount = ssrSteps;
     push.refineSteps = ssrRefineSteps;
-    // Always, when this pass is the traced one at all: `rtActive` already gated the
-    // shader variant, and the lighting pass traces on exactly the same condition. There is
-    // no second toggle to disagree with.
     push.shadowLights = rtActive ? 1u : 0u;
     push.hitRecords = accel.hitRecordAddress;
     push.sceneVertices = accel.sceneVertexAddress;
     push.sceneIndices = accel.sceneIndexAddress;
-    // Null when the scene has no rig at all. Legal to leave so: a hit record only names
-    // the deformed buffers when its own geometry lives in them, and none does here.
+    // Null when the scene deforms nothing, and legal to leave so: a hit record names the
+    // deformed buffers only when its own geometry lives in them.
     push.deformedVertices = accel.deformedVertexAddress;
     push.deformedIndices = accel.dynamicIndexAddress;
 
@@ -6762,7 +5780,6 @@ void Renderer::recordSsr(VkCommandBuffer cmd, uint32_t slot) {
                     VK_ACCESS_2_SHADER_SAMPLED_READ_BIT, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
                     VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT | VK_ACCESS_2_COLOR_ATTACHMENT_READ_BIT);
 
-    // LOAD and additive blend: this adds reflected radiance to what is already lit.
     VkRenderingAttachmentInfo color = colorAttachment(view.hdrTarget.view);
 
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -6773,9 +5790,8 @@ void Renderer::recordSsr(VkCommandBuffer cmd, uint32_t slot) {
 
     vkCmdBeginRendering(cmd, &rendering);
     setViewportScissor(cmd, view.renderExtent);
-    // Two pipelines rather than one shader that tests its own texture size, because the
-    // upsampling one needs the G-buffer set bound and the full-resolution one must stay
-    // the draw it was -- the same reason `ssr.comp` and `ssr1x.comp` are two files.
+    // Two pipelines rather than one shader testing its own texture size: the upsampling
+    // one needs the G-buffer set bound and the full-resolution one does not.
     if (view.ssrExtent.width == view.renderExtent.width && view.ssrExtent.height == view.renderExtent.height) {
         vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssrCompositePipeline);
         vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, ssrCompositeLayout, 0, 1,
@@ -6840,21 +5856,19 @@ void Renderer::recordTaa(VkCommandBuffer cmd, uint32_t slot) {
     auto cpuZone = core::Profiler::scope("TAA");
     GpuScope zone(gpuProfiler, cmd, slot, "TAA");
 
-    // hdrTarget arrives in SHADER_READ_ONLY: bloom put it there to threshold it, and
-    // recordTonemap does the same when bloom is off. Either way this pass only reads
-    // it, so there is nothing to transition.
+    // hdrTarget arrives in SHADER_READ_ONLY -- bloom put it there, and recordTonemap does
+    // the same when bloom is off -- and this pass only reads it.
     const uint32_t p = view.taaHistoryIndex;
 
-    // The destination goes to GENERAL from UNDEFINED -- its previous contents are two
-    // frames old and about to be entirely overwritten -- while the source stays in
-    // SHADER_READ_ONLY from when it was written.
+    // UNDEFINED as the source: the destination's previous contents are two frames old and
+    // about to be entirely overwritten.
     transitionImage(cmd, view.taaHistory[p].image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_GENERAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
                     VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT);
 
-    // The history read on the very first frame would be of an image nothing has
-    // written. `valid` gates that in the shader, but the descriptor still has to point
-    // at an image in the layout it declares, so give it one.
+    // On the first frame the history is an image nothing has written. `valid` gates the
+    // read in the shader, but the descriptor still has to point at an image in the layout
+    // it declares.
     if (!view.taaHistoryValid) {
         transitionImage(cmd, view.taaHistory[1 - p].image, VK_IMAGE_LAYOUT_UNDEFINED,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
@@ -6872,7 +5886,6 @@ void Renderer::recordTaa(VkCommandBuffer cmd, uint32_t slot) {
     vkCmdPushConstants(cmd, taaLayout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(push), &push);
     vkCmdDispatch(cmd, (view.renderExtent.width + 7) / 8, (view.renderExtent.height + 7) / 8, 1);
 
-    // Hand it to the tonemap pass, and to next frame's resolve as history.
     transitionImage(cmd, view.taaHistory[p].image, VK_IMAGE_LAYOUT_GENERAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT, VK_ACCESS_2_SHADER_STORAGE_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT,
@@ -6883,29 +5896,19 @@ void Renderer::recordTaa(VkCommandBuffer cmd, uint32_t slot) {
 
 void Renderer::recordViewChain(VkCommandBuffer cmd, uint32_t slot, const scene::Camera& camera,
                                uint32_t imageIndex) {
-    // The scene-wide cull already ran, before the shadow passes, filling every list from
-    // the primary's matrices. A chain re-fills **list 0 only**, and only when that list is
-    // not already this view's: a secondary view always, and the primary exactly when a
-    // secondary overwrote it. In a one-view frame this records nothing at all, which is
-    // what keeps the frame identical to the one before this row.
+    // The scene-wide cull filled every list from the primary's matrices before the shadow
+    // passes. A chain re-fills list 0 only, and only when that list is not already this
+    // view's -- so a one-view frame records nothing here.
     if (!view.primary || !extraViews.empty()) {
         recordDepthPyramidLayout(cmd, slot);
         recordCull(cmd, slot, 0, CullViews::Camera);
     }
 
-    // C11's two passes, and the reason they are two. Phase 0 draws what the camera
-    // could see last frame -- a good guess, and one that costs nothing to be wrong
-    // about. The pyramid is then built from *that* depth, phase 1 tests everything
-    // against it, and whatever is newly visible is drawn into the same attachments.
-    //
-    // Nothing visible is ever dropped: a command that fails the phase 0 guess is
-    // re-tested against real current-frame depth before it can be discarded. That is
-    // the whole argument for the shape, and it is why the golden images did not move.
-    //
-    // **The visibility buffer the guess comes from is shared between views**, so a second
-    // view's phase 0 starts from what the *previous* chain could see. That costs a phase 1
-    // that admits more than it otherwise would, and it cannot drop anything: phase 1 is
-    // what decides, and it tests against this view's own depth.
+    // Phase 0 draws what the camera could see last frame; the pyramid is built from *that*
+    // depth and phase 1 re-tests everything against it. Nothing visible can be dropped
+    // because phase 1 is what decides, against real current-frame depth. The visibility
+    // buffer the guess comes from is shared between views, so a second view's phase 0
+    // starts from the previous chain's answer -- which costs a wider phase 1 and no more.
     recordGBuffer(cmd, slot, 0);
     recordDepthPyramid(cmd, slot);
     recordCull(cmd, slot, 1);
@@ -6915,20 +5918,14 @@ void Renderer::recordViewChain(VkCommandBuffer cmd, uint32_t slot, const scene::
     if (!decals.empty()) recordDecals(cmd, slot);
     // Before lighting: the AO it produces is an input to the ambient term.
     recordSsao(cmd, slot);
-    // Anywhere after the G-buffer's depth resolve and before TAA reads it. Here
-    // rather than immediately before `recordTaa` because it is a geometry pass and
-    // this is where the geometry passes are -- and because the depth it tests
-    // against is at its freshest, with only SSAO having sampled it since.
+    // After the G-buffer's depth resolve and before TAA reads it.
     if (view.taaActive) recordVelocity(cmd, slot);
-    // The G-buffer becomes readable once, for both of the passes below: the shadow mask
-    // samples the same five attachments the lighting pass does, and whichever ran second
-    // would name a layout the first had already moved it out of.
+    // Once, for both passes below: the shadow mask samples the same attachments the
+    // lighting pass does, and whichever ran second would name a layout the first had
+    // already moved it out of.
     recordGbufferRead(cmd);
-    // After the G-buffer becomes readable, because the tile depth bounds are the depth
-    // this frame actually drew, and before both passes below, which are the two that read
-    // the bits. Its own dispatch rather than a prologue to the lighting draw: the bounds
-    // are a reduction over a tile and the shading is per pixel, so one has to finish
-    // before the other starts (C35).
+    // After the G-buffer becomes readable -- the tile depth bounds are the depth this
+    // frame drew -- and before the two passes that read the bits.
     recordLightTiles(cmd, slot);
     recordShadowMask(cmd, slot);
     recordLighting(cmd, slot);
@@ -6936,10 +5933,9 @@ void Renderer::recordViewChain(VkCommandBuffer cmd, uint32_t slot, const scene::
     // underneath them to blend against, and they need to be tonemapped with it
     // rather than composited into an already-display-referred image.
     recordForward(cmd, slot, camera);
-    // After the forward pass, for the same reason it runs after lighting: a
-    // particle blends over whatever is already in the target, and blended geometry
-    // is part of "already". Before SSR, so a reflection can catch a plume of smoke,
-    // and before bloom, so an emissive spark glares (S3).
+    // After the forward pass, because a particle blends over whatever is already in the
+    // target. Before SSR, so a reflection catches a plume of smoke, and before bloom, so
+    // an emissive spark glares.
     recordParticles(cmd, slot);
     // After the forward pass, so a reflection ray can sample blended surfaces, and
     // before bloom, so a bright reflection glares like the thing it reflects.
@@ -6948,14 +5944,10 @@ void Renderer::recordViewChain(VkCommandBuffer cmd, uint32_t slot, const scene::
     // the other way round, and still before bloom.
     if (fogEnabled) recordFog(cmd, slot);
     recordBloom(cmd, slot);
-    // After bloom, not before. Bloom is a wide, heavily blurred effect, so feeding
-    // it the un-antialiased image costs nothing visible -- and running TAA last
-    // means only the tonemap pass has to know which image the resolve wrote,
-    // rather than the bloom chain having to ping-pong its source descriptor too.
+    // After bloom, not before: running TAA last means only the tonemap pass has to know
+    // which image the resolve wrote, rather than the bloom chain having to ping-pong its
+    // source descriptor too.
     if (view.taaActive) recordTaa(cmd, slot);
-    // Into `view.destination` where the view has one, and into the compose surface where
-    // it does not. `imageIndex` is carried this far and used by neither case that names an
-    // image of its own -- it is the swapchain's answer, and only the presenting view asks.
     recordTonemap(cmd, slot, imageIndex);
 }
 
@@ -6964,11 +5956,9 @@ void Renderer::recordViewBarrier(VkCommandBuffer cmd) {
     // per-image transitions: the next chain's first pass writes gAlbedo, gDepth and the
     // rest while this one's tonemap may still be sampling the HDR image, and its cull
     // dispatch overwrites the command list the previous chain's indirect draws read.
-    //
-    // Enumerating the pairs would be seventeen barriers that have to stay in step with
-    // `createRenderTargets`, to save one pipeline stall per view on a path that already
-    // costs a full frame of GPU work. Not a trade worth making, and stated so nobody
-    // "optimises" it without measuring the whole-frame number first.
+    // Enumerating the pairs is seventeen barriers that have to stay in step with
+    // `createRenderTargets`, for one pipeline stall per view -- measure the whole-frame
+    // number before trading that.
     VkMemoryBarrier2 all{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     all.srcStageMask = VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT;
     all.srcAccessMask = VK_ACCESS_2_MEMORY_WRITE_BIT | VK_ACCESS_2_MEMORY_READ_BIT;
@@ -6985,9 +5975,8 @@ void Renderer::recordTonemap(VkCommandBuffer cmd, uint32_t slot, uint32_t imageI
     auto cpuZone = core::Profiler::scope("Tonemap");
     GpuScope zone(gpuProfiler, cmd, slot, "Tonemap");
 
-    // The bloom pass already moved hdrTarget to SHADER_READ_ONLY to sample it, so this
-    // reads the same member it did rather than a layout tracked in a variable. Both
-    // run once per frame off the same flag; they cannot disagree.
+    // Gated on the same member the bloom pass reads, so the two cannot disagree about
+    // whether hdrTarget has already been moved to SHADER_READ_ONLY.
     if (!bloomEnabled) {
         transitionImage(cmd, view.hdrTarget.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                         VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT,
@@ -6995,9 +5984,8 @@ void Renderer::recordTonemap(VkCommandBuffer cmd, uint32_t slot, uint32_t imageI
                         VK_ACCESS_2_SHADER_SAMPLED_READ_BIT);
     }
 
-    // The compose surface, which is the offscreen presentation target or the swapchain
-    // image itself (P2). UNDEFINED as the old layout either way: this pass CLEARs and
-    // covers every texel of it, so nothing in it is worth preserving across the frame.
+    // UNDEFINED as the old layout: this pass clears and covers every texel of the compose
+    // surface, so nothing in it survives the frame anyway.
     transitionImage(cmd, composeImage(imageIndex), VK_IMAGE_LAYOUT_UNDEFINED,
                     VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL, VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                     VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT);
@@ -7015,9 +6003,9 @@ void Renderer::recordTonemap(VkCommandBuffer cmd, uint32_t slot, uint32_t imageI
     setViewportScissor(cmd, view.renderExtent);
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tonemapPipeline);
-    // With TAA on, the resolved image is whichever history the resolve just wrote, so
-    // the tonemap reads that set instead. Same layout, one binding different -- which
-    // is why the resolve can ping-pong without copying itself back into hdrTarget.
+    // With TAA on the resolved image is whichever history the resolve just wrote, so the
+    // tonemap reads that set instead -- which is what lets the resolve ping-pong without
+    // copying itself back into hdrTarget.
     const VkDescriptorSet sets[] = {frames[slot].frameSet[view.uniformSlot],
                                     view.taaActive ? view.taaOutputSet[view.taaHistoryIndex] : view.hdrSet};
     vkCmdBindDescriptorSets(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, tonemapLayout, 0, 2, sets, 0, nullptr);
@@ -7032,10 +6020,8 @@ void Renderer::recordTonemap(VkCommandBuffer cmd, uint32_t slot, uint32_t imageI
 
 void Renderer::recordPresent(VkCommandBuffer cmd, uint32_t slot, uint32_t imageIndex) {
     auto cpuZone = core::Profiler::scope("Present");
-    // Nothing to do at native: the tonemap and the overlay already drew into the
-    // swapchain image, and it is already a colour attachment in the layout the tail of
-    // drawFrame expects. This is the elision the whole design is arranged around, and it
-    // is one test rather than a mode.
+    // Nothing to do at native: the tonemap and the overlay already drew into the swapchain
+    // image, in the layout the tail of drawFrame expects.
     if (view.presentTarget.image == VK_NULL_HANDLE) return;
     if (view.presentPlan.width == 0 || view.presentPlan.height == 0) return;
 
@@ -7049,13 +6035,10 @@ void Renderer::recordPresent(VkCommandBuffer cmd, uint32_t slot, uint32_t imageI
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_CLEAR_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
-    // The bars. Cleared over the whole image and then blitted over, rather than four
-    // rectangles around the destination: a full clear is one command and cannot leave a
-    // seam, and the alternative is four VkClearRect computations that are empty in the
-    // common case and wrong in exactly the case they exist for. It also means a resize
-    // that shrinks the presented rectangle cannot leave last frame's pixels in the gap.
-    //
-    // Skipped where the destination covers the window, which is every exact multiple.
+    // The letterbox bars: the whole image is cleared and then blitted over, rather than
+    // four rectangles around the destination. A full clear cannot leave a seam, and a
+    // resize that shrinks the presented rectangle cannot leave last frame's pixels in the
+    // gap.
     const bool letterboxed = view.presentPlan.x != 0 || view.presentPlan.y != 0 ||
                              view.presentPlan.width != swap.extent.width || view.presentPlan.height != swap.extent.height;
     if (letterboxed) {
@@ -7076,10 +6059,8 @@ void Renderer::recordPresent(VkCommandBuffer cmd, uint32_t slot, uint32_t imageI
         vkCmdPipelineBarrier2(cmd, &dependency);
     }
 
-    // NEAREST, and the destination is the source times a whole number -- `presentLayout`
-    // guarantees that and a unit test pins it. Every destination texel therefore maps to
-    // exactly one source texel and there is nothing for the filter to interpolate, which
-    // is what "a texel authored is a texel presented" reduces to at this level.
+    // NEAREST is safe only because `presentLayout` guarantees the destination is the source
+    // times a whole number -- a unit test pins that. Any other scale interpolates.
     VkImageBlit2 region{VK_STRUCTURE_TYPE_IMAGE_BLIT_2};
     region.srcSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, 0, 0, 1};
     region.srcOffsets[0] = {static_cast<int32_t>(view.presentPlan.srcX), static_cast<int32_t>(view.presentPlan.srcY), 0};
@@ -7116,8 +6097,7 @@ void Renderer::recordDebugLines(VkCommandBuffer cmd, uint32_t slot, VkImageView 
 
     size_t count = debugLines.size();
     if (count > kMaxDebugLineVertices) {
-        // Once per run, not per frame, for the reason the overlay's cap gives: a warning
-        // at 60 Hz drowns the log it is trying to appear in.
+        // Once per run, not per frame: a warning at 60 Hz drowns the log it appears in.
         static bool warned = false;
         if (!warned) {
             warned = true;
@@ -7127,15 +6107,13 @@ void Renderer::recordDebugLines(VkCommandBuffer cmd, uint32_t slot, VkImageView 
         }
         count = kMaxDebugLineVertices;
     }
-    // A line list, so an odd count would draw a vertex with whatever followed it in the
-    // buffer. Rounding down loses the half-line the cap cut in two, which is the only
-    // way it can happen.
+    // A line list: an odd count draws a vertex paired with whatever followed it in the
+    // buffer.
     count &= ~static_cast<size_t>(1);
     if (count == 0) return;
 
     std::memcpy(frames[slot].debugLineVertices.mapped, debugLines.data(), count * sizeof(DebugLineVertex));
 
-    // LOAD, like the overlay: this draws over the tonemapped image already there.
     VkRenderingAttachmentInfo color = colorAttachment(target);
 
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -7149,15 +6127,10 @@ void Renderer::recordDebugLines(VkCommandBuffer cmd, uint32_t slot, VkImageView 
 
     vkCmdBindPipeline(cmd, VK_PIPELINE_BIND_POINT_GRAPHICS, debugLinePipeline);
 
-    // The *unjittered* view-projection, which is what the camera is actually looking
-    // through. Using the jittered one would make a wireframe wander by a sub-pixel every
-    // frame under TAA -- against a history that has already converged, so the lines
-    // would be the one thing on screen that shimmered.
-    // `renderExtent` rather than the surface this pass draws onto, and they are the same
-    // thing because this pass always draws into the virtual target: a wireframe is
-    // world-space geometry, so it belongs with the world and scales with it. Only the
-    // overlay -- text and widgets, which are screen-space by construction -- gets a
-    // choice, and that choice is `uiInsideVirtual`.
+    // The *unjittered* view-projection: the jittered one makes a wireframe wander by a
+    // sub-pixel every frame under TAA, against a history that has already converged.
+    // `renderExtent` and not the target's, because a wireframe is world-space geometry and
+    // this pass always draws into the virtual target.
     const float aspect = static_cast<float>(view.renderExtent.width) / static_cast<float>(view.renderExtent.height);
     const glm::mat4 viewProj = camera.viewProjection(aspect);
     vkCmdPushConstants(cmd, debugLineLayout, VK_SHADER_STAGE_VERTEX_BIT, 0, sizeof(viewProj), &viewProj);
@@ -7173,7 +6146,6 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
     auto cpuZone = core::Profiler::scope("Overlay");
     GpuScope zone(gpuProfiler, cmd, slot, "Overlay");
 
-    // ------------------------------------------------------------------ the text
     const float margin = 8.0f;
     const float lineHeight = debugFont.lineHeight();
     uint32_t row = 0;
@@ -7181,18 +6153,16 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
     const auto emit = [&](const char* text) {
         const float baseline = margin + debugFont.ascent() + static_cast<float>(row) * lineHeight;
         ++row;
-        // Shadow first so the text blends over it. One pixel down-right is enough to
-        // keep white text readable against Sponza's white marble.
+        // Shadow first, so the text blends over it rather than under it.
         ui::appendText(overlayScratch, debugFont.metrics(), margin + 1.0f, baseline + 1.0f, text, kOverlayShadow);
         ui::appendText(overlayScratch, debugFont.metrics(), margin, baseline, text, kOverlayWhite);
     };
 
     overlayScratch.clear();
 
-    // P2's readback, and it goes in first so nothing else in this pass can land on top of
-    // it. At exact texel coordinates, tinted white, from the top-left corner: the whole
-    // point is that the bytes between the source file and the swapchain are untouched, so
-    // there is nothing here for the theme, the UI scale or the layout to contribute.
+    // First, so nothing else in this pass lands on top of it, and at exact texel
+    // coordinates tinted white: the point of the readback is that the bytes between the
+    // source file and the swapchain are untouched, so no theme or UI scale may reach it.
     if (readbackSlot != 0 && readbackWidth != 0) {
         ui::DrawList quad;
         quad.reset({0.0f, 0.0f, static_cast<float>(extent.width), static_cast<float>(extent.height)});
@@ -7205,22 +6175,16 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
 
     if (debugOverlay) {
         char line[3][96];
-        // `wall` is what FPS is derived from and what the GPU paces; `cpu` is wall less
-        // the frame's GPU blocks. They part company exactly when you are GPU-bound, so
-        // showing only one of them is what made the CPU look like it tracked the GPU.
+        // `wall` is what FPS derives from; `cpu` is wall less the frame's GPU blocks. They
+        // part company exactly when you are GPU-bound, which is why both are shown.
         std::snprintf(line[0], sizeof(line[0]), "FPS %6.1f   wall %6.3f   cpu %6.3f   gpu %6.3f ms",
                       avgWallMs > 0.0 ? 1000.0 / avgWallMs : 0.0, avgWallMs, avgCpuBusyMs, avgGpuMs);
-        // `vis` is what survived culling, from the last completed frame in this slot,
-        // and it is the number that moves when the camera turns -- `prims` is the scene
-        // and does not.
-        // `tris` is the scene's triangles; `drawn` is what the cull left after LOD
-        // selection, which is the pair that says whether a chain is doing anything.
+        // `vis` is what survived culling in the last completed frame in this slot and moves
+        // with the camera; `prims` is the scene and does not. `tris` is the scene's
+        // triangles, `drawn` what the cull left after LOD selection.
         std::snprintf(line[1], sizeof(line[1]), "draws %u   prims %u   vis %u   tris %llu   drawn %u", stats.drawCalls,
                       stats.primitives, view.visibleInstances, static_cast<unsigned long long>(stats.triangles),
                       view.visibleTriangles);
-        // Both resolutions where they differ, because a virtual-resolution run that
-        // reported only the window would be reporting the one number that is not what
-        // anything was rendered at.
         if (view.presentTarget.image != VK_NULL_HANDLE) {
             std::snprintf(line[2], sizeof(line[2]), "%ux MSAA   %ux%u -> %ux%u @%ux", static_cast<uint32_t>(msaaSamples),
                           view.renderExtent.width, view.renderExtent.height, swap.extent.width, swap.extent.height,
@@ -7231,22 +6195,16 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
         }
         for (const auto& text : line) emit(text);
 
-        // Where the camera is, in the form `--camera` takes back. A rendering artefact
-        // reported as "it happens when I walk forward here" is a bug report nobody can
-        // act on; the same one with six numbers under it is a command line. Filled by
-        // the application, because the renderer has no camera of its own.
+        // Formatted by the application to be what `--camera` takes back, so a bug report
+        // carrying this line is a command line.
         if (!cameraLine.empty()) emit(cameraLine.c_str());
 
-        // Only where there are any. A permanent "particles 0" on every scene in the
-        // repository would be a line of HUD that never says anything.
         if (particleCapacity > 0) {
             char particleLine[96];
             std::snprintf(particleLine, sizeof(particleLine), "particles %u / %u", stats.particles, particleCapacity);
             emit(particleLine);
         }
 
-        // Same rule (P4): a permanent "sprites 0" on every 3D scene in the repository
-        // would be a line of HUD that never says anything.
         if (stats.sprites > 0) {
             char spriteLine[96];
             std::snprintf(spriteLine, sizeof(spriteLine), "sprites %u in %u layer%s", stats.sprites,
@@ -7256,18 +6214,15 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
         }
     }
 
-    // Application text (S1.4's binding menu is the first caller). A blank line keeps it
-    // off the stats when both are on.
+    // A blank line keeps application text off the stats when both are on.
     if (!overlayLines.empty()) {
         if (debugOverlay) ++row;
         for (const std::string& text : overlayLines) emit(text.c_str());
     }
 
-    // ------------------------------------------------------------------- the UI (S6)
-    // Appended after the stats, so a panel draws over them rather than under: the text is
-    // the frame's furniture and the UI is what the user is pointing at. `uiFirstVertex`
-    // is where the two split, because the stats are drawn unclipped in one call and the
-    // UI needs a scissor per command.
+    // Appended after the stats, so a panel draws over them rather than under.
+    // `uiFirstVertex` is where the two split: the stats are drawn unclipped in one call and
+    // the UI needs a scissor per command.
     const auto uiFirstVertex = static_cast<uint32_t>(overlayScratch.size());
     if (uiDrawList != nullptr && !uiDrawList->empty()) {
         const std::vector<OverlayVertex>& src = uiDrawList->vertices();
@@ -7276,9 +6231,9 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
 
     const size_t maxVertices = static_cast<size_t>(kMaxOverlayQuads) * 6;
     if (overlayScratch.size() > maxVertices) {
-        // Once per run, not per frame: a warning at 60 Hz drowns the log it is trying
-        // to appear in. Silence was the old behaviour and is the thing being fixed --
-        // a menu cut off at the cap looks exactly like a menu that ends there.
+        // Once per run, not per frame: a warning at 60 Hz drowns the log it appears in.
+        // Not silent, though -- a menu cut off at the cap looks exactly like a menu that
+        // ends there.
         static bool warned = false;
         if (!warned) {
             warned = true;
@@ -7292,8 +6247,6 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
     std::memcpy(frames[slot].overlayVertices.mapped, overlayScratch.data(),
                 overlayScratch.size() * sizeof(OverlayVertex));
 
-    // ------------------------------------------------------------------ the draw
-    // LOAD, not CLEAR: this composites onto the tonemapped image that is already there.
     VkRenderingAttachmentInfo color = colorAttachment(target);
 
     VkRenderingInfo rendering{VK_STRUCTURE_TYPE_RENDERING_INFO};
@@ -7316,12 +6269,11 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
 
     const auto uploaded = static_cast<uint32_t>(overlayScratch.size());
 
-    // The stats and the application's text: unclipped, one call, exactly as before S6.
+    // The stats and the application's text, unclipped, in one call.
     if (uiFirstVertex > 0) vkCmdDraw(cmd, std::min(uiFirstVertex, uploaded), 1, 0, 0);
 
-    // Then the UI, one call per clip rectangle. A scissor per command rather than a
-    // per-vertex clip test is what makes a scrolling list cost nothing to clip: the
-    // hardware discards the fragments and the vertices are submitted either way.
+    // Then the UI, one call per clip rectangle: a scissor per command rather than a
+    // per-vertex clip test is what makes a scrolling list cost nothing to clip.
     if (uiDrawList != nullptr && uiFirstVertex < uploaded) {
         for (const ui::DrawCommand& command : uiDrawList->commands()) {
             if (command.vertexCount == 0) continue;
@@ -7329,9 +6281,9 @@ void Renderer::recordOverlay(VkCommandBuffer cmd, uint32_t slot, VkImageView tar
             if (first >= uploaded) break;
             const uint32_t count = std::min(command.vertexCount, uploaded - first);
 
-            // Clamped to the framebuffer, and that clamp is required rather than tidy:
-            // VkRect2D offsets are signed but a scissor outside the render area is a
-            // validation error, and a panel dragged off the left edge produces one.
+            // Clamped to the framebuffer, and required rather than tidy: a scissor outside
+            // the render area is a validation error, and a panel dragged off the left edge
+            // produces one.
             const float x0 = std::max(command.clip.x, 0.0f);
             const float y0 = std::max(command.clip.y, 0.0f);
             const float x1 = std::min(command.clip.z, static_cast<float>(extent.width));
@@ -7391,15 +6343,9 @@ glm::vec2 Renderer::renderTargetFromWindow(glm::vec2 windowPixel) const {
 }
 
 glm::vec2 Renderer::uiFromWindow(glm::vec2 windowPixel) const {
-    // Identity wherever the UI is drawn at the window's own resolution, which is every
-    // native run and every run that put the UI outside the virtual target. Written as an
-    // early return rather than as arithmetic that happens to reduce to one: `presentPlan`
-    // is the identity in the native case and dividing by a scale of 1 would work, but the
-    // UI-outside case has a real scale and must still not be transformed.
-    //
-    // **The gate is this function's and not the transform's.** A picking ray goes through
-    // `renderTargetFromWindow` unconditionally -- the scene is always drawn into the
-    // virtual target, whatever the UI was laid out against.
+    // An early return, not arithmetic that reduces to one: the UI-outside case has a real
+    // scale and must still not be transformed. The gate belongs here rather than in
+    // `renderTargetFromWindow`, which a picking ray goes through unconditionally.
     if (!uiInsideVirtual) return windowPixel;
     return renderTargetFromWindow(windowPixel);
 }
@@ -7436,14 +6382,9 @@ bool Renderer::beginCapture() {
 }
 
 std::vector<Renderer::TargetEntry> Renderer::captureTargets() const {
-    // Read top to bottom: name, image, the layout it is in when the frame's passes have
-    // finished, its aspect, and whether the pass that fills it ran this frame.
-    //
-    // The G-buffer is deliberately absent. At MSAA those images are multisampled and
-    // vkCmdCopyImageToBuffer cannot read one; at 1x they are reachable through
-    // --debug-view, which is the resolved, tonemapped view of them that is actually
-    // worth looking at. What is here is the complement: everything no debug view
-    // exposes.
+    // Per row: name, image, the layout it is in once the frame's passes have finished, its
+    // aspect, and whether the pass that fills it ran this frame. Every image named here
+    // must carry TRANSFER_SRC in `createRenderTargets`.
     const bool ssrLive = ssrEnabled && ctx != nullptr;
     return {
         {"ssaoRaw", &view.ssaoRaw, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, ssaoEnabled},
@@ -7454,10 +6395,8 @@ std::vector<Renderer::TargetEntry> Renderer::captureTargets() const {
          bloomEnabled},
         {"ssrTarget", &view.ssrTarget, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, ssrLive},
         {"fogTarget", &view.fogTarget, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT, fogEnabled},
-        // Signed, and mostly near zero, so the PNG of it is a mid grey with the moving
-        // objects picked out. That is the point: a black frame here is the pass having
-        // written nothing, which is exactly the failure it is hardest to see in the
-        // final image.
+        // Signed and mostly near zero, so a correct PNG of it is mid grey with the moving
+        // objects picked out; a black one is the pass having written nothing.
         {"velocityTarget", &view.velocityTarget, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
          taaEnabled},
         {"taaHistory0", &view.taaHistory[0], VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, VK_IMAGE_ASPECT_COLOR_BIT,
@@ -7544,8 +6483,8 @@ void Renderer::recordTargetCapture(VkCommandBuffer cmd) {
     const std::string ext = targetCapturePath.extension().empty() ? ".png" : targetCapturePath.extension().string();
 
     for (uint32_t mip = mipFirst; mip <= mipLast && mip < img.mipLevels; ++mip) {
-        // Mip n is the base extent halved n times, never below 1 -- the same rule
-        // vkCreateImage applies, and the reason bloomExtent is clamped at creation.
+        // The base extent halved n times, never below 1 -- the same rule vkCreateImage
+        // applies, so the copy extent matches the level that exists.
         const VkExtent2D extent{std::max(1u, img.extent.width >> mip), std::max(1u, img.extent.height >> mip)};
 
         for (uint32_t layer = layerFirst; layer <= layerLast && layer < img.arrayLayers; ++layer) {
@@ -7598,10 +6537,9 @@ void Renderer::finishCapture(VkFence fence) {
 
 namespace {
 
-/// ffmpeg's name for a swapchain layout, or null when it has none. The set is narrower
-/// than `captureBytesPerPixel` accepts on purpose: the ten-bit packed formats decode
-/// fine into a PNG, one texel at a time, and have no rawvideo equivalent that does not
-/// need a conversion pass this deliberately does not have.
+/// ffmpeg's name for a swapchain layout, or null when it has none. Narrower than
+/// `captureBytesPerPixel` accepts: the ten-bit packed formats decode into a PNG one texel
+/// at a time but have no rawvideo equivalent without a conversion pass.
 const char* recordPixelFormat(VkFormat format) {
     switch (format) {
     case VK_FORMAT_R8G8B8A8_UNORM:
@@ -7628,9 +6566,8 @@ bool Renderer::startRecording(core::Recorder& sink, core::Recorder::Options opti
         return false;
     }
 
-    // The size and the layout are the renderer's to state and the caller's to accept:
-    // the encoder is fixed to one resolution for the life of the recording, and the only
-    // thing that knows what a presented frame looks like is the swapchain.
+    // Overwritten rather than honoured: the encoder is fixed to one resolution for the life
+    // of the recording, and only the swapchain knows what a presented frame looks like.
     options.width = swap.extent.width;
     options.height = swap.extent.height;
     options.pixelFormat = pixelFormat;
@@ -7660,9 +6597,8 @@ bool Renderer::startRecording(core::Recorder& sink, core::Recorder::Options opti
 void Renderer::stopRecording() {
     if (recorder == nullptr) return;
 
-    // Every slot still holding pixels has already been submitted, so waiting here is
-    // what makes those frames readable rather than a race against the encoder. It is a
-    // full device wait, once, at the end of a recording -- not a per-frame cost.
+    // Every slot still holding pixels has already been submitted, so the wait is what makes
+    // those frames readable rather than a race against the encoder.
     vkDeviceWaitIdle(ctx->device);
     for (uint32_t i = 0; i < kFramesInFlight; ++i) drainRecordSlot(i);
 
@@ -7683,14 +6619,12 @@ void Renderer::drainRecordSlot(uint32_t slot) {
 }
 
 FrameResult Renderer::handleResize() {
-    // The encoder was told one resolution at `start()` and rawvideo carries no size, so
-    // feeding it a differently shaped frame would not fail -- it would silently produce a
-    // sheared picture from that point on. Ending the recording is the honest answer, and
-    // what was recorded up to here is still written.
+    // The encoder was told one resolution at `start()` and rawvideo carries no size, so a
+    // differently shaped frame does not fail -- it silently shears the picture from that
+    // point on.
     if (recorder != nullptr) {
         core::Logger::warn(core::LogCategory::Render, "Record: the window was resized, so the recording ends here");
-        // Only the tee stops. The encoder stays up and `Engine` still muxes at shutdown,
-        // so the recording is short rather than lost.
+        // Only the tee stops; the encoder stays up and `Engine` still muxes at shutdown.
         stopRecording();
     }
 
@@ -7707,18 +6641,11 @@ FrameResult Renderer::handleResize() {
 FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     if (scene == nullptr) return FrameResult::Continue;
 
-    // Frame-to-frame wall time, which is what FPS means. Measuring the span of
-    // drawFrame instead would exclude event polling and camera update and report a
-    // number nobody experiences. The first frame has no predecessor, so it is skipped
-    // rather than averaged in as a several-hundred-millisecond outlier.
-    //
-    // Wall time is not a CPU number: it contains this frame's waitFence, acquire and
-    // present, so on a GPU-bound scene it equals the GPU frame and reports the CPU as
-    // busy when the CPU was asleep. Subtracting those three blocks is what makes the
-    // difference visible, and it happens *here* rather than where they are measured
-    // because the span [frameStart(n), frameStart(n+1)) is what contains them all.
-    // That also means the early returns below need no special casing: they extend the
-    // span, and the blocked time they already accumulated is carried into it.
+    // Frame-to-frame wall time, not the span of drawFrame: that would exclude event polling
+    // and camera update. Wall time contains this frame's waitFence, acquire and present, so
+    // on a GPU-bound scene it equals the GPU frame and reports the CPU busy while it slept
+    // -- hence the subtraction, done here because [frameStart(n), frameStart(n+1)) is the
+    // only span containing all three blocks.
     const auto frameStart = std::chrono::steady_clock::now();
     if (lastFrameStart.time_since_epoch().count() != 0) {
         const double deltaMs = std::chrono::duration<double, std::milli>(frameStart - lastFrameStart).count();
@@ -7730,9 +6657,8 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     frameBlockedMs = 0.0;
     lastFrameStart = frameStart;
 
-    // Every GPU block is timed the same way and summed into one total. RAII, so the
-    // `return handleResize()` inside the acquire block below still contributes its own
-    // wait instead of silently vanishing from it.
+    // RAII, so the `return handleResize()` inside the acquire block below still contributes
+    // its own wait rather than vanishing from the total.
     struct BlockGuard {
         double& total;
         std::chrono::steady_clock::time_point start = std::chrono::steady_clock::now();
@@ -7756,60 +6682,43 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     // After it, because it writes into the descriptor array `syncImages` sizes.
     syncViews();
 
-    // Here rather than inside `recordSprites`, and that is the whole reason it is a
-    // separate function: growth waits on the device, and a device wait inside an open
-    // command buffer is not a thing to find out about later.
-    //
-    // Called with 0 rather than not called, so the zone inside it is present on a run with
-    // no sprite table at all. `ensureSpriteCapacity(0)` returns on its first test.
+    // Here rather than inside `recordSprites`: growth waits on the device, and a device
+    // wait inside an open command buffer is not a thing to find out about later.
     ensureSpriteCapacity(sprites != nullptr ? static_cast<uint32_t>(sprites->draws().size()) : 0u);
 
     gpuProfiler.collect(*ctx, frameSlot);
     if (const double gpuMs = gpuProfiler.lastZoneMs("Frame"); gpuMs > 0.0) avgGpuMs = gpuFrameMs.nextValue(gpuMs);
 
-    // The cull counters this slot wrote last time round (4.2). Safe to read only here,
-    // after the fence: this is the point at which the frame that wrote them is known to
-    // have finished. Two frames stale, which for a number on a HUD is not a problem
-    // worth a second fence to fix.
+    // Readable only here, after the fence: this is where the frame that wrote them is known
+    // to have finished. Two frames stale, which for a HUD number is not worth a second
+    // fence.
     if (f.cullStats.mapped != nullptr) {
         invalidateForHostRead(*ctx, f.cullStats);
         const auto* counts = static_cast<const uint32_t*>(f.cullStats.mapped);
-        // Both passes. Phase 0 draws what was visible last frame and phase 1 draws
-        // whatever the occlusion test newly admitted, so the overlay's `vis` is their sum
-        // -- reporting phase 0 alone would show the number falling every time the camera
-        // turned, which is exactly when the second pass is doing the most work.
+        // Both phases summed: phase 0 alone falls every time the camera turns, which is
+        // exactly when phase 1 is doing the most work.
         view.visibleInstances = counts[0] + counts[kOcclusionView];
-        // The second half of the same buffer. Zero until something carries a chain, and
-        // equal to the LOD-0 triangle count of the visible set whenever nothing does.
+        // The second half of the same buffer: triangles, at the level the cull selected.
         view.visibleTriangles = counts[kCullCommandLists] + counts[kCullCommandLists + kOcclusionView];
     }
 
-    // The trace's counters. Every one of these was already computed and thrown away, or
-    // logged once and lost: a zone can say a frame got slower and can never say why, and
-    // "the cull admitted three times as much this frame" is the answer nine times out of
-    // ten. Recorded here rather than after `record` because the cull figures are the ones
-    // this fence just made readable, and the rest are the same frame's.
-    //
-    // Two frames stale, exactly as `visibleInstances` on the overlay is, and for the same
-    // reason: the copy went into this slot two frames ago.
+    // Here rather than after `record`: the cull figures are the ones the fence above just
+    // made readable, and they are two frames stale for the same reason `visibleInstances`
+    // is.
     core::Profiler::counter("drawCalls", stats.drawCalls);
     core::Profiler::counter("visibleInstances", view.visibleInstances);
     core::Profiler::counter("visibleTriangles", view.visibleTriangles);
     if (instances != nullptr) core::Profiler::counter("liveInstances", instances->liveCount());
     {
-        // VMA's live figures rather than a regex over the log line that printed them once.
-        // The old `scripts/baseline.py` recovered VRAM with a regular expression over
-        // stdout and got one steady-state number because one line was all there was to
-        // read; this is the same quantity every frame.
         const VulkanContext::MemoryUsage usage = ctx->memoryUsage();
         constexpr double kMiB = 1024.0 * 1024.0;
         core::Profiler::counter("vramMiB", static_cast<double>(usage.allocatedBytes) / kMiB);
         core::Profiler::counter("vramAllocations", usage.allocationCount);
     }
 
-    // Same reasoning as the counters above, and the reason recording costs no stall: the
-    // copy went into this slot two frames ago and the fence just waited on is the one
-    // that finished it, so the mapped pointer is readable here and nowhere earlier.
+    // The copy went into this slot two frames ago and the fence just waited on is the one
+    // that finished it, so the mapped pointer is readable here and nowhere earlier -- which
+    // is why recording costs no stall.
     drainRecordSlot(frameSlot);
 
     // Before the dirty check below, so a reload and a feature toggle in the same frame
@@ -7817,22 +6726,17 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     if (shaderHotReload) pollShaderReload();
 
     // Turning TAA on must not blend against whatever the history held when it was last
-    // running: the camera has moved since, so the reprojection would be against a
-    // stale matrix and the first frames would ghost badly.
+    // running: the camera has moved since, so the reprojection is against a stale matrix
+    // and the first frames ghost badly. Every view's, not just the primary's.
     if (taaEnabled != taaWasEnabled) {
         taaWasEnabled = taaEnabled;
         view.taaHistoryValid = false;
-        // Every view's, because every view has one now. A registered view whose history
-        // stayed marked valid across the toggle would ghost against a matrix from whenever
-        // TAA was last on, which is the one case this test exists for.
         for (ViewSlot& v : extraViews) v.targets.taaHistoryValid = false;
     }
 
-    // `ssrScale` resizes an image, so it goes through the same rebuild the sample count
-    // does. Compared on the extent it *produces* rather than on the float: a slider drag
-    // writes a new value every frame and most of those values round to the pixels already
-    // there, so this rebuilds once per step of the reduced extent instead of once per
-    // frame of the drag.
+    // Compared on the extent it *produces*, not on the float: a slider drag writes a new
+    // value every frame and most of them round to the pixels already there, so this
+    // rebuilds once per step of the reduced extent instead of once per frame of the drag.
     const VkExtent2D wantedSsrExtent = scaledBy(view.renderExtent, ssrScale);
     if (wantedSsrExtent.width != view.ssrExtent.width || wantedSsrExtent.height != view.ssrExtent.height) {
         renderTargetsDirty = true;
@@ -7841,13 +6745,10 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
         pipelinesDirty = true;
     }
 
-    // A feature toggle is just a public member somebody assigned, so nothing signals
-    // it. Comparing the key the live pipelines were built with against the current one
-    // means there is no featuresChanged() call to forget.
+    // A feature toggle is a public member somebody assigned, so nothing signals it.
+    // Comparing the key the live pipelines were built with leaves no featuresChanged()
+    // call to forget.
     {
-        // A block rather than a function, so the zone is named for what it is. Above the
-        // dirty test for the reason the rest of this list is: not rebuilding is the common
-        // case and costs one comparison, and the max is the number that matters.
         auto s = core::Profiler::scope("pipelineRebuild");
         if (renderTargetsDirty || pipelinesDirty || featureKey() != builtFeatureKey) {
             vkDeviceWaitIdle(ctx->device);
@@ -7862,11 +6763,10 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     }
 
     // Resize *before* acquiring, never after. A successful acquire hands `imageAvailable`
-    // to the presentation engine to signal, and vkDeviceWaitIdle does not drain that:
-    // it waits on queue work, and the presentation engine is not a queue. Abandoning
-    // the frame at that point would have handleResize() destroy a semaphore with a
-    // signal operation still outstanding. Bailing out first means the acquire either
-    // has not happened or has failed, and a failed acquire signals nothing.
+    // to the presentation engine to signal, and vkDeviceWaitIdle does not drain that -- it
+    // waits on queue work, and the presentation engine is not a queue. Abandoning the frame
+    // after the acquire has handleResize() destroy a semaphore with a signal still
+    // outstanding.
     if (resizeRequested) {
         resizeRequested = false;
         return handleResize();
@@ -7890,22 +6790,16 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
         }
     }
 
-    // The primary's, and it runs before any secondary view's for one reason that is not
-    // about uniforms at all: this is the call that assigns punctual atlas layers, and
-    // `recordPunctualShadows` renders that assignment once for the whole frame. A secondary
-    // ranks its own lights but looks their layers up in what this call decided -- see the
-    // shadow-atlas section of `updateLights`.
-    // `primary`, `uniformSlot` and an empty `destination` are what this `View` *is* and are
-    // never assigned anywhere; only the user's TAA switch moves between frames.
     view.taaActive = taaEnabled;
 
-    // **Before anything reads or records against the light buffer, and after the last frame
-    // said how many it wanted** (C40). Growing here rather than inside `updateLights` is the
-    // whole of why a light is dropped for exactly one frame instead of forever: the ranking
-    // runs mid-frame with command buffers in flight, and reallocating a buffer there would
-    // be a use-after-free rather than a resize.
+    // Before anything reads or records against the light buffer, and after the last frame
+    // said how many it wanted. Growing inside `updateLights` instead would reallocate
+    // mid-frame with command buffers in flight -- a use-after-free rather than a resize.
     growLightBuffer();
 
+    // The primary's, and it has to run before any secondary view's: this is the call that
+    // assigns punctual atlas layers, which `recordPunctualShadows` renders once for the
+    // whole frame and a secondary only looks up.
     updateUniforms(camera, frameSlot);
     // `cullViewProj` is one array shared by every chain, so a secondary view's
     // `updateUniforms` overwrites entry 0. Kept here rather than recomputed, which would
@@ -7922,22 +6816,11 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     gpuProfiler.beginFrame(f.cmd, frameSlot, core::Profiler::frameNumber());
 
     {
-        // Every pass called from here opens a CPU scope of its own, on its first line,
-        // and the naming rule is worth stating once rather than guessing at twenty-seven
-        // call sites:
-        //
-        //   - A pass with a GPU zone takes **that zone's name, spelled identically** --
-        //     "SSR", not "Ssr". The two then sit in the trace as `SSR` on the GPU track
-        //     and `Renderer::record/SSR` on the CPU one, and can be read against each
-        //     other. A CPU zone that invents its own spelling cannot be.
-        //   - A step with no GPU zone takes its own function's name. So a reader can tell
-        //     from the name alone whether there is a GPU row to compare against.
-        //
-        // The scope goes *above* the early-outs, not beside the `GpuScope` below them, so
-        // a pass that decides to record nothing still costs a named zero rather than
-        // vanishing -- and so the children sum to this zone. That sum is the check:
-        // `scripts/baseline.py --zones` prints a total-per-frame column, and a gap
-        // between the parent and its children is work this list does not name.
+        // The naming rule every pass below follows, because `scripts/baseline.py --zones`
+        // reads it: a pass with a GPU zone takes that zone's name spelled identically
+        // ("SSR", not "Ssr"), and a step without one takes its own function's name. The
+        // scope goes above the early-outs, so a pass that records nothing still costs a
+        // named zero and the children still sum to this zone.
         auto s = core::Profiler::scope("Renderer::record");
         stats = FrameStats{};
 
@@ -7945,81 +6828,55 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
         // is written by the host into staging that has to reach device memory first.
         updateInstances(frameSlot);
         blendedCommandCount = buildBlendedCommands(frameSlot, camera);
-        // Only when the pass will run. `dynamicCount()` is the cheap gate: a scene with
-        // nothing dynamic in it never walks the slots, and TAA off never asks. Built once
-        // rather than per view, because it writes into the staging buffer the upload below
-        // has already been handed -- and because TAA runs only for the primary anyway.
+        // Built once rather than per view: it writes into the staging buffer the upload
+        // below has already been handed.
         velocityCommandCount =
             (taaEnabled && instances->dynamicCount() > 0) ? buildVelocityCommands(frameSlot) : 0;
         recordInstanceUpload(f.cmd, frameSlot);
 
-        // An outer zone, so whole-frame GPU cost is one number rather than a sum the
-        // overlay would have to keep in step with the pass list. It spans **every** view's
-        // chain, which is what makes `Frame` still mean "what this frame cost" once there
-        // is more than one of them.
+        // Spans *every* view's chain, so `Frame` still means "what this frame cost" once
+        // there is more than one of them.
         GpuScope frameZone(gpuProfiler, f.cmd, frameSlot, "Frame");
 
-        // ------------------------------------------------------- once, whatever the views
-        // Deformed vertices, the structures built over them and the shadow maps are
-        // properties of the *scene*, so they are recorded once and every chain below
-        // samples the same result. That is the split C31 drew, and this is where it pays:
+        // Everything from here to the view loop is a property of the *scene* rather than of
+        // a view, so it is recorded once and every chain samples the same result --
         // re-running it per view would re-render up to 24 atlas layers for a mirror.
         //
-        // The shadow atlas specifically holds the assignment the primary view's
-        // `updateLights` made, which is why `updateUniforms` above already ran for the
-        // primary and why a secondary view looks layers up rather than assigning them.
-        //
-        // The cull is here, ahead of the shadow passes, because they draw straight out of
-        // the lists it writes. Every list, from the primary's matrices; a chain re-fills
-        // list 0 for itself and leaves the other 25 alone.
+        // The cull is ahead of the shadow passes because they draw straight out of the
+        // lists it writes, and it fills every list from the primary's matrices.
         recordDepthPyramidLayout(f.cmd, frameSlot);
         recordCull(f.cmd, frameSlot, 0, CullViews::Scene);
 
         recordSkinning(f.cmd, frameSlot);
-        // And straight after it, before anything traces: the dynamic BLASes are built
-        // over the vertices that dispatch just wrote (S2.5).
-        //
-        // Behind the RT toggles, which was not the first answer. Refitting
-        // unconditionally is a frame *never* stale and costs 0.12 ms in a scene with one
-        // character -- five times what the deformation dispatch itself costs, paid every
-        // frame whether or not anything traces, for a feature that is off by default.
-        // The staleness this buys back is exactly one frame: the frame the toggle is
-        // pressed on shows the previous pose's structure. That is not a trade worth
-        // 0.12 ms.
+        // Straight after the skinning dispatch and before anything traces: the dynamic
+        // BLASes are built over the vertices it just wrote. Behind the RT toggles, because
+        // refitting unconditionally costs 0.12 ms per frame in a scene with one character
+        // and buys back exactly one frame of staleness on the frame the toggle is pressed.
         if (rtEnabled && ctx->rayQuerySupported && accel.hasDynamic()) {
-            // The one pass whose CPU scope is at the call site rather than on its first
-            // line: `refitSceneAccelStruct` is a free function in AccelStruct.cpp, and a
-            // zone named for a pass belongs where the pass is scheduled.
             auto cpuZone = core::Profiler::scope("AsRefit");
             GpuScope zone(gpuProfiler, f.cmd, frameSlot, "AsRefit");
             refitSceneAccelStruct(*ctx, f.cmd, *instances, accel);
         }
-        // Before the G-buffer only because both draw the scene and this one wants the
-        // skinned vertices that recordSkinning just wrote; nothing downstream of here
-        // reads the map until the lighting pass samples it.
+        // Before the G-buffer because it wants the skinned vertices recordSkinning just
+        // wrote; nothing reads the map until the lighting pass samples it.
         if (!rtActive) {
             recordShadows(f.cmd, frameSlot);
             recordPunctualShadows(f.cmd, frameSlot);
         }
 
-        // ----------------------------------------------------------------- one per view
-        // Secondary views first and the primary last, so the chain that presents is the
-        // one whose results are left in the shared targets when the frame ends: the
-        // capture paths, the readback and `captureTargets()` all describe what is in
-        // those images afterwards, and they would otherwise describe a mirror.
+        // Secondary views first and the primary last, so the chain that presents is the one
+        // whose results are left in the shared targets when the frame ends: the capture
+        // paths, the readback and `captureTargets()` all describe those images afterwards,
+        // and would otherwise describe a mirror.
         for (uint32_t s = 0; s < extraViews.size(); ++s) {
             ViewSlot& v = extraViews[s];
             if (!v.live) continue;
-            // The camera lives in the table, where the game writes it, and is read here --
-            // at the same point in the frame the main camera is resolved. Not a callback:
-            // a callback would run at a point inside the renderer a game cannot reason
-            // about, and every other per-frame quantity a game controls is a value it sets.
             const scene::Camera& viewCamera = views->at(s).active();
 
-            // The chain records through `view` and nothing else, so this is what makes
-            // twenty-odd record methods reach *this* view's targets without any of them
-            // learning that views exist. Swapped back below, which is what leaves the
-            // presenting view's set in `view` for the capture paths at the end of the frame.
+            // The chain records through `view` and nothing else, which is what lets twenty
+            // record methods reach this view's targets without learning that views exist.
+            // Swapped back below, leaving the presenting view's set in `view` for the
+            // capture paths at the end of the frame.
             std::swap(view, v.targets);
             view.taaActive = taaEnabled;
 
@@ -8027,10 +6884,8 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
             recordViewChain(f.cmd, frameSlot, viewCamera, imageIndex);
 
             // The tonemap leaves its destination a colour attachment, which is right for
-            // the presenting view and wrong for this one: a material samples it, and it
-            // does so **in the same frame it was drawn**, so the layout has to move before
-            // anything reads it. This is what makes a mirror a mirror rather than a
-            // one-frame-late mirror.
+            // the presenting view and wrong for this one: a material samples it in the same
+            // frame it was drawn, so without this the mirror is a frame late.
             transitionImage(f.cmd, view.destination.image, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                             VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                             VK_PIPELINE_STAGE_2_COLOR_ATTACHMENT_OUTPUT_BIT, VK_ACCESS_2_COLOR_ATTACHMENT_WRITE_BIT,
@@ -8040,55 +6895,40 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
             std::swap(view, v.targets);
         }
 
-        // The primary's uniform block was filled before the command buffer opened and is
-        // still intact -- blocks are per view, and so are the targets they name, which the
-        // swap above put back. What a secondary chain *did* overwrite is `cullViewProj[0]`,
-        // which is one array shared by every chain, so the camera's matrix is put back
-        // rather than the whole block recomputed. Skipped entirely when nothing else
-        // recorded, which is every golden case.
+        // The uniform blocks are per view and the swap above put the primary's targets
+        // back, but `cullViewProj` is one array shared by every chain, so entry 0 is the
+        // one thing a secondary overwrote.
         if (!extraViews.empty()) cullViewProj[0] = primaryCullViewProj;
 
         recordViewChain(f.cmd, frameSlot, camera, imageIndex);
 
-        // ------------------------------------------------- the primary view's, and only
         // Everything below draws onto the composed image and is a property of the window
-        // rather than of a view: a HUD, a wireframe overlay, the presentation blit. A
-        // mirror gets the world and nothing else.
+        // rather than of a view, so a mirror gets the world and nothing else.
         //
-        // After the tonemap so a wireframe is not exposed, curved and bloomed along with
-        // the scene, and before the overlay so text stays on top of everything (S4.5).
-        //
-        // Into the compose surface unconditionally: a wireframe is world-space geometry
-        // and belongs with the world, so it scales with it whatever the UI does (P2).
-        // After the tonemap for the same reason the debug lines are -- an unlit sprite is
-        // display-referred art and exposing, curving and bloating it would be applying
-        // three corrections to a texel that needs none -- and *before* them, so a
-        // wireframe stays a diagnostic drawn over everything (P4).
+        // After the tonemap, because a sprite and a wireframe are display-referred and
+        // exposing, curving and blooming them would apply three corrections to texels that
+        // need none. Sprites before the lines, so a wireframe stays a diagnostic drawn over
+        // everything, and both before the overlay so text stays on top.
         recordSprites(f.cmd, frameSlot, composeView(imageIndex), camera);
 
         if (!debugLines.empty()) {
             recordDebugLines(f.cmd, frameSlot, composeView(imageIndex), view.renderExtent, camera);
         }
 
-        // Three reasons to run the pass, and the third is S6's: the UI draws through it,
-        // so a panel open over a run that turned the stats off still gets a pass. This
-        // condition having only two arms is why the panel rendered nothing at all the
-        // first time it was captured -- `--capture` disables the HUD, and the UI went
-        // with it. `readbackSlot` is the fourth, and it is the same class of mistake: a
-        // run whose only reason to draw is the readback image must still get a pass.
+        // Every reason to run the pass, not just the HUD: the UI and the readback image
+        // draw through it too, so an arm missing here is a panel that renders nothing under
+        // `--capture`, which disables the HUD.
         const bool anyOverlay = debugOverlay || readbackSlot != 0 || !overlayLines.empty() ||
                                 (uiDrawList != nullptr && !uiDrawList->empty());
 
-        // The overlay is the one pass with a choice, and `uiInsideVirtual` is it. Inside,
-        // it draws at the virtual resolution and is magnified by the same integer scale as
-        // the world -- an 8-pixel font stays an 8-pixel font. Outside, it draws after the
-        // blit, at the window's own resolution, over a letterboxed image.
+        // Inside the virtual target the overlay is magnified by the same integer scale as
+        // the world, so an 8-pixel font stays an 8-pixel font. Outside it draws after the
+        // blit below, at the window's own resolution, over a letterboxed image -- which is
+        // why the two calls sit either side of `recordPresent`.
         if (anyOverlay && debugFont.ready() && uiInsideVirtual) {
             recordOverlay(f.cmd, frameSlot, composeView(imageIndex), view.renderExtent);
         }
 
-        // The presentation step (P2). Records nothing at native, where the passes above
-        // already drew into the swapchain image.
         recordPresent(f.cmd, frameSlot, imageIndex);
 
         if (anyOverlay && debugFont.ready() && !uiInsideVirtual) {
@@ -8109,17 +6949,14 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     // row in captureTargets() states, and the copy is inside the frame that owns them.
     if (!targetCaptureName.empty()) recordTargetCapture(f.cmd);
 
-    // And the recording, alongside them rather than instead of them: a session being
-    // recorded can still take a screenshot, and two copies out of one image is two
-    // barriers, not a conflict. `framesOwed` is what makes this cheap -- above 30 fps
-    // most frames are owed nothing and record no copy at all.
+    // Alongside the captures above rather than instead of them: two copies out of one image
+    // is two barriers, not a conflict.
     if (recorder != nullptr) {
         const double elapsed = std::chrono::duration<double>(frameStart - recordStart).count();
         if (const uint32_t owed = recorder->framesOwed(elapsed); owed > 0) {
-            // Assignment, not accumulation: the slot was drained at the top of this
-            // frame, so this is known to be empty. What carries an unpaid repeat forward
-            // is `Recorder::submitFrame`, which is the only place that can know whether
-            // the encoder took the frame.
+            // Assignment, not accumulation: the slot was drained at the top of this frame,
+            // and `Recorder::submitFrame` is the only place that can know whether the
+            // encoder took a frame, so it is what carries an unpaid repeat forward.
             recordSlotRepeat[frameSlot] = owed;
             recordCaptureCopy(f.cmd, swap.images[imageIndex], swap.extent, VK_IMAGE_LAYOUT_COLOR_ATTACHMENT_OPTIMAL,
                               recordStaging[frameSlot].buffer);
@@ -8205,18 +7042,16 @@ void Renderer::logGpuTimings() {
                        gpuProfiler.lastZoneMs("Tonemap"), gpuProfiler.lastZoneMs("Overlay"),
                        gpuProfiler.lastZoneMs("Frame"));
     } else {
-        // Not a table of zeros: a pass reading 0.000 ms because the device cannot
-        // time it looks exactly like a pass that costs nothing. The two reasons are
-        // separated because one is the machine and the other is the command line, and
-        // reporting "no timestamp support" for a flag the caller passed would send them
-        // looking at the driver.
+        // Not a table of zeros: a pass reading 0.000 ms because the device cannot time it
+        // looks exactly like a pass that costs nothing. The two reasons stay apart because
+        // one is the machine and the other is the command line.
         core::Logger::status(core::LogCategory::Render, "GPU @ %ux MSAA: timings unavailable (%s)",
                        static_cast<uint32_t>(msaaSamples),
                        core::Profiler::enabled() ? "no timestamp support" : "--no-profiler");
     }
 
-    // Wall and CPU are both reported because the gap between them is the answer to
-    // "which one is the limiter". Wall alone cannot say: it contains the GPU blocks.
+    // Both, because the gap between them is which one is the limiter. Wall alone cannot
+    // say: it contains the GPU blocks.
     core::Logger::status(core::LogCategory::Render,
                    "Frame %.3f ms wall (%.1f FPS) | CPU busy %.3f ms | %u commands | prims %u (%u visible) | "
                    "blended %u | velocity %u | tris %llu (drawn %u)",

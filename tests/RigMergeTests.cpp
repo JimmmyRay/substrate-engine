@@ -11,7 +11,7 @@ using namespace scene;
 
 /**
  * @file tests/RigMergeTests.cpp
- * @brief The offset arithmetic a rig arriving at runtime has to get right (C22).
+ * @brief The offset arithmetic a rig arriving at runtime has to get right.
  *
  * **This is the check the golden suite cannot be.** A wrong offset does not crash: it draws
  * somebody else's vertices for the frames the mesh is visible, and no golden case has two

@@ -16,7 +16,7 @@ using namespace scene;
 
 /**
  * @file tests/ParticleSystemTests.cpp
- * @brief Emitter authoring, pool sizing and the slot allocator (S3.1, S3.2).
+ * @brief Emitter authoring, pool sizing and the slot allocator.
  *
  * The GPU half of this subsystem is not reachable from here and does not need to be:
  * what a unit test can hold is exactly the part that had to live on the CPU in the
@@ -98,7 +98,7 @@ TEST(ParticleSystem, LifetimeJitterWidensTheCapacity) {
 }
 
 TEST(ParticleSystem, TheBudgetIsAFloorAndStaysAPowerOfTwo) {
-    // **A budget no longer caps** (C40). It used to round *down* to whatever the caller
+    // **A budget no longer caps**. It used to round *down* to whatever the caller
     // stated, on the grounds that handing back more slots than were asked for is not a
     // budget -- but the pool grows now, so clamping down only meant resizing on the first
     // step and reporting refusals that never happened.
@@ -517,7 +517,7 @@ TEST(ParticleSystem, GlbJsonChunkIsUnwrapped) {
     EXPECT_FALSE(testing_extras::parseNodes(truncated.data(), truncated.size(), out, parseSceneEmitters));
 }
 
-// ========================================== lifetimes: create and destroy (C1)
+// ========================================== lifetimes: create and destroy
 
 TEST(EmitterLifetime, SetEmittersIssuesHandlesForEverySlot) {
     ParticleSystem system;
@@ -618,7 +618,7 @@ TEST(EmitterLifetime, AWholeListReplacementStalesEveryHandleFromBeforeIt) {
     EXPECT_FALSE(system.valid(old)) << "a handle into the previous list validated against the new one";
 }
 
-// ============================================== runtime effects (C3)
+// ============================================== runtime effects
 
 TEST(RuntimeEffects, ABurstEmitsOnceAndThenStops) {
     ParticleSystem system;

@@ -10,47 +10,16 @@
 
 /**
  * @file engine/scene/SpatialIndex.h
- * @brief A bounding-volume hierarchy over the instance table (C9).
+ * @brief A bounding-volume hierarchy over the instance table's world-space boxes.
  *
- * ## What it is for
+ * Boxes, not triangles: every query here is a broadphase. Treating a `raycast` result as a
+ * hit is how a picking system selects the object whose *box* was in front -- the narrow phase
+ * is `PhysicsWorld::raycast`, or the caller's own triangle test where a scene has no
+ * colliders.
  *
- * Three questions the engine could only answer by walking every instance: *what does this
- * ray pass through*, *what is inside this box*, and *what is inside this frustum*. Each is
- * O(n) today and each has a caller that wants it every frame or on every click --
- * click-to-select, an audio occlusion probe, a trigger volume, a query the CPU asks before
- * the GPU cull runs.
- *
- * ## What it indexes, and why that is not what the row said
- *
- * The row this comes from indexes **node bounds** and is gated on a scene tree that does
- * not exist here. This indexes **instance bounds**, which needs no tree: `InstanceTable`
- * already keeps a world-space box per slot and already refreshes it in `setTransform`,
- * which is the only thing that can invalidate one. Every consumer the row named --
- * picking, a broadphase, occlusion probes -- asks about *things in the world*, and in this
- * engine a thing in the world is an instance.
- *
- * The gate was real for the other half of the row, and it is the half not built here:
- * *incremental update on reparenting*. A tree is what makes a structural change local; a
- * flat table has no reparenting, so what a moved instance needs is a **refit**, and that is
- * what `refit` does.
- *
- * ## What it answers, and what it does not
- *
- * Boxes, not triangles. `raycast` returns the instances a ray *could* hit, nearest box
- * entry first -- a broadphase, which is what a BVH over AABBs can honestly be. The narrow
- * phase is `PhysicsWorld::raycast` (C2) where a scene has colliders, or the caller's own
- * triangle test where it does not. Conflating the two is how a picking system ends up
- * selecting the object whose *box* was in front.
- *
- * ## Build policy
- *
- * Top-down, splitting at the spatial median of the longest axis. Not SAH, and the reason is
- * the use: this index is rebuilt whenever the table's topology changes and refitted
- * whenever anything moves, so build time is paid far more often than a static-scene index
- * would pay it. A median split builds in one pass over the centroids and gives a tree whose
- * query cost is within a small factor of SAH's on the scenes this engine loads. **If a
- * profile ever shows queries dominating builds, that is the measurement that justifies
- * SAH** -- and not before.
+ * Split at the spatial median of the longest axis, not by SAH: this index is rebuilt on every
+ * topology change and refitted on every move, so build cost is paid far more often than query
+ * cost. Only a profile showing queries dominating builds justifies changing that.
  */
 namespace scene {
 
@@ -58,8 +27,8 @@ namespace scene {
  * @brief One node. Leaves carry a range of instance slots; internal nodes carry a right
  *        child index, the left child being the next node in the array.
  *
- * Depth-first order, so the left child is always adjacent and only one index is stored.
- * That is what keeps a node at 32 bytes and the traversal a stack of `uint32_t`.
+ * Nodes are emitted depth-first, and the left child being adjacent is what lets one index
+ * stand for two. Emitting them in any other order silently breaks every traversal.
  */
 struct SpatialNode {
     glm::vec3 boundsMin{0.0f};
@@ -74,81 +43,69 @@ static_assert(sizeof(SpatialNode) == 32, "SpatialNode should stay cache-friendly
 
 class SpatialIndex {
   public:
-    /**
-     * @brief Rebuild from every live instance in `table`.
-     *
-     * Instances with no live flag are skipped, so a table with holes in it produces a tree
-     * over what is actually there. Records `table.revision()`, which is what `stale()`
-     * compares against.
-     */
+    /// Rebuild from every live instance in `table`, skipping dead slots.
     void build(const InstanceTable& table);
 
     /**
      * @brief Recompute every node's box from the table, leaving the topology alone.
      *
-     * What a moved instance needs, and it is O(n) over the *nodes* rather than a rebuild:
-     * no sort, no allocation, one bottom-up pass. A tree refitted after large movement
-     * gets progressively worse-shaped without ever becoming wrong, which is the trade --
-     * `build` is what fixes the shape, and a caller that moves everything every frame
-     * should call it instead.
+     * The answer for a moved instance: one bottom-up pass, no sort, no allocation. A tree
+     * refitted through large movement gets worse-shaped without becoming wrong; `build` is
+     * what fixes the shape.
      *
-     * Undefined if the table's topology changed; `stale()` is how a caller finds out.
+     * Undefined if the table's topology changed -- `stale()` is how a caller finds out.
      */
     void refit(const InstanceTable& table);
 
     /// True when the table has changed shape since `build`. A moved instance does not make
-    /// the index stale -- it makes it want a `refit`, which is a different and much cheaper
-    /// answer, and conflating the two is how an index gets rebuilt sixty times a second.
+    /// the index stale, it makes it want a `refit`; conflating the two rebuilds sixty times
+    /// a second.
     [[nodiscard]] bool stale(const InstanceTable& table) const { return table.slotCount() != builtSlots; }
 
     /// A ray's nearest *possible* hit: the instance whose box the ray enters first.
-    /// `distance` is that entry distance, not a surface distance. Negative means a miss,
-    /// the same convention `PhysicsWorld::RayHit` uses and for the same reason.
+    /// `distance` is that box-entry distance, not a surface distance. Negative means a miss,
+    /// matching `PhysicsWorld::RayHit`.
     struct RayHit {
         uint32_t instance = kNoInstance;
         float distance = -1.0f;
         [[nodiscard]] explicit operator bool() const { return distance >= 0.0f; }
     };
 
-    /// What a query returns when nothing was in range. A slot index a caller can hold, so
-    /// it is a named value rather than "check the distance and hope".
+    /// What a query returns when nothing was in range.
     static constexpr uint32_t kNoInstance = 0xFFFFFFFFu;
 
     /**
      * @brief Nearest instance box the ray enters, within `maxDistance`.
      *
-     * `direction` need not be normalised; distances come back in units of it. A ray
-     * starting inside a box hits it at distance zero, which is what a click inside a
-     * building should select.
+     * `direction` need not be normalised, and distances come back in units of it -- an
+     * unnormalised one silently rescales `maxDistance` too. A ray starting inside a box hits
+     * it at zero, which is what makes a click inside a building select the building.
      */
     [[nodiscard]] RayHit raycast(const glm::vec3& origin, const glm::vec3& direction,
                                  float maxDistance = 3.4e38f) const;
 
-    /// Every instance whose box overlaps the given one. Appends; the caller owns `out` and
-    /// can reuse it across frames, which is the whole reason this is not a return value.
+    /// Every instance whose box overlaps the given one. Appends to `out` rather than
+    /// clearing it, so a caller can reuse one buffer across frames.
     void overlap(const glm::vec3& queryMin, const glm::vec3& queryMax, std::vector<uint32_t>& out) const;
 
-    /// Every instance whose box is inside or crossing the frustum. Shares `gfx::Frustum`
-    /// with C8's light culling rather than declaring a second plane set -- one definition
-    /// of "inside", tested once.
+    /// Every instance whose box is inside or crossing the frustum. Appends, as `overlap`
+    /// does. Shares `gfx::Frustum` with light culling: one definition of "inside".
     void visible(const gfx::Frustum& frustum, std::vector<uint32_t>& out) const;
 
     [[nodiscard]] const std::vector<SpatialNode>& nodes() const { return tree; }
-    /// The boxes, in leaf order and parallel to `items()`. Copied out of the table at
-    /// build and refresh, so a query needs no table at all -- which is what lets one be
-    /// answered from a worker while the main thread is moving things.
+    /// The boxes, in leaf order and parallel to `items()`. Copied out of the table at build
+    /// and refit, so a query touches no table and can be answered while one is being moved.
     [[nodiscard]] const std::vector<GpuInstanceBounds>& itemBounds() const { return boxes; }
     /// Instance slots in leaf order. A leaf's range indexes this, not the table.
     [[nodiscard]] const std::vector<uint32_t>& items() const { return order; }
     [[nodiscard]] bool empty() const { return tree.empty(); }
 
-    /// Longest root-to-leaf path, for the log line and for a test that a degenerate scene
-    /// -- ten thousand instances at one point -- does not build a ten-thousand-deep tree.
+    /// Longest root-to-leaf path.
     [[nodiscard]] uint32_t depth() const;
 
-    /// Instances per leaf, past which a node is not split. Four rather than one: a leaf
-    /// test is a box test either way, and four boxes tested linearly beat three more
-    /// levels of traversal on every scene measured.
+    /// Instances per leaf, past which a node is not split. Four rather than one: a leaf test
+    /// is a box test either way, and four tested linearly beat three more traversal levels on
+    /// every scene measured.
     static constexpr uint32_t kLeafSize = 4;
 
   private:
@@ -158,8 +115,7 @@ class SpatialIndex {
     std::vector<SpatialNode> tree;
     std::vector<uint32_t> order;
     std::vector<GpuInstanceBounds> boxes;
-    /// Centroids, kept only for the duration of a build. A member rather than a local so a
-    /// rebuild of the same scene reuses the allocation.
+    /// Centroids, meaningful only during a build; a member so a rebuild reuses the allocation.
     std::vector<glm::vec3> centroids;
     uint32_t builtSlots = 0;
 };

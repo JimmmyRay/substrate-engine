@@ -20,7 +20,7 @@ using namespace core;
 /**
  * @file tests/SettingsTests.cpp
  * @brief The settings table: one list, two doors, and a value that knows where it came
- *        from (G2, S2, S3).
+ *        from.
  *
  * The contract worth defending is that the table is **enumerable**, not merely addressable
  * by string. A setter alone would let you write any key and read none, and the failure the

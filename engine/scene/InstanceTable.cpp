@@ -64,14 +64,11 @@ InstanceId InstanceTable::create(const InstanceDesc& desc) {
     if (desc.blended) f |= kInstanceBlended;
     if (desc.masked) f |= kInstanceMasked;
     if (desc.dynamic) f |= kInstanceDynamic;
-    // A deformed instance is dynamic by definition: its vertices are rebuilt every
-    // frame, so the tiers 3.4 and 3.9 select on that flag apply to it whether or not
-    // its node transform ever changes.
+    // Anything deformed is dynamic whether or not its node transform ever changes: its
+    // vertices are rebuilt every frame, and the velocity pass and the acceleration tiers
+    // both select on that bit.
     if (desc.skin != 0xFFFFFFFFu) f |= kInstanceSkinned | kInstanceDynamic;
     if (desc.morphTargets > 0) f |= kInstanceMorphed | kInstanceDynamic;
-    // Same reasoning again: a cloth's vertices are rewritten every frame, so it is dynamic
-    // whether or not anything ever moves its node -- and nothing can, because its transform
-    // is identity by construction.
     if (desc.cloth) f |= kInstanceCloth | kInstanceDynamic;
 
     GpuInstance& g = shading[slot];
@@ -85,9 +82,8 @@ InstanceId InstanceTable::create(const InstanceDesc& desc) {
 
     refreshBounds(slot, desc.transform);
 
-    // A new instance has no history. Seeding it with its own transform is what makes
-    // "it did not move" the default: a velocity computed from these two is exactly
-    // zero, so the object does not smear on the frame it appears.
+    // Seeded with its own transform, so the velocity computed on its first frame is
+    // exactly zero and the object does not smear as it appears.
     prevTransforms[slot] = desc.transform;
 
     ++live;
@@ -116,10 +112,9 @@ void InstanceTable::destroy(InstanceId id) {
     bounds[id.index].worldMax = glm::vec4(-1e30f, -1e30f, -1e30f, 0.0f);
     ranges[id.index] = {};
 
-    // Wraps at 2^32 creations in one slot, which is a handle collision after roughly
-    // four billion create/destroy cycles on the same slot. Recorded rather than
-    // guarded: the guard costs a branch on every validity test to defend against a
-    // number no frame loop reaches.
+    // Wraps at 2^32 create/destroy cycles on one slot, which is a handle collision.
+    // Unguarded: the guard costs a branch on every validity test, against a number no
+    // frame loop reaches.
     ++generations[id.index];
     freeSlots.push_back(id.index);
     ++rev;

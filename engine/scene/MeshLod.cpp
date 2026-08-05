@@ -19,9 +19,8 @@ uint32_t buildLodChains(SceneData& data) {
     const size_t indicesBefore = data.indices.size();
     uint32_t chained = 0;
 
-    // Reused across primitives rather than allocated per level. `meshopt_simplify` wants
-    // room for the worst case -- the whole input -- and Sponza's largest primitive is 60k
-    // indices, which is not a per-mesh allocation worth making a hundred times.
+    // Reused across primitives: `meshopt_simplify` wants room for the worst case, the whole
+    // input, which is a 60k-index allocation to make once rather than a hundred times.
     std::vector<uint32_t> source;
     std::vector<uint32_t> reduced;
 
@@ -32,10 +31,8 @@ uint32_t buildLodChains(SceneData& data) {
         if (p.blended) continue;
         if (p.skinOffset != 0xFFFFFFFFu || p.morphTargets > 0) continue;
 
-        // **Copied, not pointed at.** `data.indices` is appended to inside the loop below,
-        // and a pointer into a vector that grows is the one mistake this whole row is
-        // written to avoid. The copy is a few hundred kilobytes at the top of the chain and
-        // it is reused for every level after.
+        // **Copied, not pointed at.** The loop below appends to `data.indices`, so an
+        // iterator or pointer into it here dangles the first time a level is written.
         source.assign(data.indices.begin() + p.firstIndex, data.indices.begin() + p.firstIndex + p.indexCount);
 
         for (uint32_t level = 0; level < kMaxLodLevels; ++level) {
@@ -56,10 +53,10 @@ uint32_t buildLodChains(SceneData& data) {
                 // which is a hole in the image rather than a coarser silhouette.
                 meshopt_SimplifyLockBorder, &error);
 
-            // Stopped short. The simplifier respects topology and `kLodTargetError` ahead of
-            // the triangle target, so a mesh it cannot reduce comes back nearly the size it
-            // went in -- and a level that saves a tenth of the triangles costs an index
-            // range, a chain entry and a selection branch to buy nothing.
+            // The simplifier honours topology and `kLodTargetError` ahead of the triangle
+            // target, so a mesh it cannot reduce comes back nearly the size it went in. A
+            // level saving under a tenth costs an index range, a chain entry and a selection
+            // branch to buy nothing.
             if (got < 3 || got > source.size() - source.size() / 10) break;
 
             p.lods[level].firstIndex = static_cast<uint32_t>(data.indices.size());
@@ -67,7 +64,6 @@ uint32_t buildLodChains(SceneData& data) {
             data.indices.insert(data.indices.end(), reduced.begin(), reduced.begin() + static_cast<ptrdiff_t>(got));
             p.lodCount = level + 1;
 
-            // The next level reduces this one, which is what makes it a chain.
             source.assign(reduced.begin(), reduced.begin() + static_cast<ptrdiff_t>(got));
         }
 

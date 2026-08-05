@@ -12,7 +12,7 @@ using namespace scene;
 
 /**
  * @file tests/PhysicsTests.cpp
- * @brief The clock, the interpolation and the world (S4.1, S4.3, S4.4).
+ * @brief The clock, the interpolation and the world.
  *
  * Physics needs neither Vulkan nor a window, which is what puts the solver in the hosted
  * set and therefore under ASan and TSan. That is not a bonus: S4 is the first subsystem
@@ -641,7 +641,7 @@ TEST(PhysicsCharacter, AJumpIsLatchedRatherThanMissed) {
     EXPECT_GT(peak - restY, 0.5f);
 }
 
-// ---------------------------------------------------------- placement (C29)
+// ---------------------------------------------------------- placement
 
 TEST(PhysicsCharacter, APlacedCharacterArrivesStoppedAndAtOnce) {
     PhysicsWorld world;
@@ -726,7 +726,7 @@ TEST(PhysicsCharacter, APlacementIntoTheAirCannotJumpOffTheGroundItLeft) {
     }
 }
 
-// -------------------------------------------------- a jump that forgives (C20)
+// -------------------------------------------------- a jump that forgives
 
 namespace {
 
@@ -911,7 +911,7 @@ TEST(PhysicsCharacter, TheCoyoteWindowIsSpentByTheJumpThatUsedIt) {
     EXPECT_EQ(launches, 1);
 }
 
-// -------------------------------------------------- steep ground, and steps (C20)
+// -------------------------------------------------- steep ground, and steps
 
 /**
  * A face past `maxSlopeAngle` is a third answer, and the bool could not give it.
@@ -954,7 +954,7 @@ TEST(PhysicsCharacter, SteepGroundIsItsOwnAnswerRatherThanMidAir) {
     EXPECT_LT(after.y, before.y);
 }
 
-// ------------------------------------------------ what the ground is, not merely that it is (C30)
+// ------------------------------------------------ what the ground is, not merely that it is
 
 TEST(PhysicsCharacter, TheGroundIsABodyRatherThanAYesOrNo) {
     PhysicsWorld world;
@@ -1085,7 +1085,7 @@ TEST(DebugLineColor, PacksToTheLayoutTheShaderReads) {
     EXPECT_EQ(gfx::packDebugColor({2.0f, 2.0f, 2.0f, 2.0f}), 0xFFFFFFFFu);
 }
 
-// D6. `addBody` returns kNoBody when the budget refuses a collider, and kNoBody is an
+// `addBody` returns kNoBody when the budget refuses a collider, and kNoBody is an
 // ordinary uint32_t a caller stores and asks questions about later. Every indexed
 // accessor therefore has to answer for it rather than index past the end of a vector.
 TEST(PhysicsBounds, TheValueCreateBodyReturnsOnFailureIsSafeToAskAbout) {
@@ -1120,7 +1120,7 @@ TEST(PhysicsBounds, CharacterAccessorsAnswerForAnIndexThatIsNotACharacter) {
     world.setCharacterInput(none, {1.0f, 0.0f, 0.0f}, true); // must not write anything
 }
 
-// ============================================================== queries (C2)
+// ============================================================== queries
 //
 // The surface `segmentBlocked` was the boolean half of. What these defend is that a hit
 // reports the caller's body index rather than Jolt's, that a miss is falsy rather than a
@@ -1255,7 +1255,7 @@ TEST(PhysicsQueries, OverlapSphereReportsWhatItWantedNotWhatItWrote) {
     EXPECT_EQ(world.overlapSphere({0.75f, 0.0f, 0.0f}, 5.0f, {}), 4u);
 }
 
-// ================================================= pause and time scale (C4)
+// ================================================= pause and time scale
 
 TEST(FixedClockTimeScale, DefaultsToOneAndChangesNothing) {
     // The property the golden set rests on: at the default scale a locked clock is the
@@ -1327,7 +1327,7 @@ TEST(FixedClockTimeScale, ANegativeScaleClampsToPausedRatherThanRunningBackwards
     EXPECT_FALSE(clock.consume());
 }
 
-// ========================================== lifetimes: create and destroy (C1)
+// ========================================== lifetimes: create and destroy
 //
 // What the row exists for: before it, nothing in this class could be taken away. These
 // defend the three properties that make a handle safer than the bare index it replaced.
@@ -1453,7 +1453,7 @@ TEST(PhysicsLifetime, ASpawnDespawnCycleDoesNotGrowTheWorld) {
     EXPECT_EQ(world.bodyCount(), base + 1u) << "one slot recycled 200 times, not 200 slots";
 }
 
-// ================================================ contacts (G7)
+// ================================================ contacts
 //
 // The stream a game acts on. Four properties carry it, and each one is a way the obvious
 // implementation is wrong:
@@ -1681,7 +1681,7 @@ TEST(PhysicsContacts, AThreadPoolStillHandsOverAnOrderedStream) {
     EXPECT_GT(total, 10u) << "nothing collided, so this proved nothing";
 }
 
-// ================================================== motion and freedom (P7)
+// ================================================== motion and freedom
 //
 // The half of this class a game reaches for first and which, until P7, did not exist: a
 // body could be made, unmade, asked about and -- if it was kinematic -- placed, and nothing

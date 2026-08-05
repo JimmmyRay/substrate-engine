@@ -11,7 +11,7 @@ using namespace scene;
 
 /**
  * @file tests/SceneLoaderTests.cpp
- * @brief The worker handshake, under ThreadSanitizer (C10).
+ * @brief The worker handshake, under ThreadSanitizer.
  *
  * These exist because of where they run rather than what they assert. `SceneLoader` is the
  * only threaded thing C10 adds, and the unit suite is the only place `./test.sh tsan` is

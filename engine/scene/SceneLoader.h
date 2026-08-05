@@ -9,37 +9,17 @@
 
 /**
  * @file engine/scene/SceneLoader.h
- * @brief One scene parsed on a worker thread while the frame keeps running (C10).
+ * @brief One scene parsed on a worker thread while the frame keeps running.
  *
- * ## What it is
+ * A single slot: `begin`, `ready`, `take`.
  *
- * A single-slot job: `begin` starts one, `ready` says whether it has finished, `take` moves
- * the result out. No queue, no pool, no scheduler -- there is exactly one thing a game
- * streams at a time in this engine today, and a work queue built before a second caller
- * exists is a queue whose shape is a guess.
+ * **The worker touches nothing but its own `SceneData` and `EmbeddedImages`** -- not the
+ * device, the scene or the instance table, none of which is thread-safe. Everything that
+ * needs those happens in `take`'s caller, on the frame thread, after `ready()`.
  *
- * ## Why the work is a `std::function` and not a call to `scene::loadSceneCpu`
- *
- * Because that is what keeps this file **hosted**, and hosted is where threading gets
- * checked. The unit suite is the only place `./test.sh tsan` runs, and a threaded class with
- * no ThreadSanitizer coverage is precisely the kind that works for months and then corrupts
- * a scene on somebody else's machine. Naming the load directly would put it out of reach:
- * until D9 that was because `GltfScene.h` reaches Vulkan, and since D9 it is because
- * `scene/SceneParse.cpp` is linked by the engine and by `substrate-bake` and not by the
- * suite, which has no glTF to parse. Either way the link fails, which is the point.
- *
- * So the caller supplies the work. `Engine` passes a lambda calling `scene::loadSceneCpu`;
- * the tests pass a lambda that fills a `SceneData` by hand and can be made to fail, block,
- * or race on demand. One `std::function` parameter, and it is not an abstraction layer over
- * anything -- there is no second implementation and no interface, only a seam where the
- * device half would otherwise have to be.
- *
- * ## The one rule
- *
- * **The worker touches nothing but its own `SceneData` and `EmbeddedImages`.** It does not
- * touch the device, the scene, or the instance table, because a queue is not thread-safe
- * and neither is anything else here. Everything that needs those happens in `take`'s
- * caller, on the frame thread, after `ready()`.
+ * The work is a `std::function` so this file stays in `SUBSTRATE_HOSTED_SOURCES`, which is
+ * the only place `./test.sh tsan` reaches. Naming `scene::loadSceneCpu` here is a link
+ * error in the unit suite, which links no glTF parser.
  */
 namespace scene {
 
@@ -61,9 +41,8 @@ class SceneLoader {
      * @brief Start a load.
      *
      * @param label What is being loaded, for the log line and for `label()`. Usually a path.
-     * @return false when one is already in flight, which is not an error the caller has to
-     *         handle so much as a question it has to answer: a second `begin` cannot
-     *         silently replace the first, because the first is already writing.
+     * @return false when one is already in flight. A second `begin` cannot replace the
+     *         first, which is already writing the result.
      */
     bool begin(std::string label, Work work);
 
@@ -81,17 +60,15 @@ class SceneLoader {
     /**
      * @brief Move the result out and return to idle.
      *
-     * Joins the worker first, so what comes back is complete rather than nearly complete.
-     * That join is free in the case that matters -- the caller asked `ready()` first -- and
-     * it is the reason `take` is safe to call without one.
+     * Joins the worker first, which is what makes this safe to call without asking
+     * `ready()`; after a `ready()` the join costs nothing.
      *
      * @return false when nothing is ready, or when the load failed. The outputs are
      *         untouched in the first case and meaningless in the second.
      */
     [[nodiscard]] bool take(SceneData& outData, EmbeddedImages& outEmbedded);
 
-    /// Block until the worker finishes. For a shutdown that cannot leave one running, and
-    /// for a caller that has decided to wait after all.
+    /// Block until the worker finishes.
     void wait();
 
   private:

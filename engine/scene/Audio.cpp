@@ -22,16 +22,10 @@ namespace {
 /**
  * @brief Move a 0-to-1 state toward `target` at a rate of one full range per `seconds`.
  *
- * Linear rather than exponential, and that is a choice rather than a shortcut: an
- * exponential approach never actually arrives, so a bus that "finished" ducking is still
- * a fraction of a decibel down forever, and a filter that "finished" opening is still
- * filtering. Linear arrives, and at these times -- tens to hundreds of milliseconds --
- * nothing about the two is distinguishable by ear.
- *
- * Both callers slew a *state* in [0, 1] and then interpolate the real quantity from it,
- * rather than slewing gains and cutoffs directly. That is what lets one helper serve a
- * bus gain and a filter cutoff without a `mode` flag: the ducking depth and the occlusion
- * depth are the same kind of number, and the gain and the hertz are not.
+ * Linear, not exponential: an exponential approach never arrives, so a bus that
+ * "finished" ducking stays a fraction of a decibel down forever and a filter that
+ * "finished" opening keeps filtering. At these times -- tens to hundreds of milliseconds
+ * -- the two are indistinguishable by ear.
  */
 float approach(float current, float target, float dt, float seconds) {
     if (seconds <= 0.0f) return target;
@@ -40,9 +34,9 @@ float approach(float current, float target, float dt, float seconds) {
     return std::max(target, current - stepSize);
 }
 
-/// The cutoff an *unoccluded* source sits at. Not "no filter": the filter node is in the
-/// graph either way once a source is occludable, so what open means is a cutoff above
-/// everything the mix can carry. Nyquist would ring, so this stops short of it.
+/// The cutoff an unoccluded source sits at -- the filter node stays in the graph either
+/// way, so "open" has to be a cutoff above everything the mix carries. Short of Nyquist,
+/// which would ring.
 float openCutoffHz(uint32_t sampleRate) { return std::min(20000.0f, static_cast<float>(sampleRate) * 0.45f); }
 
 ma_attenuation_model toMa(AudioAttenuation model) {
@@ -55,21 +49,16 @@ ma_attenuation_model toMa(AudioAttenuation model) {
     return ma_attenuation_model_inverse;
 }
 
-/// The one list of backend names (D12), canonical first. `auto` is first and is also the
-/// row's default, which is what a refusal leaves standing.
-
 } // namespace
 
 
 /**
  * @brief Everything miniaudio owns.
  *
- * Voices and buses are held by pointer rather than by value, and that is load-bearing
- * rather than tidy: a `ma_sound` registers itself into the engine's node graph by
- * address, so a `std::vector<Voice>` that reallocated would leave the graph pointing at
- * freed memory and the symptom would be a crash inside the mixer on the frame a scene
- * happened to declare one more sound than the last one. `InstanceTable` can grow because
- * nothing holds a pointer into it; this cannot.
+ * Voices and buses are held by pointer, never by value: a `ma_sound` registers itself
+ * into the engine's node graph by address, so a `std::vector<Voice>` that reallocated
+ * leaves the graph pointing at freed memory -- a crash inside the mixer on the frame a
+ * scene happens to declare one more sound than the last one.
  */
 struct AudioEngine::Impl {
     AudioConfig cfg;
@@ -92,92 +81,69 @@ struct AudioEngine::Impl {
         /// How far into the duck this bus currently is, 0 to 1.
         float duck = 0.0f;
         float gain = 1.0f;
-        /// What the last log said, so the transition is reported and the slew between is
-        /// not -- the same policy the occlusion line and the dropped-step warning follow.
+        /// What the last log said, so only the transition is reported.
         bool duckingReported = false;
     };
     std::vector<std::unique_ptr<Bus>> buses;
 
     struct Voice {
-        /// The lifetime pair (C1). Generation starts at 1 because `Handle::valid()`
-        /// reserves 0 for "never issued".
+        /// Starts at 1: `Handle::valid()` reserves 0 for "never issued".
         uint32_t generation = 1;
         bool live = true;
         AudioSourceDesc desc;
         ma_sound sound{};
         bool ready = false;
-        /// Present only for a source that is both spatial and occludable, so a bed and a
-        /// source the author excluded pay for no filter at all.
+        /// Present only for a source that is both spatial and occludable.
         ma_lpf_node lpf{};
         bool hasFilter = false;
         float filterCutoff = 0.0f;
         uint32_t bus = AudioEngine::kMasterBus;
         bool streamed = false;
         float seconds = 0.0f;
-        /// Fired by `playAt` rather than declared by a node (G7), which is the whole of
-        /// what makes `update()` retire it when it reaches its end. A flag rather than a
-        /// second container because everything else about the two is identical -- the same
-        /// slot, the same generation, the same graph, the same `destroy`.
+        /// Fired by `playAt`, which is what makes `update()` retire it at its end.
         bool oneShot = false;
         bool occludedNow = false;
         float occlusionState = 0.0f;
-        /// What the last log said, so the transition is reported and the steady state is
-        /// not. A message at 60 Hz drowns the log it is trying to appear in, which is the
-        /// same policy the dropped-step warning and the particle budget both follow.
+        /// What the last log said, so only the transition is reported. A message at 60 Hz
+        /// drowns the log it is trying to appear in.
         bool occludedReported = false;
     };
     std::vector<std::unique_ptr<Voice>> voices;
     /// Retired slots, and slots whose `ma_sound` is not torn down yet. A slot only moves
-    /// from the second list to the first inside `update()`, which is the audio equivalent
-    /// of the physics step boundary.
+    /// from the second list to the first inside `update()`, between mixes.
     std::vector<uint32_t> freeVoiceSlots;
     std::vector<uint32_t> pendingVoiceRemoval;
 
     /// One per listener, sized at `init` and never resized. Kept beside miniaudio's own
-    /// copy because `listenerPosition` is read by the occlusion sweep once per source per
-    /// frame and `ma_engine_listener_get_position` returns by value through two indirections.
+    /// copy because the occlusion sweep reads it once per source per frame and
+    /// `ma_engine_listener_get_position` returns by value through two indirections.
     std::vector<glm::vec3> listeners{glm::vec3(0.0f)};
 
     uint64_t decodedBytes = 0;
     uint32_t refused = 0;
     uint32_t forcedStreams = 0;
 
-    /// Files already counted against the decode budget.
-    ///
-    /// **miniaudio's resource manager caches a decoded buffer by path**, so forty sources
-    /// on one file decode it once and share it. Counting per *source* would therefore
-    /// have charged the budget forty times for one allocation -- a scene refused memory
-    /// it never spent, which is the exact opposite of what 0.9's stated budgets are for.
-    /// Found by measuring: eight sources on one 58-second asset reported 169.9 MiB and
-    /// the process had grown by a twenty-first of that.
-    ///
-    /// A vector rather than a set because the list is one entry per distinct sound in the
-    /// scene -- single digits in every scene that exists -- and a linear scan over eight
-    /// strings at load time is not worth a hash table.
+    /// Files already counted against the decode budget. miniaudio's resource manager
+    /// caches a decoded buffer by path, so counting per source charges the budget once per
+    /// source for one allocation -- eight sources on one 58-second asset reported 169.9
+    /// MiB against a process that had grown by a twenty-first of it.
     std::vector<std::string> decodedFiles;
 
     [[nodiscard]] bool alreadyDecoded(const std::string& file) const {
         return std::find(decodedFiles.begin(), decodedFiles.end(), file) != decodedFiles.end();
     }
 
-    /// Seconds per asset, or **negative for a file that would not open** (G7).
-    ///
-    /// A map rather than the vector `decodedFiles` is, and the difference is the access
-    /// pattern rather than taste: that one is walked when a scene loads and this one is
-    /// walked every time a one-shot fires, which for a game playing impacts is several
-    /// times a step. The negative entry earns its place for the same reason -- a bad path
-    /// fired on every contact is a warning sixty times a second, and remembering the
-    /// refusal makes it a warning once.
+    /// Seconds per asset, **negative for a file that would not open**. Walked every time
+    /// a one-shot fires, which is several times a step for a game playing impacts; the
+    /// negative entry is what turns a bad path fired on every contact from a warning at
+    /// 60 Hz into one warning.
     std::unordered_map<std::string, float> durationByFile;
 
-    /// Whether the voice budget's refusal has already been said. The transition is
-    /// reported and the steady state is not, exactly as the duck and the occlusion states
-    /// are: a full mixer stays full for a run of calls, and one line each would be the
-    /// whole of what the log contained.
+    /// Whether the voice budget's refusal has already been said: a full mixer stays full
+    /// for a run of calls, and one line each would be the whole of the log.
     bool voiceBudgetReported = false;
 
-    /// Where the device-less backend's frames go. Sized once from a step's worth of
-    /// audio; the mix is discarded, because what is being exercised is the *mixer*.
+    /// Where the device-less backend's frames go. The mix itself is discarded.
     std::vector<float> mixBuffer;
     /// Fractional frames carried between steps, so a step of 1/60 at 48 kHz mixes 800
     /// frames every step rather than 800 frames most steps and 799 sometimes.
@@ -185,8 +151,8 @@ struct AudioEngine::Impl {
     float peak = 0.0f;
     float rms = 0.0f;
 
-    /// A copy of every mix, for the recorder (S7). Written from the audio thread inside
-    /// `onProcess`; read by the recorder's worker. Inert until `startCapture`.
+    /// A copy of every mix, for the recorder. Written from the audio thread inside
+    /// `onProcess` and read by the recorder's worker, so it must outlive the device.
     core::AudioTap tap;
 
     [[nodiscard]] ma_node* busNode(uint32_t bus) {
@@ -212,19 +178,17 @@ bool AudioEngine::init(const AudioConfig& cfg) {
 
     const bool wantDevice = cfg.backend != core::AudioBackend::Null;
 
-    // The resource manager is ours rather than the engine's own, for one reason: the
-    // decoded format. Naming it here converts every asset to the mix format *once, at
-    // load*, so a scene mixing a 44.1 kHz effect with a 48 kHz bed resamples twice at
-    // startup instead of twice per buffer forever.
+    // The resource manager is ours rather than the engine's own so that the decoded format
+    // can be named here: every asset converts to the mix format once at load, instead of
+    // resampling per buffer forever.
     ma_resource_manager_config rmConfig = ma_resource_manager_config_init();
     rmConfig.decodedFormat = ma_format_f32;
     rmConfig.decodedChannels = cfg.channels;
     rmConfig.decodedSampleRate = cfg.sampleRate;
     if (!wantDevice) {
-        // No job thread at all under the device-less backend, and the streams are paged
-        // in from `update()` instead. That is what makes this mode deterministic and what
-        // keeps it clean under ThreadSanitizer -- the same reason `physics.workerThreads`
-        // defaults to zero.
+        // No job thread under the device-less backend; `update()` pages the streams in
+        // instead. Giving it one back costs this mode its determinism and its clean
+        // ThreadSanitizer run.
         rmConfig.jobThreadCount = 0;
         rmConfig.flags |= MA_RESOURCE_MANAGER_FLAG_NO_THREADING;
     }
@@ -235,17 +199,13 @@ bool AudioEngine::init(const AudioConfig& cfg) {
     impl->resourcesReady = true;
 
     ma_engine_config engineConfig = ma_engine_config_init();
-    // The tap, and it is one line because miniaudio already has the hook: `onProcess`
-    // fires at the end of every `ma_engine_read_pcm_frames` with the frames that were
-    // just mixed. With a device that call is the device's own data callback, so this runs
-    // on the audio thread; without one it is the step below. Same samples, same place,
-    // one code path -- and nothing reads the driver's buffers behind its back.
+    // `onProcess` fires at the end of every `ma_engine_read_pcm_frames` with the frames
+    // just mixed. With a device that call is the driver's own data callback, so everything
+    // below runs on the audio thread and must stay allocation-free and lock-free.
     engineConfig.onProcess = [](void* user, float* frames, ma_uint64 frameCount) {
-        // Named from inside the callback because that is the only code of ours that runs
-        // on miniaudio's device thread -- it is created by the driver, not by us, so there
-        // is no spawn site to name it at. `nameThread` compares pointers and returns
-        // immediately once the name is set, which is what makes it safe to call at the
-        // mix rate.
+        // The only code of ours that runs on miniaudio's device thread, which the driver
+        // creates -- so there is no spawn site to name it at. `nameThread` compares
+        // pointers and returns once the name is set, so it is safe at the mix rate.
         core::Profiler::nameThread("audio device");
         static_cast<Impl*>(user)->tap.write(frames, frameCount);
     };
@@ -253,9 +213,7 @@ bool AudioEngine::init(const AudioConfig& cfg) {
     engineConfig.pResourceManager = &impl->resources;
     engineConfig.channels = cfg.channels;
     engineConfig.sampleRate = cfg.sampleRate;
-    // Clamped rather than refused: a game asking for five ears in a build of miniaudio that
-    // holds four is a game that wants as many as it can have, and `listenerCount()` reports
-    // what it got.
+    // Clamped rather than refused; `listenerCount()` reports what was actually created.
     const uint32_t wanted = std::clamp(cfg.listeners, 1u, static_cast<uint32_t>(MA_ENGINE_MAX_LISTENERS));
     engineConfig.listenerCount = wanted;
     impl->listeners.assign(wanted, glm::vec3(0.0f));
@@ -266,9 +224,6 @@ bool AudioEngine::init(const AudioConfig& cfg) {
         if (started) impl->device = true;
     }
     if (!started) {
-        // The fallback is not silence and it is not a second code path. Everything past
-        // this point -- decoders, spatializer, filters, buses -- is the same objects
-        // doing the same work; only the thing pulling frames out of the endpoint differs.
         if (wantDevice && cfg.backend != core::AudioBackend::Null) {
             core::Logger::warn(core::LogCategory::Audio,
                          "Audio: no playback device could be opened -- mixing without one, so every stream, "
@@ -282,17 +237,16 @@ bool AudioEngine::init(const AudioConfig& cfg) {
             return false;
         }
         impl->device = false;
-        // One step's worth at the slowest step the engine ships, with headroom. Sized
-        // once because the alternative is an allocation inside the simulation loop.
+        // A quarter-second: one step's worth at the slowest step the engine ships, with
+        // headroom. Sized once, because the alternative is an allocation per step.
         impl->mixBuffer.assign(static_cast<size_t>(cfg.sampleRate) * cfg.channels / 4, 0.0f);
     }
     impl->engineReady = true;
     impl->running = true;
     ma_engine_set_volume(&impl->engine, cfg.masterVolume);
 
-    // The three every project invents anyway. Named here rather than left to the config
-    // so that a source authored with `"bus": "sfx"` works against a file nobody edited,
-    // which is the same reason every action in the input map ships with a default key.
+    // Defaulted here so a source authored with `"bus": "sfx"` works against a config
+    // nobody edited.
     std::vector<AudioBusDesc> descs = cfg.buses;
     if (descs.empty()) {
         descs.push_back({"music", 1.0f, "", 1.0f, 0.05f, 0.4f});
@@ -332,9 +286,9 @@ bool AudioEngine::init(const AudioConfig& cfg) {
 void AudioEngine::shutdown() {
     if (impl == nullptr) return;
 
-    // Sounds before their filters before their buses before the engine. Every one of
-    // these is a node in the graph holding a pointer to the next, and tearing down in
-    // any other order is a read of freed memory rather than an error code.
+    // Sounds before their filters before their buses before the engine. Each is a node in
+    // the graph holding a pointer to the next, so any other order is a read of freed
+    // memory rather than an error code.
     for (std::unique_ptr<Impl::Voice>& voice : impl->voices) {
         if (voice->ready) ma_sound_uninit(&voice->sound);
         if (voice->hasFilter) ma_lpf_node_uninit(&voice->lpf, nullptr);
@@ -349,10 +303,9 @@ void AudioEngine::shutdown() {
     impl->buses.clear();
 
     if (impl->engineReady) {
-        // Before the tap is released: uninit stops the device, and the device's thread is
-        // what writes into it. Freeing the storage first would be a use-after-free with a
-        // window of exactly one audio period, which is the kind that reproduces on
-        // somebody else's machine.
+        // Before the tap is stopped: uninit stops the device, and the device thread is
+        // what writes into the tap. The other order is a use-after-free with a window of
+        // one audio period -- the kind that reproduces on somebody else's machine.
         ma_engine_uninit(&impl->engine);
         impl->engineReady = false;
     }
@@ -389,13 +342,10 @@ uint32_t AudioEngine::sampleRate() const { return impl->cfg.sampleRate; }
 uint32_t AudioEngine::channelCount() const { return impl->cfg.channels; }
 bool AudioEngine::empty() const { return impl->voices.empty(); }
 uint32_t AudioEngine::sourceCount() const { return static_cast<uint32_t>(impl->voices.size()); }
-// The nine accessors that take a source index are bounds-checked, the same way busName()
-// and busGain() already were. The reason is not defensive habit: `addSource` returns
-// `kNoSource` on a file it could not open or a voice the budget refused, `kNoSource` is
-// 0xFFFFFFFF rather than an unrepresentable value, and a caller that stores the result
-// and asks a question about it later is the ordinary way to use this class. An index that
-// came from a failure is therefore reachable at every one of these, and each returns the
-// same do-nothing answer it would give for a source that exists and is silent.
+// Every accessor taking a SoundId is bounds-checked, because `create` hands back an
+// invalid handle for a file it could not open or a voice the budget refused, and storing
+// that result and asking about it later is the ordinary way to use this class. Each
+// returns the do-nothing answer it would give for a source that exists and is silent.
 bool AudioEngine::valid(SoundId id) const {
     return id.valid() && id.index < impl->voices.size() && impl->voices[id.index]->generation == id.generation &&
            impl->voices[id.index]->live;
@@ -450,9 +400,9 @@ uint32_t AudioEngine::findBus(const std::string& name) const {
 bool AudioEngine::stealVoice() {
     constexpr uint32_t kNone = 0xFFFFFFFFu;
 
-    // Two passes rather than one scoring function: "a one-shot before a placed source" and
-    // "the quietest of those" are different questions, and folding them into one comparison
-    // is where a loud footstep starts outranking a quiet ambience.
+    // Two passes rather than one scoring function: folding "a one-shot before a placed
+    // source" and "the quietest of those" into one comparison is where a loud footstep
+    // starts outranking a quiet ambience.
     const auto quietest = [&](bool oneShotOnly) {
         uint32_t best = kNone;
         float lowest = 0.0f;
@@ -479,15 +429,9 @@ bool AudioEngine::stealVoice() {
 SoundId AudioEngine::create(const AudioSourceDesc& desc) {
     if (!impl->running) return {};
 
-    // Live voices, not slots. The budget bounds what is playing, which is what it always
-    // meant -- before C1 nothing could be retired, so the two were the same number.
-    //
-    // **A floor now, and it grows** (C40). Unlike the other three pools there is no
-    // allocation behind this number -- `voices` is a vector of `unique_ptr`s that already
-    // grows -- so what the budget actually bounds is *mixing cost*, which is a property of
-    // the machine rather than of the game. So it doubles rather than refusing, and the hard
-    // stop is `kMaxVoices`: a number about what a mixer can carry, not a guess a game made
-    // in `configure()`.
+    // Live voices, not slots: the budget bounds what is playing. It is a floor that
+    // doubles rather than a ceiling that refuses, since nothing is allocated per voice and
+    // what it really bounds is mixing cost; `kMaxVoices` is the hard stop.
     const uint32_t livingVoices = static_cast<uint32_t>(impl->voices.size() - impl->freeVoiceSlots.size());
     if (livingVoices >= impl->cfg.voiceBudget) {
         if (impl->cfg.voiceBudget < kMaxVoices) {
@@ -495,8 +439,6 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
             core::Logger::status(core::LogCategory::Audio, "Audio: voices grown to %u", impl->cfg.voiceBudget);
         } else if (!stealVoice()) {
             // Every voice is looping, so there is nothing whose loss would be momentary.
-            // This is the one refusal left, and it is a real one rather than a budget
-            // somebody guessed low.
             ++impl->refused;
             if (!impl->voiceBudgetReported) {
                 impl->voiceBudgetReported = true;
@@ -509,20 +451,14 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
     }
     impl->voiceBudgetReported = false;
 
-    // Opened as a decoder first, and for two answers at once: whether the file exists and
-    // can be decoded at all, and how long it is. The second is what the stream-versus-
-    // decode decision turns on, and it cannot be taken after the sound is created --
-    // creating it is the thing being decided about.
-    //
-    // Both answers are cached by path, because neither can change while the engine is up
-    // and `playAt` asks them again on every impact. Without it a game firing a one-shot per
-    // contact opens and parses a file per contact, which is the one cost in this function
-    // that is a syscall rather than arithmetic.
+    // Opened as a decoder first for the duration, which the stream-versus-decode decision
+    // turns on and which cannot be asked for after the sound is created -- creating it is
+    // the thing being decided. Cached by path: without it a game firing a one-shot per
+    // contact opens and parses a file per contact, the one syscall on this path.
     float seconds = 0.0f;
     const auto known = impl->durationByFile.find(desc.file);
     if (known != impl->durationByFile.end()) {
-        // Negative is the remembered refusal. Counted again -- the source really was
-        // refused -- and not said again.
+        // Negative is the remembered refusal: counted again, not logged again.
         if (known->second < 0.0f) {
             ++impl->refused;
             return {};
@@ -555,10 +491,8 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
                                ? 0
                                : audioDecodedBytes(seconds, impl->cfg.sampleRate, impl->cfg.channels);
 
-    // The budget only ever pushes a source the *other* way, and it says so when it does.
-    // That is 0.9's rule applied to memory: a stated budget that binds is reported, and a
-    // source is never silently refused for being large -- it plays, it just plays the
-    // other way.
+    // The budget only ever pushes a source onto the streaming path, and says so when it
+    // does; it never refuses one for being large.
     if (!stream && impl->cfg.decodeBudgetBytes > 0 && impl->decodedBytes + bytes > impl->cfg.decodeBudgetBytes) {
         stream = true;
         ++impl->forcedStreams;
@@ -594,11 +528,9 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
         impl->decodedFiles.push_back(desc.file);
     }
 
-    // A stream's first pages are filled by a job, and under the device-less backend there
-    // is no thread to run it. Drained here rather than left to the first `update()` so
-    // that a source which reports itself loaded is one that can actually be read from --
-    // otherwise the opening tenth of a second of every stream is silence, which is
-    // exactly the kind of defect that only shows up as "it sounds slightly wrong".
+    // A stream's first pages are filled by a job, and the device-less backend has no
+    // thread to run it. Leaving them to the first `update()` makes the opening tenth of a
+    // second of every stream silence -- a defect that only ever reads as "slightly wrong".
     if (stream && !impl->device) {
         while (ma_resource_manager_process_next_job(&impl->resources) == MA_SUCCESS) {
         }
@@ -611,17 +543,16 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
     if (desc.spatial) {
         ma_sound_set_attenuation_model(&voice->sound, toMa(desc.attenuation));
         ma_sound_set_min_distance(&voice->sound, desc.minDistance);
-        // Left at miniaudio's own unbounded default when the schema says 0, rather than
-        // written as some large number that would then be a second place the meaning of
-        // "no cap" was decided.
+        // 0 leaves miniaudio's own unbounded default standing; writing a large number
+        // instead would be a second place the meaning of "no cap" is decided.
         if (desc.maxDistance > 0.0f) ma_sound_set_max_distance(&voice->sound, desc.maxDistance);
         ma_sound_set_rolloff(&voice->sound, desc.rolloff);
         ma_sound_set_cone(&voice->sound, desc.coneInnerAngle, desc.coneOuterAngle, desc.coneOuterGain);
         ma_sound_set_doppler_factor(&voice->sound, desc.dopplerFactor);
 
-        // The filter node goes in at load or never. Inserting one later would mean
-        // re-plumbing a running graph on the frame a wall first came between a source and
-        // the listener, which is exactly the frame that must not glitch.
+        // The filter node goes in at load or never: inserting one later means re-plumbing
+        // a running graph on the frame a wall first comes between the source and the
+        // listener, which is exactly the frame that must not glitch.
         if (impl->cfg.occlusion && desc.occlusion) {
             ma_lpf_node_config lpfConfig = ma_lpf_node_config_init(impl->cfg.channels, impl->cfg.sampleRate,
                                                                    openCutoffHz(impl->cfg.sampleRate), 2);
@@ -629,9 +560,8 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
                 MA_SUCCESS) {
                 voice->hasFilter = true;
                 voice->filterCutoff = openCutoffHz(impl->cfg.sampleRate);
-                // sound -> filter -> bus, replacing sound -> bus. Both attachments are
-                // needed and in this order: the filter has to have somewhere to go before
-                // the sound is pointed at it.
+                // sound -> filter -> bus, in this order: the filter has to have somewhere
+                // to go before the sound is pointed at it.
                 ma_node_attach_output_bus(&voice->lpf, 0, impl->busNode(voice->bus), 0);
                 ma_node_attach_output_bus(&voice->sound, 0, &voice->lpf, 0);
             } else {
@@ -643,10 +573,8 @@ SoundId AudioEngine::create(const AudioSourceDesc& desc) {
         }
     }
 
-    // The slot is taken now, and the voice is placed into it before anything asks about
-    // it. The old version called setSourceTransform() with `voices.size()` -- one past the
-    // end -- and that accessor carried a special case to tolerate it; placing first is
-    // what lets the special case go.
+    // Placed into its slot before anything is asked about it, so the accessors below need
+    // no special case for a handle that does not resolve yet.
     uint32_t slot;
     if (!impl->freeVoiceSlots.empty()) {
         slot = impl->freeVoiceSlots.back();
@@ -669,19 +597,12 @@ SoundId AudioEngine::playAt(const AudioSourceDesc& desc, const glm::vec3& positi
     if (!impl->running) return {};
 
     AudioSourceDesc one = desc;
-    // Overwritten rather than checked, and the caller is not told off for setting them.
-    // What `playAt` means is "play this once, here"; a desc that said `loop` would be a
-    // desc that meant something the verb does not, and refusing it would only make every
-    // call site zero two fields it never wanted.
+    // Overwritten rather than refused, so no call site has to zero two fields it never set.
     one.loop = false;
     one.autoplay = true;
     one.transform = glm::translate(glm::mat4(1.0f), position);
 
     const SoundId id = create(one);
-    // Marked after the fact rather than threaded through `create` as a parameter: the flag
-    // changes nothing about how the voice is built, only who retires it, and a `bool
-    // oneShot` argument on the create path would be a mode flag on a function that has no
-    // modes.
     if (id.valid()) impl->voices[id.index]->oneShot = true;
     return id;
 }
@@ -721,7 +642,7 @@ void AudioEngine::destroy(SoundId id) {
     if (!valid(id)) return;
 
     Impl::Voice& voice = *impl->voices[id.index];
-    // Silenced now, torn down later. Stopping is safe from here; uninit walks the node
+    // Silenced now, torn down later: stopping is safe from here, but uninit walks the node
     // graph the device thread is also walking, so it waits for update().
     if (voice.ready) ma_sound_stop(&voice.sound);
     voice.live = false;
@@ -758,27 +679,23 @@ void AudioEngine::setMuted(bool muted) {
 }
 
 void AudioEngine::update(float dt) {
-    // Above the early-out and named for the function, which is the rule every other zone
-    // in the frame follows: a mixer that is not running has to cost a named zero, or the
-    // gap between `simulate` and the sum of its children cannot be read as work no zone
-    // names. It was `audio`, below the return, and it was the only zone in `simulate` that
-    // disappeared instead of reporting nothing.
+    // Above the early-out: a mixer that is not running still has to cost a named zero, or
+    // the gap between `simulate` and the sum of its children stops reading as work no zone
+    // names.
     auto scope = core::Profiler::scope("AudioEngine::update");
     if (!impl->running) return;
 
-    // The reclaim boundary (C1), and it goes first for the same reason PhysicsWorld's
-    // does: `destroy` cannot call `ma_sound_uninit` itself, because that walks a node
-    // graph the device thread is also walking. Here, between mixes, it can.
+    // The reclaim boundary, and it goes first: `destroy` cannot call `ma_sound_uninit`
+    // itself, because that walks a node graph the device thread is also walking. Here,
+    // between mixes, it can.
     for (const uint32_t slot : impl->pendingVoiceRemoval) {
         Impl::Voice& voice = *impl->voices[slot];
-        // Sound before filter, the same order shutdown() tears the whole graph down in:
-        // each is a node holding a pointer to the next.
+        // Sound before filter, the order shutdown() tears the whole graph down in.
         if (voice.ready) ma_sound_uninit(&voice.sound);
         if (voice.hasFilter) ma_lpf_node_uninit(&voice.lpf, nullptr);
         const uint32_t generation = voice.generation;
-        // The storage stays; only the contents are reset. `voices` holds unique_ptrs
-        // because the mixer knows a voice by address, so a slot's address must outlive
-        // every sound that ever occupies it.
+        // The storage stays, only the contents are reset: the mixer knows a voice by
+        // address, so a slot's address must outlive every sound that occupies it.
         *impl->voices[slot] = Impl::Voice{};
         impl->voices[slot]->generation = generation;
         impl->voices[slot]->live = false;
@@ -786,42 +703,22 @@ void AudioEngine::update(float dt) {
     }
     impl->pendingVoiceRemoval.clear();
 
-    // ----------------------------------------------------------- one-shots (G7)
-    // A voice fired at an event has no owner to call `destroy` for it, and a game that had
-    // to keep a list of the sounds it fired would be keeping exactly the bookkeeping
-    // `playAt` exists to remove. So it retires itself, through the same deferred path
-    // everything else here uses -- which is one step of latency on a voice that is already
-    // silent.
-    //
-    // `at_end` rather than `!is_playing`, and the difference is the frame a shot is fired
-    // on: a sound that has not started yet is not playing either, and this loop would
-    // reclaim it before it made a sound.
+    // `at_end` rather than `!is_playing`: a sound fired this step has not started either,
+    // and `!is_playing` reclaims it before it makes a sound.
     for (uint32_t slot = 0; slot < impl->voices.size(); ++slot) {
         Impl::Voice& voice = *impl->voices[slot];
         if (!voice.live || !voice.oneShot || !voice.ready) continue;
         if (ma_sound_at_end(&voice.sound) == MA_TRUE) destroy(SoundId{slot, voice.generation});
     }
 
-    // ------------------------------------------------- which ears hear it (C28)
     /*
-     * **The nearest listener, chosen here, because miniaudio cannot be asked to.**
+     * The nearest listener has to be chosen here, because miniaudio cannot be asked to.
      * `ma_engine_node_config_init` zeroes its config, and zero is a *valid* listener index
-     * rather than the `MA_LISTENER_INDEX_CLOSEST` sentinel -- so every sound is pinned to
-     * listener 0 for its whole life. `ma_sound_set_pinned_listener_index` cannot undo that:
-     * it refuses any index at or past the listener count, and the sentinel is 255.
-     * `ma_sound_config` has no field for it either. Measured before this loop existed: a
-     * source one metre from listener 1 and thirty from listener 0 mixed at exactly the
-     * thirty-metre level, so a second pair of ears was created, positioned, drawn and never
-     * heard from.
-     *
-     * Nearest rather than summed is this row's decision and not miniaudio's leftover.
-     * Summing would make a room louder as players are added and would double a sound both
-     * can hear, so a source's loudness would stop being a property of the scene. Nearest
-     * means a sound beside player two is heard at player two's volume, which is what split
-     * screen wants and what a top-down game with the ears on its cursor wants.
-     *
-     * Skipped entirely at one listener, which is every scene in this tree: the pin is
-     * already 0 and there is nothing to choose between.
+     * rather than the `MA_LISTENER_INDEX_CLOSEST` sentinel, so every sound is otherwise
+     * pinned to listener 0 for life -- a source one metre from listener 1 and thirty from
+     * listener 0 mixes at the thirty-metre level. Nothing can be set up front instead:
+     * `ma_sound_config` has no field for it, and `ma_sound_set_pinned_listener_index`
+     * refuses any index at or past the listener count, while the sentinel is 255.
      */
     if (impl->listeners.size() > 1) {
         for (const std::unique_ptr<Impl::Voice>& voice : impl->voices) {
@@ -830,25 +727,21 @@ void AudioEngine::update(float dt) {
             uint32_t nearest = 0;
             float best = std::numeric_limits<float>::max();
             for (uint32_t ears = 0; ears < impl->listeners.size(); ++ears) {
-                // Squared, since only the order matters and a square root per source per
-                // listener per frame buys nothing.
+                // Squared: only the order matters.
                 const glm::vec3 delta = impl->listeners[ears] - glm::vec3(at.x, at.y, at.z);
                 if (const float reach = glm::dot(delta, delta); reach < best) {
                     best = reach;
                     nearest = ears;
                 }
             }
-            // Switching mid-playback does not click: the engine's gain smoothing ramps a
-            // spatialized voice rather than stepping it, which is the same behaviour the
-            // level tests already skip the first quarter of a run to avoid measuring.
+            // Safe mid-playback: the engine's gain smoothing ramps a spatialized voice
+            // rather than stepping it, so the switch does not click.
             ma_sound_set_pinned_listener_index(&voice->sound, nearest);
         }
     }
 
-    // ------------------------------------------------------------ ducking (S5.4)
-    // Which buses have a voice playing, computed once for the whole set rather than per
-    // ducked bus: with three buses and forty voices the difference is 120 `is_playing`
-    // calls against 40.
+    // Which buses have a voice playing, computed once for the whole set: per ducked bus
+    // instead, three buses and forty voices is 120 `is_playing` calls against 40.
     std::vector<bool> busActive(impl->buses.size(), false);
     for (const std::unique_ptr<Impl::Voice>& voice : impl->voices) {
         if (!voice->live || !voice->ready || voice->bus >= busActive.size()) continue;
@@ -872,7 +765,6 @@ void AudioEngine::update(float dt) {
         }
     }
 
-    // ---------------------------------------------------------- occlusion (S5.5)
     const float open = openCutoffHz(impl->cfg.sampleRate);
     for (std::unique_ptr<Impl::Voice>& voice : impl->voices) {
         if (!voice->live || !voice->ready || !voice->desc.spatial) continue;
@@ -890,9 +782,8 @@ void AudioEngine::update(float dt) {
 
         if (!voice->hasFilter) continue;
         const float cutoff = open + voice->occlusionState * (impl->cfg.occlusionCutoffHz - open);
-        // Reinitialised only when the cutoff has actually moved. A biquad recomputed
-        // every frame at an unchanged cutoff is arithmetic nobody asked for, and the
-        // state a reinit preserves is what keeps the sweep clickless.
+        // Reinitialised only past a hertz of movement, and with `reinit` rather than a
+        // fresh node: the filter state it preserves is what keeps the sweep clickless.
         if (std::abs(cutoff - voice->filterCutoff) > 1.0f) {
             ma_lpf_config lpfConfig =
                 ma_lpf_config_init(ma_format_f32, impl->cfg.channels, impl->cfg.sampleRate, cutoff, 2);
@@ -902,10 +793,9 @@ void AudioEngine::update(float dt) {
 
     if (impl->device) return;
 
-    // ----------------------------------------------- the device-less mix (S5.1)
-    // With no job thread, the resource manager's work has to happen somewhere, and this
-    // is it. Drained rather than one-per-step: a stream that fell a page behind would
-    // otherwise stay a page behind forever.
+    // With no job thread, the resource manager's work has to happen somewhere and this is
+    // it. Drained rather than one job per step: a stream that fell a page behind would
+    // stay a page behind forever.
     while (ma_resource_manager_process_next_job(&impl->resources) == MA_SUCCESS) {
     }
 
@@ -919,9 +809,8 @@ void AudioEngine::update(float dt) {
     ma_uint64 read = 0;
     if (ma_engine_read_pcm_frames(&impl->engine, impl->mixBuffer.data(), frames, &read) != MA_SUCCESS) return;
 
-    // Peak and RMS of what was just mixed. The samples themselves are discarded -- there
-    // is nowhere for them to go -- but the two numbers are what a test asserts on and
-    // what proves the graph is doing something rather than running.
+    // The samples are discarded; these two numbers are all that is left to assert the
+    // graph produced sound rather than merely ran.
     float peak = 0.0f;
     double sum = 0.0;
     const size_t samples = static_cast<size_t>(read) * impl->cfg.channels;

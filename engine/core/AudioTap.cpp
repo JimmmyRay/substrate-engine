@@ -9,7 +9,8 @@ void AudioTap::start(uint32_t channels, uint64_t capacityFrames_) {
     running.store(false, std::memory_order_release);
 
     channelCount = std::max(channels, 1u);
-    // Two, so that the one slot held back below still leaves somewhere to put a frame.
+    // Floor of two: one slot is held back to tell full from empty, so a capacity of one
+    // would never accept a frame.
     capacityFrames = std::max<uint64_t>(capacityFrames_, 2);
 
     samples.assign(static_cast<size_t>(capacityFrames) * channelCount, 0.0f);
@@ -22,15 +23,9 @@ void AudioTap::start(uint32_t channels, uint64_t capacityFrames_) {
 
 void AudioTap::stop() {
     running.store(false, std::memory_order_release);
-    // The storage stays. `read()` tests `running` and then copies, and nothing makes those
-    // one step -- so a reader that passed the test and was preempted here would have had the
-    // buffer freed under it. `AudioEngine::shutdown` orders the recorder's join ahead of this
-    // and so is safe, but `stopCapture()` is public and a caller that has not read that order
-    // should not be able to cause a use-after-free with it.
-    //
-    // Not released until the destructor, where by construction there is no reader left. The
-    // cost is one ring buffer -- a few seconds of float samples -- held until the tap dies,
-    // which is a trade worth making for a hazard that is otherwise invisible.
+    // Releasing `samples` here is a use-after-free: `read()` tests `running` and then
+    // copies, and nothing makes those one step, so a reader preempted between them keeps a
+    // pointer into freed storage. It goes in the destructor, where no reader is left.
     head.store(0, std::memory_order_relaxed);
     tail.store(0, std::memory_order_relaxed);
 }
@@ -41,8 +36,8 @@ uint64_t AudioTap::write(const float* frames, uint64_t frameCount) {
     const uint64_t writeIndex = head.load(std::memory_order_relaxed);
     const uint64_t readIndex = tail.load(std::memory_order_acquire);
 
-    // One slot is left permanently empty so a full ring and an empty one are different
-    // states rather than the same pair of indices.
+    // The `- 1` leaves one slot permanently empty; without it a full ring and an empty one
+    // are the same pair of indices.
     const uint64_t free = capacityFrames - (writeIndex - readIndex) - 1;
     const uint64_t take = std::min(frameCount, free);
     if (take < frameCount) {
@@ -50,9 +45,8 @@ uint64_t AudioTap::write(const float* frames, uint64_t frameCount) {
     }
     if (take == 0) return 0;
 
-    // Two copies at most: one to the end of the storage, one from the start of it. A
-    // modulo per sample would be the obvious version and is a division in the audio
-    // thread's inner loop.
+    // Split into at most two copies rather than wrapping per sample: a modulo in here is a
+    // division in the audio thread's inner loop.
     const uint64_t offset = writeIndex % capacityFrames;
     const uint64_t firstFrames = std::min(take, capacityFrames - offset);
 

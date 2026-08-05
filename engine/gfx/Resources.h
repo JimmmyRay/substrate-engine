@@ -34,18 +34,10 @@ struct GpuImage {
 /**
  * @brief Attach a `VK_EXT_debug_utils` name to any Vulkan handle.
  *
- * Images, buffers and pipelines all need one, which is the third occurrence and so
- * the point at which this stops being duplication and becomes a function. A global
- * one because the callers span modules -- `Resources.cpp` names what it creates,
- * `Renderer.cpp` names its pipelines -- and it holds no state.
+ * A no-op when the extension is absent, so no call site needs a guard.
  *
- * A no-op when the extension is absent, so no call site needs a guard. That matters:
- * the alternative is `if (ctx.debugUtilsEnabled)` at thirty creation sites, which is
- * thirty chances to forget.
- *
- * These names are what a RenderDoc capture shows instead of `Image 47`, and they are
- * the filenames `scripts/rdoc/images.py` writes -- so they should match the member
- * name in `Renderer` exactly rather than read as prose.
+ * `scripts/rdoc/images.py` writes its output files under these names, so a name must
+ * match the corresponding `Renderer` member exactly rather than read as prose.
  */
 void setObjectName(const VulkanContext& ctx, uint64_t handle, VkObjectType type, const char* name);
 
@@ -90,19 +82,9 @@ inline constexpr size_t kMaxBufferBarriers = 8;
 
 /// The buffer counterpart of `transitionImage`, with the same argument order.
 ///
-/// A buffer has no layout, so where the image version takes old and new it takes nothing:
-/// what is left is the src/dst stage-and-access pair, which is the whole of what a buffer
-/// barrier says. `offset` and `size` are trailing defaults for the same reason `baseMip`
-/// and `mipCount` are on the image version -- four of the six callers want the whole
-/// buffer and should not have to say so, and the two that barrier a sub-range of the
-/// instance buffer would otherwise have to keep writing the struct out by hand.
-///
-/// Always `VK_QUEUE_FAMILY_IGNORED`: nothing in this engine transfers queue ownership of a
-/// buffer, and a caller that needs to should write the struct out rather than grow this.
-///
-/// Takes a list because the particle passes barrier the pool and the key buffer together,
-/// as one dependency rather than two. Up to `kMaxBufferBarriers` at once; the range, when
-/// given, applies to every buffer in the list.
+/// Always `VK_QUEUE_FAMILY_IGNORED`: a caller needing a queue-ownership transfer must
+/// write the struct out rather than grow this. Up to `kMaxBufferBarriers` buffers land in
+/// one dependency; the range, when given, applies to every buffer in the list.
 void bufferBarrier(VkCommandBuffer cmd, std::initializer_list<VkBuffer> buffers, VkPipelineStageFlags2 srcStage,
                    VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
                    VkDeviceSize offset = 0, VkDeviceSize size = VK_WHOLE_SIZE);
@@ -116,20 +98,9 @@ void bufferBarrier(VkCommandBuffer cmd, std::initializer_list<VkBuffer> buffers,
  */
 class Uploader {
   public:
-    /**
-     * Non-copyable, and every other handle-owning type here says the same.
-     *
-     * The ownership model in `engine/gfx/` is rule-of-zero plus an explicit `shutdown()` or
-     * `destroy()`: no destructor releases a Vulkan handle, so nothing is released twice by
-     * accident and the teardown order stays written down where it can be read. What that
-     * model does not give you is any protection from a copy -- the implicit copy constructor
-     * duplicates every handle, and two objects each reaching their own `shutdown()` is a
-     * double free with no destructor anywhere near it.
-     *
-     * The copy is never wanted, so it is deleted rather than defined. `GpuBuffer` and
-     * `GpuImage` stay copyable: they are value records returned from `createBuffer` and
-     * `createImage` and stored in vectors, and it is the manager that owns them, not them.
-     */
+    /// No destructor releases a Vulkan handle here -- teardown is an explicit `shutdown()`
+    /// -- so a copy would duplicate every handle and two `shutdown()` calls would be a
+    /// double free with no destructor anywhere near it.
     Uploader() = default;
     Uploader(const Uploader&) = delete;
     Uploader& operator=(const Uploader&) = delete;
@@ -140,34 +111,25 @@ class Uploader {
 
     /// Copy host data into a device-local buffer via a staging buffer.
     void uploadBuffer(const VulkanContext& ctx, GpuBuffer& dst, const void* data, VkDeviceSize size);
-    /// The same, at a byte offset. What appending a second model into a shared geometry
-    /// buffer needs, and the reason the offset is a parameter rather than a second buffer.
+    /// The same, at a byte offset into `dst`.
     void uploadBufferAt(const VulkanContext& ctx, GpuBuffer& dst, VkDeviceSize offset, const void* data,
                         VkDeviceSize size);
-    /// Device to device, from the front of both. What growing a buffer is made of: make a
-    /// bigger one, copy the old contents in, drop the old one.
+    /// Device to device, from the front of both.
     void copyBuffer(const VulkanContext& ctx, GpuBuffer& dst, const GpuBuffer& src, VkDeviceSize size);
 
     /// Copy pixels into mip 0, generate the mip chain, leave in SHADER_READ_ONLY_OPTIMAL.
     void uploadImageWithMips(const VulkanContext& ctx, GpuImage& dst, const void* pixels, VkDeviceSize size);
 
-    // ------------------------------------------------------------------ batching
-    // One blocking submit per image costs a full GPU round-trip each time. Batching
-    // records every upload into a single command buffer and pays that cost once.
-    // Staging buffers must stay alive until the batch completes, so they are held
-    // and freed together in endBatch().
-
+    /// Records every upload into one command buffer so the round-trip is paid once. The
+    /// staging buffers must outlive the batch, so `endBatch` is what frees them.
     void beginBatch(const VulkanContext& ctx);
     void addImageWithMips(const VulkanContext& ctx, GpuImage& dst, const void* pixels, VkDeviceSize size);
 
     /**
-     * @brief Copy a mip chain that already exists, level by level (4.6a).
+     * @brief Copy a mip chain that already exists, level by level.
      *
-     * The counterpart to addImageWithMips, and the difference is the whole point of a
-     * texture cache: that one uploads level 0 and *generates* the rest with blits,
-     * which is both load-time work and impossible for a block-compressed format --
-     * vkCmdBlitImage cannot filter BC7. This one copies bytes the offline tool already
-     * produced.
+     * The route a block-compressed format must take: `addImageWithMips` generates its
+     * chain with `vkCmdBlitImage`, which cannot filter BC7.
      *
      * `levels` are (byte offset into `data`, byte length), base level first.
      */
@@ -177,33 +139,26 @@ class Uploader {
     /**
      * @brief Submit the batch on the transfer queue and block until it lands.
      *
-     * Property (iii) of 4.6b: the copies go to `ctx.transferQueue` with a fence, not to
-     * the graphics queue with a wait-idle. Where the transfer family is distinct from
-     * the graphics family the images are *released* by the transfer submit and
-     * *acquired* by a second, tiny graphics submit that waits on a semaphore -- Vulkan
-     * requires both halves of that handshake, and skipping the acquire is undefined
-     * behaviour the validation layers will not always catch.
+     * The copies go to `ctx.transferQueue`. Where that family is distinct from the
+     * graphics family the images are *released* by the transfer submit and *acquired* by a
+     * second graphics submit waiting on a semaphore: Vulkan requires both halves, and
+     * skipping the acquire is undefined behaviour the validation layers do not always
+     * catch.
      */
     void endBatch(const VulkanContext& ctx);
 
     /**
-     * @brief The same submission without the wait. For streaming (4.6b).
+     * @brief The same submission without the wait.
      *
      * Returns false if there was nothing to submit. Poll `batchComplete()` and call
-     * `reclaimBatch()` once it returns true; until then the staging buffers are alive
-     * and the destination images must not be sampled.
-     *
-     * This is the call a residency system makes and the load path does not: at load
-     * there is nothing else to do while the copy runs, and a blocking submit is the
-     * simpler correct thing. Mid-frame there is a whole frame to get on with.
+     * `reclaimBatch()` once it returns true; until then the staging buffers are alive and
+     * the destination images must not be sampled.
      */
     [[nodiscard]] bool endBatchAsync(const VulkanContext& ctx);
     [[nodiscard]] bool batchComplete(const VulkanContext& ctx) const;
     void reclaimBatch(const VulkanContext& ctx);
 
-    /// Record arbitrary commands and block until they finish. For one-off load-time
-    /// GPU work that is neither a buffer nor an image upload -- the IBL precompute is
-    /// the only caller, and it needs dispatches and blits rather than copies.
+    /// Record arbitrary commands and block until they finish. Load-time only.
     VkCommandBuffer beginImmediate(const VulkanContext& ctx);
     void endImmediate(const VulkanContext& ctx);
 
@@ -231,12 +186,9 @@ class Uploader {
     /// the staging buffers.
     std::vector<VkImage> batchImages;
     bool batchInFlight = false;
-    /// Set by any addImageWithMips() in the batch: blits and fragment-stage barriers
-    /// are graphics work, so the whole batch goes to the graphics queue.
 
-    /// Separate pool and command buffer on the transfer family. Distinct objects even
-    /// when the family is shared: a command pool belongs to exactly one family, and
-    /// branching on that at every use would be worse than allocating a second pool.
+    /// Separate pool and command buffer on the transfer family, allocated even when the
+    /// family is shared -- a command pool belongs to exactly one family.
     VkCommandPool transferPool = VK_NULL_HANDLE;
     VkCommandBuffer transferCmd = VK_NULL_HANDLE;
     /// Signalled by the transfer submit, waited on by the acquire submit. Unused where

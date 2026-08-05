@@ -18,7 +18,7 @@ using namespace scene;
 
 /**
  * @file tests/SceneDataTests.cpp
- * @brief The scene sidecar's format: what it round-trips, and what it refuses (C15).
+ * @brief The scene sidecar's format: what it round-trips, and what it refuses.
  *
  * A cache is the one kind of code where being *wrong* is worse than being absent, because
  * a wrong answer looks like a fast one. So the assertions here are in two groups and the
@@ -94,7 +94,7 @@ SceneData populated() {
     p.vertexCount = 2;
     p.blended = true;
     // Not the UINT32_MAX default, so the round trip asserts a value rather than a sentinel
-    // that a zeroed struct would also produce (C19).
+    // that a zeroed struct would also produce.
     p.clothOffset = 1;
     p.localMin = {-1.0f, -1.0f, -1.0f};
     p.localMax = {1.0f, 1.0f, 1.0f};
@@ -165,7 +165,7 @@ SceneData populated() {
     d.skinVertices.push_back({{0, 1, 2, 3}, {0.5f, 0.5f, 0.0f, 0.0f}});
     d.morphDeltas.push_back({{1.0f, 0.0f, 0.0f}, {0.0f, 1.0f, 0.0f}, {0.0f, 0.0f, 1.0f}});
     // Two, and not both the same, so a writer that emitted one and a reader that took the
-    // other would show up as a mismatch rather than as two equal floats agreeing (C19).
+    // other would show up as a mismatch rather than as two equal floats agreeing.
     d.clothVertices.push_back({0.0f});
     d.clothVertices.push_back({0.25f});
     d.indexCopy = {0, 1, 2};

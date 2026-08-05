@@ -5,24 +5,16 @@
 
 namespace {
 
-/// Three warm point lights along the atrium floor, scaled to the scene's bounds, plus one
-/// spot aimed down its length. What a file that ships no lights of its own gets, so an
-/// interior is not a single directional and a black room.
 void placeLights(gfx::Renderer& renderer, const glm::vec3& boundsMin, const glm::vec3& boundsMax) {
     const glm::vec3 centre = (boundsMin + boundsMax) * 0.5f;
     const glm::vec3 extent = boundsMax - boundsMin;
     const float radius = glm::length(extent) * 0.35f;
     const float height = boundsMin.y + extent.y * 0.25f;
 
-    // Fill, not key, and scaled to the sun rather than to a constant of its own: what
-    // matters is their brightness *relative* to it, so each delivers about a third of the
-    // sun's irradiance at half its reach. A bare constant instead -- which this was, at
-    // radius squared over two -- makes each fill roughly twice the sun at that distance,
-    // and an interior lit at three times key by its fill has no shadows left to read.
-    //
-    // The distance squared is still doing the same job: inverse-square falloff means a
-    // bigger scene needs a proportionally brighter light to look the same, so the ratio is
-    // stated at a distance that scales with the scene.
+    // Scaled to the sun and never to a constant of its own: each fill delivers about a third of
+    // the sun's irradiance at half its reach, and an interior lit at three times key by its fill
+    // has no shadows left to read. The distance squared is the inverse-square falloff, stated at
+    // a distance that scales with the scene so a bigger one keeps the same ratio.
     const float fillDistance = radius * 0.5f;
     const float intensity = renderer.sunIntensity * 0.35f * fillDistance * fillDistance;
     const glm::vec3 warm(1.0f, 0.72f, 0.42f);
@@ -34,9 +26,7 @@ void placeLights(gfx::Renderer& renderer, const glm::vec3& boundsMin, const glm:
         gfx::makePointLight({centre.x + extent.x * 0.25f, height, centre.z}, radius, warm, intensity),
     };
 
-    // One spot, aimed down the length of the scene. Nothing else in this set exercises the
-    // spot path, and an untested light type is one that turns out to be broken the first
-    // time a scene uses it.
+    // The only spot in this set: take it out and nothing exercises the spot path.
     renderer.lights.push_back(gfx::makeSpotLight({centre.x, boundsMin.y + extent.y * 0.8f, centre.z},
                                                  {0.0f, -1.0f, 0.15f}, radius * 1.5f, glm::radians(18.0f),
                                                  glm::radians(32.0f), pale, intensity * 2.5f));
@@ -47,8 +37,8 @@ void placeLights(gfx::Renderer& renderer, const glm::vec3& boundsMin, const glm:
 void ViewerGame::configure(GameSetup& setup, core::settings::Settings& /*settings*/) {
     setup.name = "Substrate Viewer";
 
-    // The demo's lighting, value for value: the golden baselines were captured through the
-    // demo, so these three are the contract this binary took over. See the file comment.
+    // The golden baselines were captured through these three values. Changing one moves
+    // thirteen images.
     setup.look.lights = {gfx::makeDirectionalLight({-0.35f, 0.85f, 0.4f}, {1.0f, 0.96f, 0.88f}, 3.0f)};
     setup.look.ambientColor = {0.0025f, 0.0021f, 0.0016f};
     setup.look.exposure = 1.0f;
@@ -64,15 +54,11 @@ void ViewerGame::init(Engine& e) {
     quit = e.input().declare("App.Quit", "Escape");
 
     // **The pose is not taken from `e.camera()` and must not be.** `Engine::run` frames the
-    // loaded scene into whichever camera is active, and that happens after this returns, so
-    // reading a pose here would read the default one. `applySettings` carries the three
-    // `camera.*` feel rows, which the engine holds only a `scene::Camera&` of.
+    // loaded scene into whichever camera is active after this returns, so a pose read here is
+    // the default one.
     flyCamera.applySettings(e.settingsTable());
     e.setCamera(&flyCamera);
 
-    // A file that ships its own lights already won -- `Engine::initLights` took the first
-    // directional as the sun and kept the rest. What a file *without* lights gets is the
-    // viewer's decision, and this is it.
     if (e.gltfScene().lights().empty()) {
         placeLights(e.renderer(), e.gltfScene().boundsMin, e.gltfScene().boundsMax);
     }

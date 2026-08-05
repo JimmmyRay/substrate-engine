@@ -1,4 +1,4 @@
-// Single translation unit that instantiates miniaudio (S5.1).
+// Single translation unit that instantiates miniaudio.
 //
 // The same arrangement `vma_impl.cpp` and `stb_impl.cpp` use, and for the same reason:
 // miniaudio ships as one header that is a declaration in every translation unit and a

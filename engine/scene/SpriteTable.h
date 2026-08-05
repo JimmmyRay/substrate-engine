@@ -24,63 +24,33 @@ using SpriteSheetId = core::Handle<struct SpriteSheetTag>;
  * @file engine/scene/SpriteTable.h
  * @brief Layers, sprites and the order they draw in -- the CPU half of the sprite pass.
  *
- * ```cpp
- * void MyGame::init(Engine& e) {
- *     e.camera().projectionMode = scene::Camera::Projection::Orthographic;
- *     e.camera().orthoHeight = 180.0f;              // world units of visible height
- *     background = e.sprites().createLayer({.order = -10});
- *     actors     = e.sprites().createLayer({.order = 0});
- *     hero = e.sprites().create(actors, {
- *         .image = heroImage,
- *         .uv    = {0.0f, 0.0f, 16.0f, 16.0f},      // texels, not normalised
- *         .size  = {16.0f, 16.0f},                  // world units
- *         .pivot = {0.5f, 1.0f},                    // feet
- *     });
- * }
+ * **No Vulkan here.** The file is in `SUBSTRATE_HOSTED_SOURCES`, which is what lets the
+ * unit suite prove the arithmetic -- a slot handed to two holders, a sort that is not a
+ * total order, a pivot applied on the wrong side of a rotation -- with no device.
+ * `Renderer` binds `draws()` and issues one `vkCmdDraw`.
  *
- * void MyGame::fixedUpdate(Engine& e, float step) {
- *     e.sprites().setPosition(hero, at);
- * }
- * ```
- *
- * **No Vulkan here.** What goes wrong in a sprite pass is a slot handed to two holders, a
- * sort that is not a total order, or a pivot applied on the wrong side of a rotation --
- * all arithmetic, and provable in a suite that links no device. This file is in
- * `SUBSTRATE_HOSTED_SOURCES`; `Renderer` binds `draws()` and issues one `vkCmdDraw`.
- *
- * Sprites are their own dense array rather than scene-tree nodes: a sprite has no
- * material, no mesh and no bounds worth culling against. A *lit* sprite is a separate row
- * rather than this one with a flag.
- *
- * An animated sprite is a sprite whose `uvRect` is written once per *frame change* by
- * `update` -- there is no `AnimatedSprite`, no second draw and no second shader.
  * `LoopMode`, `ClipPlayback`, `AnimationEvent` and `advance`/`crossedEvents` come from
- * `Animation.h` and mean exactly what they mean for a skeleton, so a game playing a
- * footstep off one and a spark off the other learns one vocabulary. Timing runs off the
- * fixed step via `Engine::simulate`, so a paused game has paused sprites and a time scale
- * slows them.
+ * `Animation.h` and mean what they mean for a skeleton. Timing runs off the fixed step via
+ * `Engine::simulate`, so a paused game has paused sprites and a time scale slows them.
  *
  * See systems.md, "Sprites", for what a sheet deliberately cannot express.
  */
 
-/// Which sprites draw first. A layer is a sort key with a lifetime and nothing more.
+/// Which sprites draw first.
 struct SpriteLayerDesc {
     /// Lower draws first, so a background is negative. Ties inside one layer break by
-    /// creation order, which makes the sort a **total** order and so reproducible run to
-    /// run -- the property the golden suite needs.
+    /// creation order, which is what makes the sort a **total** order and so reproducible
+    /// run to run -- the property the golden suite needs.
     int32_t order = 0;
 };
 
 /**
  * @brief Everything about one sprite that a game states rather than computes.
  *
- * **The UV rect is in texels, not normalised coordinates.** The division happens once, in
- * the fragment shader, against `textureSize` of the image actually resident -- so an atlas
- * re-exported at a different size needs no number in the game changed, and there is no
- * CPU-side copy of an image dimension to fall out of step with the file.
- *
- * A zero width or height means *the whole image*, resolved where the size is known rather
- * than at the call site.
+ * **The UV rect is in texels, not normalised coordinates.** The division happens in the
+ * fragment shader against `textureSize` of the resident image, so an atlas re-exported at
+ * a different size needs no number in the game changed and there is no CPU-side copy of an
+ * image dimension to fall out of step with the file.
  */
 struct SpriteDesc {
     /// From `Engine::images()`. A handle this table cannot resolve draws the font atlas,
@@ -88,9 +58,8 @@ struct SpriteDesc {
     gfx::ImageId image;
     /// Texels: x, y, width, height. A zero width or height means the whole image.
     glm::vec4 uv{0.0f, 0.0f, 0.0f, 0.0f};
-    /// World units. The camera decides how many texels that is; at `orthoHeight` equal to
-    /// the virtual resolution's height it is one texel per unit, which is what makes a
-    /// sprite pixel-exact.
+    /// World units. At `orthoHeight` equal to the virtual resolution's height that is one
+    /// texel per unit, which is what makes a sprite pixel-exact.
     glm::vec2 size{1.0f, 1.0f};
     /// The point `position` names, as a fraction of `size`, measured from the image's
     /// top-left. `{0.5, 1.0}` is a character's feet.
@@ -113,11 +82,11 @@ inline constexpr uint32_t kSpriteFlipX = 1u;
 inline constexpr uint32_t kSpriteFlipY = 2u;
 
 /**
- * @brief One sprite as `sprite.vert` reads it. std430, and 64 bytes on purpose.
+ * @brief One sprite as `sprite.vert` reads it. std430, and 64 bytes on purpose: ten
+ *        thousand is 640 KB.
  *
- * Ten thousand is 640 KB, the budget this was designed against -- so the tint is packed to
- * RGBA8 and the rotation is stored as a cosine and a sine written once per *change* rather
- * than a `sin`/`cos` per vertex per frame.
+ * That is what the packing buys -- an RGBA8 tint, and a rotation stored as a cosine and a
+ * sine written once per change rather than a `sin`/`cos` per vertex per frame.
  */
 struct GpuSprite {
     /// xy: world position of the pivot. zw: size in world units.
@@ -133,10 +102,7 @@ struct GpuSprite {
 static_assert(sizeof(GpuSprite) == 64, "sprite.vert reads this layout; keep it 64 bytes");
 
 /**
- * @brief How an image is cut into equal cells.
- *
- * **Texels, and a regular grid** -- the numbers an artist reads off the tool that drew the
- * sheet, as `SpriteDesc::uv` also takes.
+ * @brief How an image is cut into equal cells. Texels, and a regular grid.
  *
  * Frames are numbered left to right then top to bottom, so frame *n* is column
  * `n % columns`, row `n / columns`.
@@ -157,12 +123,8 @@ struct SpriteSheetDesc {
     glm::uvec2 spacing{0, 0};
 };
 
-/**
- * @brief A named run of cells, played at a rate.
- *
- * The same struct going in and coming out -- the only derived quantity, the duration, is
- * `count / fps`, and storing it would be a second copy to keep in step with a retimed clip.
- */
+/// A named run of cells, played at a rate. The duration is `count / fps`; storing it would
+/// be a second copy to keep in step with a retimed clip.
 struct SpriteClip {
     /// What `findClip` matches. The engine never interprets it.
     std::string name;
@@ -174,18 +136,16 @@ struct SpriteClip {
     float fps = 12.0f;
     /// `Loop` wraps, `ClampToEnd` holds the last cell.
     LoopMode loop = LoopMode::Loop;
-    /**
-     * Instants a game may react to, **in ascending time order** -- the contract
-     * `crossedEvents` is written against. `time` is *seconds* from the start of the clip
-     * rather than a frame index (cell *f* begins at `f / fps`), so an event keeps its place
-     * in the motion when the clip is retimed.
-     */
+    /// Instants a game may react to, **in ascending time order** -- the contract
+    /// `crossedEvents` is written against. `time` is seconds from the start of the clip
+    /// rather than a frame index (cell *f* begins at `f / fps`), so an event keeps its
+    /// place in the motion when the clip is retimed.
     std::vector<AnimationEvent> events;
 };
 
 /// One event a sprite's playback crossed this step, reported by `firedEvents()`. A list
-/// read after the update, never a callback -- a callback would be the engine calling into
-/// a game mid-update.
+/// read after the update rather than a callback, which would be the engine calling into a
+/// game mid-update.
 struct FiredSpriteEvent {
     SpriteId sprite;
     SpriteSheetId sheet;
@@ -197,8 +157,7 @@ struct FiredSpriteEvent {
 
 class SpriteTable {
   public:
-    /// "No such clip", returned by `findClip`. Its own name rather than `SceneAnimator`'s,
-    /// even though the two numbers agree.
+    /// "No such clip", returned by `findClip`.
     static constexpr uint32_t kNoClip = 0xFFFFFFFFu;
     /// "This sprite is not playing anything", returned by `frame`.
     static constexpr uint32_t kNoFrame = 0xFFFFFFFFu;
@@ -207,8 +166,6 @@ class SpriteTable {
     ///        owned; `Engine` owns both and outlives both.
     void init(const gfx::ImageTable* images);
     void shutdown();
-
-    // ------------------------------------------------------------------- layers
 
     [[nodiscard]] SpriteLayerId createLayer(const SpriteLayerDesc& desc);
 
@@ -219,13 +176,11 @@ class SpriteTable {
 
     [[nodiscard]] bool valid(SpriteLayerId id) const;
 
-    /// Change where the layer sits in the order. Rare by construction, which is what makes
-    /// sorting on the CPU affordable.
+    /// Change where the layer sits in the order. Re-sorts, so it is rare by construction --
+    /// which is what makes sorting on the CPU affordable.
     void setLayerOrder(SpriteLayerId id, int32_t order);
 
     [[nodiscard]] uint32_t layerCount() const { return liveLayers; }
-
-    // ------------------------------------------------------------------ sprites
 
     /// @return an invalid handle if `layer` names no live layer. Nothing aborts: a sprite
     ///         that did not appear is a smaller problem than a game that did not run.
@@ -237,13 +192,11 @@ class SpriteTable {
 
     [[nodiscard]] bool valid(SpriteId id) const;
 
-    /// Where the pivot is, on the z = 0 plane. Two float writes into the buffer the draw
-    /// already reads.
+    /// Where the pivot is, on the z = 0 plane in world space.
     void setPosition(SpriteId id, const glm::vec2& position);
     void setSize(SpriteId id, const glm::vec2& size);
     void setPivot(SpriteId id, const glm::vec2& pivot);
-    /// Radians, anticlockwise about the pivot. One `cos` and one `sin`, here rather than
-    /// six times per frame in the vertex shader.
+    /// Radians, anticlockwise about the pivot.
     void setRotation(SpriteId id, float radians);
     /// Texels: x, y, width, height. Zero width or height means the whole image.
     void setUv(SpriteId id, const glm::vec4& uv);
@@ -253,8 +206,6 @@ class SpriteTable {
 
     /// Live sprites, across every layer.
     [[nodiscard]] uint32_t count() const { return liveSprites; }
-
-    // ----------------------------------------------------------------- sheets and clips
 
     /// @return an invalid handle if the cell size or the frame count is zero.
     [[nodiscard]] SpriteSheetId createSheet(const SpriteSheetDesc& desc);
@@ -283,28 +234,20 @@ class SpriteTable {
 
     [[nodiscard]] uint32_t clipCount(SpriteSheetId sheet) const;
 
-    /**
-     * @brief The texel rectangle of sheet frame `frame`, in `SpriteDesc::uv`'s terms.
-     *
-     * Reachable without playing anything: a static sprite that wants cell 7 of a tile
-     * sheet is `setUv(s, frameUv(sheet, 7))` and no playback at all.
-     *
-     * A frame past the end clamps to the last one. Zero for a sheet that is not live.
-     */
+    /// The texel rectangle of sheet frame `frame`, in `SpriteDesc::uv`'s terms. A frame
+    /// past the end clamps to the last one; zero for a sheet that is not live.
     [[nodiscard]] glm::vec4 frameUv(SpriteSheetId sheet, uint32_t frame) const;
 
     /**
      * @brief Which **sheet** frame `clip` shows at `time` seconds into it.
      *
-     * `first + min(floor(time * fps), count - 1)`. The `min` is what makes the last cell
-     * of a `ClampToEnd` clip the last cell rather than one past it: `advance` clamps the
-     * time to the duration, and the duration is exactly where `time * fps` reaches
-     * `count`. A time outside the clip clamps to its ends rather than wrapping -- wrapping
-     * is `advance`'s job and doing it twice would hide a playback that was never advanced.
+     * `first + min(floor(time * fps), count - 1)`. The `min` is what keeps a `ClampToEnd`
+     * clip on its last cell rather than one past it, since `advance` clamps the time to the
+     * duration and the duration is exactly where `time * fps` reaches `count`. A time
+     * outside the clip clamps rather than wrapping: wrapping is `advance`'s job, and doing
+     * it here too would hide a playback that was never advanced.
      */
     [[nodiscard]] uint32_t frameAt(SpriteSheetId sheet, uint32_t clip, float time) const;
-
-    // ----------------------------------------------------------------------- playback
 
     /// Start `clip` of `sheet` on `sprite` from its beginning, **writing the first cell's
     /// rectangle immediately** -- so a sprite plays from the frame it was told to on the
@@ -326,18 +269,16 @@ class SpriteTable {
     [[nodiscard]] uint32_t frame(SpriteId sprite) const;
     /// Seconds into the clip; zero for a sprite with no playback.
     [[nodiscard]] float clipTime(SpriteId sprite) const;
-    /// Sprites with a live playback -- what `update` walks. A test asserts against it to
-    /// prove `stop` and `destroy` both take a sprite out of that walk.
+    /// Sprites with a live playback -- what `update` walks.
     [[nodiscard]] uint32_t animatingCount() const { return static_cast<uint32_t>(animated.size()); }
 
     /**
      * @brief Advance every playback by `dt` and write the cells that changed.
      *
-     * Called from `Engine::simulate` on the fixed step, beside `SceneAnimator::update`, so
-     * a paused game has paused sprites and a time scale slows them.
-     *
-     * Only a sprite whose *frame index* moved has its `uvRect` written, which makes a
-     * thousand sprites at 12 fps on a 60 Hz step four fifths of no work.
+     * `dt` is the fixed step, from `Engine::simulate`, so a paused game has paused sprites
+     * and a time scale slows them. Only a sprite whose *frame index* moved has its `uvRect`
+     * written, which makes a thousand sprites at 12 fps on a 60 Hz step four fifths of no
+     * work.
      */
     void update(float dt);
 
@@ -345,8 +286,6 @@ class SpriteTable {
     /// including one that fires nothing** -- a game reading this after the step must not be
     /// handed the previous step's list.
     [[nodiscard]] const std::vector<FiredSpriteEvent>& firedEvents() const { return fired; }
-
-    // ------------------------------------------------------------------ the draw
 
     /**
      * @brief Put the array in draw order and resolve every image handle to a slot.
@@ -363,8 +302,8 @@ class SpriteTable {
     /// there is no gather step between this and the mapped buffer.
     [[nodiscard]] const std::vector<GpuSprite>& draws() const { return gpu; }
 
-    /// How many times `prepare()` has actually sorted. Not a statistic: it is what a test
-    /// asserts against to prove that moving a sprite does not re-sort.
+    /// How many times `prepare()` has actually sorted. What a test asserts against to prove
+    /// that moving a sprite does not re-sort.
     [[nodiscard]] uint64_t sortCount() const { return sorts; }
 
     /**
@@ -372,13 +311,11 @@ class SpriteTable {
      *
      * The renderer remembers, per frame in flight, which revision that slot's buffer last
      * received, so a screen of sprites that did not change costs no copy at all.
-     * `InstanceTable::revision()`, `GltfScene::materialRevision()` and
-     * `ImageTable::revision()` are the same counter.
      *
-     * **The whole array or none of it.** A dirty *range* would have to be a range per frame
+     * **The whole array or none of it.** A dirty range would have to be a range per frame
      * in flight -- each slot last uploaded at a different revision, so each needs the union
-     * of every range since -- buying a scattered set of small writes into write-combined
-     * memory where there was one linear one.
+     * of every range since -- buying a scatter of small writes into write-combined memory
+     * where there was one linear one.
      *
      * Zero is never reported by a live table, so a renderer forcing a re-upload sets its
      * own copy to zero.
@@ -386,8 +323,7 @@ class SpriteTable {
     [[nodiscard]] uint64_t revision() const { return rev; }
 
   private:
-    /// `Record::animIndex` for a sprite with no playback. Not a sentinel a caller can
-    /// hold, so it is private and named nowhere else.
+    /// `Record::animIndex` for a sprite with no playback.
     static constexpr uint32_t kNotAnimating = 0xFFFFFFFFu;
 
     /// What a `SpriteId` resolves to. Indexed by handle slot and never reordered, which is
@@ -405,15 +341,14 @@ class SpriteTable {
         gfx::ImageId image;
         bool live = false;
 
-        // ------------------------------------------------------------------- playback
         /// Where this slot sits in `animated`, or `kNotAnimating`. An index rather than a
         /// flag so `stop` and `destroy` are a swap-remove rather than a scan.
         uint32_t animIndex = kNotAnimating;
         SpriteSheetId sheet;
         /// `clip` indexes the sheet's clips.
         ClipPlayback playback;
-        /// The sheet frame the `uvRect` currently holds, so `update` can write only when
-        /// it moves. `kNoFrame` forces the next write.
+        /// The sheet frame the `uvRect` currently holds, so `update` writes only when it
+        /// moves. `kNoFrame` forces the next write.
         uint32_t frame = kNoFrame;
     };
 
@@ -434,24 +369,22 @@ class SpriteTable {
      * @brief The one place a `SpriteId` becomes a writable entry, so a stale handle is
      *        refused once **and the revision cannot be forgotten**.
      *
-     * Every per-sprite setter goes through this and there is no other way to reach a
-     * mutable `GpuSprite`, so the bump is structural rather than remembered. A missed bump
-     * is a sprite that quietly stops updating on one frame slot in three, which looks
-     * exactly like a sprite that was told not to move.
+     * Reaching a mutable `GpuSprite` any other way makes the bump something a setter has to
+     * remember; a missed one is a sprite that quietly stops updating on one frame slot in
+     * three, which looks exactly like a sprite that was told not to move.
      *
-     * **It bumps on the way in**, before the caller has written anything, so it cannot be
-     * an accessor a reader also uses.
+     * **It bumps on the way in**, before the caller has written anything, so it cannot
+     * double as an accessor for a reader.
      */
     [[nodiscard]] GpuSprite* at(SpriteId id);
 
     void sort();
 
-    /// Take slot `slot` out of `animated`, if it is in it. Swap-remove, so the entry that
-    /// moved has its record repointed -- the invariant `animIndex` exists to keep.
+    /// Take a slot out of `animated`, if it is in it. Swap-remove, so the entry that moved
+    /// has its record repointed -- the invariant `animIndex` exists to keep.
     void detach(uint32_t slot);
 
-    /// Resolve the playback's frame and write the rectangle if it moved. The one place a
-    /// frame index becomes a UV rect at runtime.
+    /// Resolve the playback's frame and write the rectangle if it moved.
     void applyFrame(uint32_t slot);
 
     const gfx::ImageTable* images = nullptr;
@@ -466,8 +399,7 @@ class SpriteTable {
 
     /// Slots with a live playback. Dense, in no particular order, and walked by `update`.
     std::vector<uint32_t> animated;
-    /// This step's crossings, and the scratch `crossedEvents` appends into -- members
-    /// rather than locals so a step that fires nothing allocates nothing.
+    /// Members rather than locals, so a step that fires nothing allocates nothing.
     std::vector<FiredSpriteEvent> fired;
     std::vector<uint32_t> crossings;
 

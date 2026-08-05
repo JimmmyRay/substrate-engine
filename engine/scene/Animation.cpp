@@ -11,9 +11,7 @@ namespace scene {
 
 namespace {
 
-/// Index of the last key at or before `t`, plus the fraction to the next one. Linear
-/// search from the front would be O(keys) per channel per frame; this is the standard
-/// binary search, and it matters the moment a clip has a few hundred keys.
+/// Index of the last key at or before `t`, plus the fraction to the next one.
 struct KeyLookup {
     size_t index = 0;
     float alpha = 0.0f;
@@ -26,9 +24,9 @@ KeyLookup findKey(const std::vector<float>& times, float t) {
         out.single = true;
         return out;
     }
-    // Before the first key or after the last: hold the endpoint rather than
-    // extrapolating. A clip whose channels start at different times is legal glTF and
-    // extrapolating the earlier ones is how a rig ends up inside out for one frame.
+    // Hold the endpoint rather than extrapolating. A clip whose channels start at
+    // different times is legal glTF, and extrapolating the earlier ones turns a rig
+    // inside out for a frame.
     if (t <= times.front()) {
         out.single = true;
         return out;
@@ -78,8 +76,8 @@ glm::vec4 sampleValue(const AnimationSampler& s, float t, bool isRotation) {
         const float dt = s.times[key.index + 1] - s.times[key.index];
         const glm::vec4 v = cubicSpline(s, key.index, key.alpha, dt);
         // Normalising is not optional for a rotation: a Hermite interpolation of four
-        // quaternion components leaves the result off the unit sphere, and a non-unit
-        // quaternion in a joint matrix is a scale nobody authored.
+        // quaternion components lands off the unit sphere, and a non-unit quaternion in
+        // a joint matrix is a scale nobody authored.
         if (!isRotation) return v;
         const float len = glm::length(v);
         return len > 0.0f ? v / len : glm::vec4(0.0f, 0.0f, 0.0f, 1.0f);
@@ -88,7 +86,7 @@ glm::vec4 sampleValue(const AnimationSampler& s, float t, bool isRotation) {
     const glm::vec4 a = s.values[key.index];
     const glm::vec4 b = s.values[key.index + 1];
     if (isRotation) {
-        // Spherical, not linear. A lerp between two quaternions takes the chord rather
+        // Spherical, not linear: a lerp between two quaternions takes the chord rather
         // than the arc, which shows up as a joint speeding up through the middle of
         // every rotation and slowing at the ends.
         const glm::quat qa(a.w, a.x, a.y, a.z);
@@ -99,14 +97,7 @@ glm::vec4 sampleValue(const AnimationSampler& s, float t, bool isRotation) {
     return glm::mix(a, b, key.alpha);
 }
 
-/**
- * @brief Sample a morph-weight channel into `out`, which is `count` floats long (S2.1).
- *
- * Separate from sampleValue() rather than parameterised on a stride, because the two
- * differ in what a keyframe *is*: a TRS key is one value and this is `count` of them,
- * so every index in here is a product where the other has a sum. Merging them means a
- * function whose every line carries a stride that one caller always sets to one.
- */
+/// @brief Sample a morph-weight channel into `out`, which is `count` floats long.
 void sampleWeights(const AnimationSampler& s, float t, uint32_t count, float* out) {
     const bool cubic = s.interpolation == AnimationInterpolation::CubicSpline;
     const size_t group = cubic ? 3 * s.stride : s.stride;
@@ -155,17 +146,11 @@ glm::mat4 localTransform(const SceneNode& n) {
 }
 
 void sampleClip(const AnimationClip& clip, float time, Pose& pose) {
-    /**
-     * **Strictly greater than, and that `>` is a one-frame pop in every clip that ends.**
-     * `fmod(d, d)` is 0, so a time of exactly the duration used to wrap to the first
-     * keyframe -- and a `ClampToEnd` playback sits on exactly the duration for as long as
-     * it holds its last pose. The showcase's 0.25 s `jumping up` therefore snapped the hips
-     * 2.8 cm up on the single frame the jump ended, before the fall blend took over.
-     *
-     * A looping clip cannot tell the difference: `advance` has already wrapped it into
-     * [0, duration), so it never arrives here at the duration. Anything that does arrive
-     * there means the end of the clip and gets it.
-     */
+    // **Strictly greater than.** `fmod(d, d)` is 0, so `>=` wraps a time of exactly the
+    // duration to the first keyframe -- and a `ClampToEnd` playback sits on exactly the
+    // duration for as long as it holds its last pose, which is a one-frame pop at the end
+    // of every clip that ends. A looping clip cannot tell the difference: `advance` has
+    // already wrapped it below the duration before it arrives here.
     const float raw = std::max(time, 0.0f);
     const float t = clip.duration <= 0.0f ? 0.0f : (raw > clip.duration ? std::fmod(raw, clip.duration) : raw);
 
@@ -177,8 +162,7 @@ void sampleClip(const AnimationClip& clip, float time, Pose& pose) {
 
         if (ch.path == AnimationPath::Weights) {
             // Bounds are the node's, not the sampler's: a channel claiming more targets
-            // than the mesh has would otherwise write past the pose's weight array, and
-            // a malformed file is not a reason to corrupt the next node's face.
+            // than the mesh has would otherwise write past the pose's weight array.
             if (n.weightCount == 0 || n.firstWeight + n.weightCount > pose.weights.size()) continue;
             sampleWeights(s, t, n.weightCount, &pose.weights[n.firstWeight]);
             continue;
@@ -204,10 +188,9 @@ void blendPose(Pose& dst, const Pose& src, float t) {
         const SceneNode& b = src.nodes[i];
         a.translation = glm::mix(a.translation, b.translation, k);
         a.scale = glm::mix(a.scale, b.scale, k);
-        // Spherical, and renormalised. glm::slerp negates the target when the two are
-        // in opposite hemispheres, so the blend takes the short arc -- without that a
-        // joint goes the long way round on every second transition, which reads as an
-        // arm swinging through the torso.
+        // Spherical, and renormalised. glm::slerp negates the target when the two are in
+        // opposite hemispheres, so the blend takes the short arc; a plain mix sends a
+        // joint the long way round on every second transition.
         a.rotation = glm::normalize(glm::slerp(a.rotation, b.rotation, k));
     }
 
@@ -226,17 +209,16 @@ bool advance(ClipPlayback& p, float duration, float dt) {
     }
 
     if (p.loop == LoopMode::Loop) {
-        // fmod of a negative time is negative, so a clip played backwards would walk
-        // off the front. One add brings it back into range, which is all it needs:
-        // |fmod| is strictly less than the duration.
+        // fmod of a negative time is negative, so a clip played backwards walks off the
+        // front. One add is enough: |fmod| is strictly less than the duration.
         p.time = std::fmod(p.time, duration);
         if (p.time < 0.0f) p.time += duration;
         return false;
     }
 
     p.time = std::clamp(p.time, 0.0f, duration);
-    // Reverse playback finishes at the *start*, which is the only sense in which a
-    // clamped clip run backwards can be said to have ended.
+    // Reverse playback finishes at the *start*; testing against the duration leaves a
+    // clamped clip run backwards never finishing.
     return p.speed < 0.0f ? p.time <= 0.0f : p.time >= duration;
 }
 
@@ -262,8 +244,8 @@ void crossedEvents(const ClipPlayback& p, const std::vector<AnimationEvent>& eve
 
     if (duration > 0.0f && p.loop == LoopMode::Loop) {
         // `advance` has already wrapped `p.time`, so a step that crossed the end shows up
-        // as the new time being *behind* the old one. Two intervals then, and each event
-        // still fires at most once because the two do not overlap.
+        // as the new time being *behind* the old one. The two intervals must not overlap,
+        // or an event fires twice for one step.
         const bool wrapped = reverse ? to > from : to < from;
         if (!wrapped) {
             reverse ? fireBetween(to, from) : fireBetween(from, to);
@@ -296,8 +278,6 @@ uint32_t AnimationStateMachine::findParameter(const std::string& name) const {
     return kAnyState;
 }
 
-// --------------------------------------------------------------------- SceneAnimator
-
 void SceneAnimator::init(AnimationRig r) {
     rigData = std::move(r);
     characters.clear();
@@ -305,18 +285,17 @@ void SceneAnimator::init(AnimationRig r) {
     jointTotal = 0;
     weightTotal = 0;
 
-    // One character per skin, which is what keeps a plain glTF scene behaving exactly
-    // as it did before S2 -- see the header. A rig with no skin still gets one: a clip
-    // that drives *node* transforms animates rigid placements, and a scene of moving
-    // crates has a hierarchy to resolve and nothing to skin.
+    // A rig with no skin still gets one character: a clip that drives *node* transforms
+    // animates rigid placements, and a scene of moving crates has a hierarchy to resolve
+    // and nothing to skin.
     if (rigData.skins.empty()) {
         create(kNoSkin);
     } else {
         for (uint32_t s = 0; s < static_cast<uint32_t>(rigData.skins.size()); ++s) create(s);
     }
 
-    // A hierarchy with no clip still needs its world transforms: the bind pose is what
-    // a skinned mesh draws before anything animates it.
+    // A hierarchy with no clip still needs its world transforms: without this a skinned
+    // mesh draws from whatever the joint buffer held until the first step.
     update(0.0f);
 }
 
@@ -325,9 +304,8 @@ uint32_t SceneAnimator::merge(const AnimationRig& extra) {
     const auto weightBase = static_cast<uint32_t>(rigData.bind.weights.size());
     const auto skinBase = static_cast<uint32_t>(rigData.skins.size());
 
-    // Nodes first, and the parent shift is signed because -1 is a root. A root of the
-    // appended file stays a root: grafting it onto a node of the base scene would be a
-    // decision about *content*, and the caller's transform has already placed it.
+    // The parent shift is signed because -1 is a root, and shifting one makes it a child
+    // of an unrelated node of the base scene.
     rigData.bind.nodes.reserve(rigData.bind.nodes.size() + extra.bind.nodes.size());
     for (SceneNode n : extra.bind.nodes) {
         if (n.parent >= 0) n.parent += static_cast<int32_t>(nodeBase);
@@ -337,9 +315,8 @@ uint32_t SceneAnimator::merge(const AnimationRig& extra) {
     rigData.bind.weights.insert(rigData.bind.weights.end(), extra.bind.weights.begin(), extra.bind.weights.end());
 
     // Kept parallel to `bind.nodes` whether or not the appended file named anything. A
-    // short `nodeNames` makes `findNode` search a prefix and `setRootNode` unreachable for
-    // every node past it -- and the two vectors go out of step silently, which is the
-    // failure this whole card is about one array along.
+    // short `nodeNames` silently makes `findNode` search a prefix, leaving every node past
+    // it unnameable.
     rigData.nodeNames.resize(nodeBase);
     rigData.nodeNames.insert(rigData.nodeNames.end(), extra.nodeNames.begin(), extra.nodeNames.end());
     rigData.nodeNames.resize(rigData.bind.nodes.size());
@@ -354,28 +331,21 @@ uint32_t SceneAnimator::merge(const AnimationRig& extra) {
         rigData.clips.push_back(std::move(c));
     }
 
-    // A rig with no skin gets no character here, unlike `init`. `init`'s lone character
-    // exists so a scene of animated crates has a hierarchy to resolve; the base scene
-    // already has one, and a second would be a second copy of the whole pose for a file
-    // that added nodes to a hierarchy somebody is already resolving.
+    // One character per *appended* skin, and none for a skinless rig: the base scene
+    // already has a character resolving the hierarchy these nodes joined, so a fallback
+    // like `init`'s would be a second copy of the whole pose.
     for (uint32_t s = skinBase; s < static_cast<uint32_t>(rigData.skins.size()); ++s) create(s);
 
-    // **Every existing character's `world` has to grow with the rig, and its `pose` does
-    // not.** `pose` is re-copied from `rigData.bind` at the top of every update, so it
-    // follows on its own; `world` is sized once by `createSlot` and written *by index* in
-    // `resolve`. Left alone it is a heap overflow on the first step after an import, on
-    // whichever character was created first -- which is the base scene's.
-    //
-    // Found by ASan on the first run of the first test in this file, which is exactly the
-    // reason the card asked for hosted cases over the offset arithmetic before the merge
-    // existed: nothing in the golden set or the demo would have shown it as anything but a
-    // device loss somewhere else.
+    // **Every existing character's `world` has to grow with the rig; its `pose` does not.**
+    // `pose` is re-copied from `rigData.bind` at the top of every update and follows on its
+    // own, but `world` is sized once by `createSlot` and written *by index* in `resolve`.
+    // Left alone it is a heap overflow on the first step after an import.
     for (Character& c : characters) {
         if (c.world.size() < rigData.bind.nodes.size()) c.world.resize(rigData.bind.nodes.size(), glm::mat4(1.0f));
     }
 
-    // Resolving now rather than waiting for the next step is what makes an instance drawn
-    // before that step draw the appended bind pose instead of whatever the buffer held.
+    // Without this an instance drawn before the next step reads whatever the joint buffer
+    // held rather than the appended bind pose.
     update(0.0f);
 
     return extra.skins.empty() ? kNoSkin : skinBase;
@@ -393,9 +363,8 @@ AnimatorId SceneAnimator::create(uint32_t skin) {
 }
 
 AnimatorId SceneAnimator::createMorphed(uint32_t targets) {
-    // No targets is no character. A caller with a mesh that has none has nothing to drive,
-    // and handing back a valid handle to an empty block would be a handle whose every
-    // `setMorphWeight` silently did nothing.
+    // A valid handle to an empty block is a handle whose every `setMorphWeight` silently
+    // does nothing.
     if (targets == 0) return {};
 
     const AnimatorId id = createSlot(kNoSkin, targets);
@@ -403,9 +372,9 @@ AnimatorId SceneAnimator::createMorphed(uint32_t targets) {
 
     Character& c = characters[id.index];
     c.held.assign(targets, 0.0f);
-    // The pose's own block, replacing whatever `rig.bind` sized it to -- which for a scene
-    // with no morph target in its glTF is nothing at all. `update` restores it from `held`
-    // after every sample for the same reason.
+    // Replaces whatever `rig.bind` sized the block to -- nothing at all, for a scene whose
+    // glTF declares no morph target. `update` restores it from `held` after every sample
+    // for the same reason.
     c.pose.weights = c.held;
     return id;
 }
@@ -416,9 +385,9 @@ void SceneAnimator::setMorphWeight(AnimatorId character, uint32_t target, float 
     if (target >= c.held.size()) return;
     c.held[target] = weight;
     // Written through to the pose as well, not only to `held`. The renderer uploads
-    // `morphWeights` every frame whether or not `update` ran between the two, so a weight
-    // set outside the fixed step would otherwise be a frame late exactly when a game
-    // stepped the animator less often than it drew.
+    // `morphWeights` every frame whether or not `update` ran between the two, so writing
+    // `held` alone makes a weight a frame late whenever a game draws more often than it
+    // steps.
     if (target < c.pose.weights.size()) c.pose.weights[target] = weight;
 }
 
@@ -429,15 +398,15 @@ float SceneAnimator::morphWeight(AnimatorId character, uint32_t target) const {
 }
 
 AnimatorId SceneAnimator::createSlot(uint32_t skin, uint32_t weights) {
-    // kNoSkin is the deliberate case -- a hierarchy with no skin -- and any other
-    // out-of-range value is a caller error that would silently index a skin later.
+    // kNoSkin is the deliberate case -- a hierarchy with no skin. Any other out-of-range
+    // value is a caller error that would silently index a skin later.
     if (skin != kNoSkin && skin >= rigData.skins.size()) return {};
 
     const auto joints = static_cast<uint32_t>(skin == kNoSkin ? 0u : rigData.skins[skin].joints.size());
 
-    // A retired slot is reused only when its joint and weight blocks are big enough for
-    // the new skin. The block cannot move -- see destroy() -- so a skin that does not fit
-    // takes a fresh slot and leaves this one for a later one that does.
+    // A retired slot is reused only when its blocks are big enough for the new skin: the
+    // block cannot move -- see destroy() -- so growing one here would slide every later
+    // character's matrices under an instance still naming it.
     uint32_t slot = kNoSkin;
     for (size_t i = 0; i < freeCharacterSlots.size(); ++i) {
         const Character& dead = characters[freeCharacterSlots[i]];
@@ -454,7 +423,7 @@ AnimatorId SceneAnimator::createSlot(uint32_t skin, uint32_t weights) {
     c.world.assign(rigData.bind.nodes.size(), glm::mat4(1.0f));
     if (skin != kNoSkin) c.joints.assign(rigData.skins[skin].joints.size(), glm::mat4(1.0f));
     // Seeded from the templates, so installing a machine before any rig is loaded still
-    // reaches the characters that rig produces (C23).
+    // reaches the characters that rig produces.
     c.machine = defaultMachine;
     c.rootMotionNode = defaultRootMotionNode;
     c.parameters.assign(c.machine.parameters.size(), 0.0f);
@@ -464,8 +433,8 @@ AnimatorId SceneAnimator::createSlot(uint32_t skin, uint32_t weights) {
     }
 
     if (slot != kNoSkin) {
-        // The base and the block size are the slot's, not the character's: they outlive
-        // every character that ever occupies it.
+        // The base and the block size are the slot's, not the character's, and outlive
+        // every character that occupies it.
         c.generation = characters[slot].generation;
         c.jointBase = characters[slot].jointBase;
         c.weightBase = characters[slot].weightBase;
@@ -492,14 +461,12 @@ void SceneAnimator::destroy(AnimatorId id) {
     Character& c = characters[id.index];
     c.live = false;
     ++c.generation;
-    // Identity, not freed. An instance whose meta.w still names this slot draws its bind
-    // pose rather than whatever the next character to reuse the block is doing -- see the
-    // header, which is where this decision is argued.
+    // Identity, not freed: an instance whose meta.w still names this slot draws its bind
+    // pose rather than whatever the next character to reuse the block is doing.
     std::fill(c.joints.begin(), c.joints.end(), glm::mat4(1.0f));
     std::fill(c.pose.weights.begin(), c.pose.weights.end(), 0.0f);
-    // Zeroed and kept at its length, not cleared. `update` skips a dead slot entirely, so
-    // these are the weights a stale instance goes on reading -- and zero is the undeformed
-    // mesh, which is the morph half of the bind pose `joints` was just filled with.
+    // Zeroed and kept at its length, not cleared. `update` skips a dead slot, so these are
+    // the weights a stale instance goes on reading, and zero is the undeformed mesh.
     std::fill(c.held.begin(), c.held.end(), 0.0f);
     c.current = {};
     c.previous = {};
@@ -511,8 +478,8 @@ void SceneAnimator::destroy(AnimatorId id) {
 void SceneAnimator::play(AnimatorId character, uint32_t clip, float fade, LoopMode loop, float speed) {
     if (!valid(character) || clip >= rigData.clips.size()) return;
     Character& c = characters[character.index];
-    // Already playing it, and not still fading out of something else: nothing to do.
-    // Anything driving this from held input calls it every frame.
+    // Already playing it, and not still fading out of something else: restarting here
+    // would reset the clip every frame for anything driving this from held input.
     if (c.current.clip == clip && c.fade >= 1.0f) {
         c.current.loop = loop;
         c.current.speed = speed;
@@ -600,10 +567,9 @@ void SceneAnimator::fire(AnimatorId character, uint32_t param) { setParameter(ch
 
 void SceneAnimator::beginFade(Character& c, const ClipPlayback& to, float duration) {
     if (duration > 0.0f && c.fade >= 1.0f) {
-        // Only a settled character fades from what it was playing. Interrupting a fade
-        // that is already running would need a third playback to blend from, and the
-        // honest cheap answer is to drop the one being faded out -- the alternative,
-        // an unbounded stack of them, is a blend tree in disguise.
+        // Only a settled character fades from what it was playing: a fade interrupted
+        // mid-way drops the clip it was fading out of, because blending from it would
+        // need a third playback.
         c.previous = c.current;
         c.fade = 0.0f;
         c.fadeRate = 1.0f / duration;
@@ -645,9 +611,8 @@ void SceneAnimator::stepStateMachine(Character& c) {
         }
         if (!holds) continue;
 
-        // Consume every trigger this transition tested, whichever way it tested it: a
-        // trigger a transition looked at has been acted on, and leaving it set fires
-        // the next transition that reads it in the same frame.
+        // Consume every trigger this transition tested, whichever way it tested it.
+        // Leaving one set fires the next transition that reads it in the same frame.
         for (const AnimationCondition& cond : t.conditions) {
             if (cond.parameter < machine.parameters.size() && machine.parameters[cond.parameter].trigger) {
                 c.parameters[cond.parameter] = 0.0f;
@@ -662,15 +627,13 @@ void SceneAnimator::stepStateMachine(Character& c) {
 }
 
 void SceneAnimator::resolve(Character& c) {
-    // Parents before children. glTF does not require the node array to be topologically
-    // ordered, so a child may precede its parent -- the loop repeats until nothing is
-    // left, which terminates because every pass resolves at least the shallowest
-    // unresolved node.
+    // Parents before children, in repeated passes: glTF does not require the node array to
+    // be topologically ordered, so a child may precede its parent. Every pass resolves at
+    // least the shallowest unresolved node, which is what terminates it.
     const std::vector<SceneNode>& nodes = c.pose.nodes;
-    // Reused across characters and across steps rather than allocated per call. `assign`
-    // and not `clear()` + `resize()`: it writes every element of [0, nodes.size()), which
-    // is exactly the range the loop below reads, so no character can read a mark the
-    // character before it left. The declaration carries the rest of that argument.
+    // `assign`, not `clear()` + `resize()`: it writes every element of [0, nodes.size()),
+    // which is exactly the range the loop below reads, so no character can read a mark the
+    // character before it left in this shared buffer.
     std::vector<bool>& done = resolvedNodes;
     done.assign(nodes.size(), false);
     size_t resolved = 0;
@@ -686,9 +649,8 @@ void SceneAnimator::resolve(Character& c) {
             done[i] = true;
             ++resolved;
         }
-        // A cycle in the parent links, which is malformed input rather than a state to
-        // recover from. Leaving the rest at identity is a visible wrong answer, which
-        // beats looping forever.
+        // A cycle in the parent links. Leaving the rest at identity is a visible wrong
+        // answer; without the break it is an infinite loop.
         if (resolved == before) break;
     }
 
@@ -705,10 +667,8 @@ void SceneAnimator::update(float dt) {
     auto s = core::Profiler::scope("SceneAnimator::update");
     fired.clear();
 
-    // Who owns which node, before anything reads a pose off one. A node index carries no
-    // rig -- see `characterForNode` -- so with two rigs merged this is the only thing that
-    // can tell a joint on the second character from the same index on the first. First
-    // claim wins, which is what keeps N copies of one skin agreeing on a shared joint.
+    // Rebuilt before anything reads a pose off a node. First claim wins, which is what
+    // keeps N copies of one skin agreeing on a shared joint.
     nodeOwner.assign(rigData.bind.nodes.size(), 0xFFFFFFFFu);
     for (uint32_t index = 0; index < static_cast<uint32_t>(characters.size()); ++index) {
         const Character& c = characters[index];
@@ -717,12 +677,10 @@ void SceneAnimator::update(float dt) {
             if (joint < nodeOwner.size() && nodeOwner[joint] == 0xFFFFFFFFu) nodeOwner[joint] = index;
         }
     }
-    // **Skins first, then clips**, and the second pass is not the same case as the first. A
-    // node no skin claims is a *rigid* animated node -- a drawbridge, a clock tower, a lift
-    // in a hierarchy merged beside a character rig -- and the character that moves it is the
-    // one playing the clip that names it. Second so a joint is never taken from its skin by
-    // a clip that happens to mention it, and unclaimed-only so the answer is stable while a
-    // character keeps playing the same clip.
+    // **Skins first, then clips.** A node no skin claims is a *rigid* animated node -- a
+    // drawbridge merged beside a character rig -- owned by whoever plays the clip naming
+    // it. Running this pass first, or letting it overwrite a claim, takes a joint away
+    // from its own skin because some clip happens to mention it.
     for (uint32_t index = 0; index < static_cast<uint32_t>(characters.size()); ++index) {
         const Character& c = characters[index];
         if (!c.live || c.current.clip >= rigData.clips.size()) continue;
@@ -736,12 +694,10 @@ void SceneAnimator::update(float dt) {
     for (uint32_t index = 0; index < static_cast<uint32_t>(characters.size()); ++index) {
         Character& c = characters[index];
         if (!c.live) continue;
-        // Before the clips advance, not after. A state entered this frame then gets a
-        // full step of its own clip instead of stalling for one, which is what keeps a
-        // cut transition from showing a single frame of the pose it just left. The cost
-        // is that `waitForExit` sees the previous frame's time, so the frame a clamped
-        // clip reaches its end is not the frame it leaves on -- one frame, stated here
-        // rather than discovered in a transition that feels a hair late.
+        // Before the clips advance, not after: a state entered this frame then gets a full
+        // step of its own clip instead of stalling for one, and a cut transition never
+        // shows a frame of the pose it just left. The price is that `waitForExit` sees the
+        // previous frame's time, so a clamped clip leaves one frame after it ends.
         stepStateMachine(c);
 
         if (c.fade < 1.0f) {
@@ -749,8 +705,7 @@ void SceneAnimator::update(float dt) {
             if (c.previous.clip < rigData.clips.size()) advance(c.previous, rigData.clips[c.previous.clip], dt);
         }
         if (c.current.clip < rigData.clips.size()) {
-            // The time before the step, so the event scan knows what interval was
-            // crossed. Only the current clip's events fire -- see `firedEvents`.
+            // Taken before the step: `crossedEvents` needs the interval, not the endpoint.
             const float from = c.current.time;
             advance(c.current, rigData.clips[c.current.clip], dt);
 
@@ -759,15 +714,12 @@ void SceneAnimator::update(float dt) {
             for (const uint32_t e : eventScratch) fired.push_back({index, c.current.clip, e});
         }
 
-        // Start from the bind pose every frame rather than accumulating. A clip that
-        // drives rotation only would otherwise inherit whatever translation the
-        // previous clip left behind, and the bug looks like a rig that drifts.
+        // Start from the bind pose every frame rather than accumulating: a clip that drives
+        // rotation only would otherwise inherit whatever translation the previous clip left
+        // behind, and the bug looks like a rig that drifts.
         c.pose = rigData.bind;
         if (!rigData.clips.empty()) {
             if (c.fade < 1.0f) {
-                // Fade *out* of the previous clip and *into* the current one, which is
-                // one blend rather than two: sample the outgoing pose, then move it
-                // `fade` of the way toward the incoming one.
                 sampleClip(rigData.clips[c.previous.clip], c.previous.time, c.pose);
                 c.scratch = rigData.bind;
                 sampleClip(rigData.clips[c.current.clip], c.current.time, c.scratch);
@@ -777,39 +729,25 @@ void SceneAnimator::update(float dt) {
             }
         }
 
-        // ------------------------------------------------------- held weights (G11)
         // A character `createMorphed` made belongs to no node of the rig, so the copy of
-        // `rig.bind` above resized its weight block to the file's -- zero, for a scene
-        // whose glTF declares no morph target. Restored rather than protected from the
-        // copy, because the copy is what keeps the *nodes* from drifting and that argument
-        // does not stop applying just because these weights are somebody else's.
+        // `rig.bind` above has just resized its weight block to the file's -- zero, for a
+        // scene whose glTF declares no morph target.
         if (!c.held.empty()) c.pose.weights = c.held;
 
-        // ------------------------------------------------------------ root motion (C7)
-        // After sampling and before resolve(), which is the only window where the pose
-        // holds this step's authored root translation and nothing has consumed it yet.
+        // After sampling and before resolve(), the only window where the pose holds this
+        // step's authored root translation and nothing has consumed it yet.
         if (c.rootMotionNode < c.pose.nodes.size()) {
             const glm::vec3 sampled = c.pose.nodes[c.rootMotionNode].translation;
             c.rootDelta = c.hasPreviousRoot ? sampled - c.previousRoot : glm::vec3(0.0f);
             c.previousRoot = sampled;
             c.hasPreviousRoot = true;
 
-            /**
-             * **Horizontal only, and the vertical axis is the whole of why.** X and Z are
-             * held at the bind translation, so the pose animates in place and the travel
-             * is the controller's to apply -- reporting the delta *and* leaving the node
-             * moving would move the character twice, which is what `setRootNode` argues.
-             *
-             * Y is the clip's and is left alone. Holding it too pins the root at whatever
-             * height the *bind* pose happened to use, and a rig binds in a T-pose while it
-             * animates with bent knees: the showcase rig binds its hips at 1.043 and idles
-             * them between 0.946 and 0.978, so holding Y stood the character eight
-             * centimetres off the floor and flattened the bob out of every walk cycle.
-             *
-             * The delta loses Y for the same reason it keeps X and Z: a controller fed a
-             * vertical component would drive the character into the floor and the ceiling
-             * on alternate steps, fighting the gravity that is already the solver's.
-             */
+            // **Horizontal only.** Holding Y as well pins the root at the height the
+            // *bind* pose happened to use, and a rig binds in a T-pose while it animates
+            // with bent knees -- hips bound at 1.043 against an idle between 0.946 and
+            // 0.978 stands the character eight centimetres off the floor and flattens the
+            // bob out of every walk cycle. The delta drops Y for the mirror reason: a
+            // controller fed a vertical component fights the solver's gravity.
             glm::vec3 held = rigData.bind.nodes[c.rootMotionNode].translation;
             held.y = sampled.y;
             c.pose.nodes[c.rootMotionNode].translation = held;
@@ -835,8 +773,8 @@ uint32_t SceneAnimator::findNode(std::string_view name) const {
 
 void SceneAnimator::setRootNode(uint32_t node) {
     defaultRootMotionNode = node;
-    // Every character restarts its measurement: the node it was measuring against is not
-    // the node it will be measuring now, and a delta across that change is meaningless.
+    // Every character restarts its measurement; a delta taken across a change of node is
+    // the distance between two unrelated joints.
     for (Character& c : characters) {
         c.rootMotionNode = node;
         c.hasPreviousRoot = false;
@@ -847,9 +785,8 @@ void SceneAnimator::setRootNode(uint32_t node) {
 void SceneAnimator::setRootNode(AnimatorId character, uint32_t node) {
     if (!valid(character)) return;
     Character& c = characters[character.index];
-    // Guarded, because restarting the measurement is the expensive half of this call and a
-    // game that resolves its root joint once per frame would otherwise report a delta of
-    // zero for ever -- which is exactly the trap the animator-wide version documents.
+    // Guarded: without it a game that sets the same root node every frame restarts the
+    // measurement every frame and reads a delta of zero for ever.
     if (c.rootMotionNode == node) return;
     c.rootMotionNode = node;
     c.hasPreviousRoot = false;

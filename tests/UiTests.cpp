@@ -12,7 +12,7 @@ using namespace core;
 
 /**
  * @file tests/UiTests.cpp
- * @brief The draw list, the layout, the hit test and the widgets (S6).
+ * @brief The draw list, the layout, the hit test and the widgets.
  *
  * A UI is the subsystem most often shipped untested because "you can see whether it
  * works". You can see whether it *draws*; you cannot see, by looking, that a button
@@ -81,7 +81,7 @@ class Ui {
     ~Ui() { std::filesystem::remove(imageFile); }
 
     ui::Context context;
-    /// P1. Real handles rather than bare slots, because that is what `Context::image`
+    /// Real handles rather than bare slots, because that is what `Context::image`
     /// takes now, and because a fabricated one would exercise the vertex builder instead
     /// of the refusal. `load` only asks that the file exists -- decoding is the
     /// renderer's half and no test here has a device.
@@ -533,7 +533,7 @@ TEST(UiWidget, AListNavigatesWithTheKeyboardAndScrollsToFollow) {
     EXPECT_FALSE(ui.context.draw().empty());
 }
 
-// ================================================================ routing (S6.4)
+// ================================================================ routing
 
 TEST(UiRouting, ThePointerIsCapturedOverAPanelAndNotBesideIt) {
     Ui ui;
@@ -712,7 +712,7 @@ TEST(UiRouting, TheHashSuffixSeparatesTwoIdenticalCaptions) {
     EXPECT_FALSE(second);
 }
 
-// ================================================================ text (S6.3)
+// ================================================================ text
 
 TEST(UiText, AFieldLoadsCommitsAndReverts) {
     Ui ui;
@@ -940,7 +940,7 @@ TEST(UiPanel, WidgetsDrawEvenWithNoFont) {
     EXPECT_FALSE(context.draw().empty());
 }
 
-// ============================================ screen-space images (C5)
+// ============================================ screen-space images
 //
 // The half of C5 that is not Vulkan. The renderer owns the descriptor array and the
 // upload; what is testable here is the contract between them -- that a slot rides on the

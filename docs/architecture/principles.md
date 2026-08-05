@@ -226,7 +226,7 @@ and they say so in their own words rather than borrowing one of the three.
 | Particle lighting | Generalized | Per particle, reading the same budgeted light list surfaces read |
 | Physics threading | Tiered, measured | Single-threaded wins below ~150 bodies, breaks even at 142, loses 2.02x at 526. Selector is `physics.workerThreads` — a row, and it stayed one, because a thread count is a property of the machine — and the default is 0 because determinism needs the count fixed |
 | Audio stream vs decode | Tiered, measured | 5 seconds, from measured cost: 0.96 us per voice per step to stream, 375 KiB and ~0.25 ms of load per second to decode. An explicit `stream`/`decode` beats the threshold |
-| Acceleration structures | Tiered | Static is one baked-transform BLAS; dynamic is BLAS-per-mesh with `ALLOW_UPDATE` under a rebuilt TLAS. Selector is the instance's flags |
+| Acceleration structures | Tiered | Three tiers, split by *how* a thing moves: static is one baked-transform BLAS; rigid is BLAS-per-primitive in model space, shared between movers and placed by a TLAS instance; deformed is BLAS-per-instance with `ALLOW_UPDATE`. All under a TLAS rebuilt every frame. Selector is the instance's flags |
 | TAA motion | Tiered in cost | Static geometry reprojects from depth; dynamic instances write a correction. At zero dynamic objects the cost is a clear |
 | Decal count | Delegated, verified | `decal.frag` is unchanged by a switch to rasterised boxes — only the vertex source and depth test differ |
 | Many-lights culling | Delegated, verified | The light list is already a storage buffer whose length the shader reads, and the budget is explicit data |

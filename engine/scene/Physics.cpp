@@ -58,40 +58,34 @@ namespace scene {
 
 namespace {
 
-/// Object layers. Two is all this engine has needed: things that never move, and things
-/// that do. A third would be a game's decision (triggers, projectiles, a player layer),
-/// and the tables below take a count rather than an enumeration, so adding one is a
-/// number and two `EnableCollision` calls.
+/// Object layers. The tables below take a count, so a third layer is this number plus the
+/// `EnableCollision` pairs that layer takes part in.
 constexpr JPH::ObjectLayer kLayerStatic = 0;
 constexpr JPH::ObjectLayer kLayerMoving = 1;
 constexpr uint32_t kObjectLayerCount = 2;
 
-/// Where `Character::airSteps` stops counting (C20). It is only ever compared against a
-/// coyote window, so the count past that window carries no information -- and a character
-/// that has been falling for two years is not a case worth wrapping a counter for.
+/// Where `Character::airSteps` saturates. It is only ever compared against a coyote window,
+/// so the count past that window carries no information and must not be allowed to wrap.
 constexpr uint32_t kAirStepsMax = 1u << 20;
 
-/// Broad-phase layers, one per object layer here. They are separate concepts -- many
-/// object layers can share a broad-phase tree -- and keeping them parallel while there
-/// are two of each is the Rule of Threes rather than an oversight.
+/// Broad-phase layers. Separate from the object layers -- many object layers can share one
+/// broad-phase tree -- and only incidentally the same count.
 constexpr JPH::BroadPhaseLayer kBroadPhaseStatic(0);
 constexpr JPH::BroadPhaseLayer kBroadPhaseMoving(1);
 constexpr uint32_t kBroadPhaseLayerCount = 2;
 
-/// Headroom over the colliders a scene declared, when no budget names a ceiling. A
-/// stated figure rather than a guess at a working set: it is enough for a game to spawn
-/// a magazine of debris without re-initialising the world, and small enough that a scene
-/// with four colliders does not allocate for a thousand.
+/// Headroom over the colliders a scene declared, when no budget names a ceiling. Enough for a
+/// game to spawn a magazine of debris without a rebuild, small enough that a scene with four
+/// colliders does not allocate for a thousand.
 constexpr uint32_t kBodyHeadroom = 256;
 
-/// Jolt asks for these at init and they scale with the body count rather than with
-/// anything a caller would know. The floors are Jolt's own sample values, which are the
-/// smallest numbers known to behave.
+/// Jolt asks for these at init and they scale with the body count. The floors are Jolt's own
+/// sample values, the smallest numbers known to behave.
 uint32_t bodyPairsFor(uint32_t maxBodies) { return std::max(1024u, maxBodies * 8u); }
 uint32_t contactConstraintsFor(uint32_t maxBodies) { return std::max(1024u, maxBodies * 4u); }
 
-/// Jolt's temp allocator is a stack, sized once. 16 MB is its own sample figure and is
-/// what a few thousand bodies need; it is a single allocation held for the process.
+/// Jolt's temp allocator is a stack, sized once and held for the process. 16 MB is Jolt's own
+/// sample figure and covers a few thousand bodies.
 constexpr uint32_t kTempAllocatorBytes = 16u * 1024u * 1024u;
 
 glm::vec3 toGlm(JPH::Vec3Arg v) { return {v.GetX(), v.GetY(), v.GetZ()}; }
@@ -99,13 +93,10 @@ glm::quat toGlm(JPH::QuatArg q) { return {q.GetW(), q.GetX(), q.GetY(), q.GetZ()
 JPH::Vec3 toJolt(const glm::vec3& v) { return {v.x, v.y, v.z}; }
 JPH::Quat toJolt(const glm::quat& q) { return {q.x, q.y, q.z, q.w}; }
 
-/// Route Jolt's own diagnostics into the engine's log rather than onto stdout, where a
-/// headless golden run would mix them into the capture script's output.
+/// Route Jolt's diagnostics into the engine's log, not stdout, where a headless golden run
+/// would mix them into the capture script's output.
 ///
-/// `Logger::vformat` rather than a buffer here, which is the reuse the old version most
-/// obviously wanted: it truncated into `char[1024]` and then handed the result to
-/// `Logger::debug`, the very thing that would have sized it correctly. The formatted
-/// message goes to the `std::string` overload rather than through `"Jolt: %s"`, so a
+/// The formatted message goes to the `std::string` overload, never through `"Jolt: %s"`, so a
 /// diagnostic containing a percent sign is not formatted twice.
 void traceToLogger(const char* format, ...) {
     va_list args;
@@ -119,9 +110,8 @@ void traceToLogger(const char* format, ...) {
  * @brief Jolt's process-wide setup, done once and undone at exit.
  *
  * A static local rather than a call in `PhysicsWorld::init`: the tests construct several
- * worlds, and `RegisterTypes` is not idempotent. The destructor matters as much as the
- * constructor -- without it the factory is a leak ASan reports on every run of the suite,
- * which is a real report about a real allocation and would train everyone to ignore it.
+ * worlds and `RegisterTypes` is not idempotent. The destructor matters as much: without it the
+ * factory is a real leak ASan reports on every run of the suite.
  */
 struct JoltRuntime {
     JoltRuntime() {
@@ -141,16 +131,14 @@ struct JoltRuntime {
 
 void ensureJoltRuntime() { static JoltRuntime runtime; }
 
-/// Split a world matrix into the two things a body carries and the one thing it does
-/// not. A Jolt body has a position and an orientation; scale belongs to the shape, which
-/// is why it comes back separately rather than being quietly dropped.
+/// Split a world matrix for a body. Scale comes back separately because it belongs to the
+/// shape, not the body, and dropping it silently shrinks or grows a collider.
 void decompose(const glm::mat4& m, glm::vec3& translation, glm::quat& rotation, glm::vec3& scale) {
     translation = glm::vec3(m[3]);
     scale = {glm::length(glm::vec3(m[0])), glm::length(glm::vec3(m[1])), glm::length(glm::vec3(m[2]))};
     glm::mat3 r(m);
-    // A zero axis is a degenerate node transform. Substituting one keeps the quaternion
-    // finite; the shape it scales is already flat and will collide with nothing, which
-    // is the honest outcome for geometry with no thickness.
+    // Substituting 1 for a zero axis keeps the quaternion finite; dividing by the raw scale
+    // makes it NaN and every transform built from it after that.
     for (int i = 0; i < 3; ++i) {
         const float s = scale[i] > 1e-8f ? scale[i] : 1.0f;
         r[i] /= s;
@@ -160,14 +148,11 @@ void decompose(const glm::mat4& m, glm::vec3& translation, glm::quat& rotation, 
 
 } // namespace
 
-// ---------------------------------------------------------------------- FixedClock
-
 void FixedClock::accumulate(float dt) {
     thisFrame = 0;
-    // Scaled here rather than at any consumer, so everything downstream of the step
-    // inherits the pause without knowing there is one. At the default scale this is a
-    // multiplication by exactly 1.0f, which is exact in float and is what keeps a locked
-    // clock bit-identical to the engine before C4.
+    // Scaled here rather than at any consumer, so everything downstream of the step inherits
+    // the pause without knowing there is one. At the default scale it is a multiplication by
+    // exactly 1.0f, so a locked clock stays bit-identical.
     if (dt > 0.0f) accumulator += dt * timeScaleValue;
 }
 
@@ -175,8 +160,8 @@ bool FixedClock::consume() {
     if (accumulator < stepSeconds) return false;
 
     if (thisFrame >= maxSteps) {
-        // Everything still owed is discarded in one go rather than carried into the next
-        // frame, which would only defer the same overrun and hide that it happened.
+        // Discarded in one go: carrying the overrun into the next frame only defers it and
+        // hides that it happened.
         const auto skipped = static_cast<uint32_t>(accumulator / stepSeconds);
         dropped += skipped;
         accumulator -= static_cast<float>(skipped) * stepSeconds;
@@ -191,6 +176,8 @@ bool FixedClock::consume() {
 
 float FixedClock::alpha() const {
     const float a = accumulator / stepSeconds;
+    // 0.99999994f is the float below 1: the contract is [0, 1), and returning 1 would let an
+    // interpolation land on the next step's state a step early.
     return a < 0.0f ? 0.0f : (a >= 1.0f ? 0.99999994f : a);
 }
 
@@ -200,66 +187,49 @@ glm::mat4 interpolateState(const PhysicsState& a, const PhysicsState& b, float a
     return glm::translate(glm::mat4(1.0f), p) * glm::mat4_cast(r);
 }
 
-// ------------------------------------------------------------------ debug renderer
-
 #ifdef JPH_DEBUG_RENDERER
 /**
- * @brief The engine's one derived type, and the whole of what S4 spends on inheritance.
+ * @brief Jolt's debug output, as line vertices.
  *
- * It is here because Jolt's API is how a convex hull's or a triangle mesh's wireframe is
- * obtained at all -- those shapes have no parameters a procedural outline could be built
- * from, so drawing them any other way means re-deriving the hull. `DrawLine` and
- * `DrawText3D` are the two the base class leaves pure; `DrawTriangle` already falls back
- * to three `DrawLine`s, which is exactly what a wireframe wants.
+ * Deriving is the only way to get a convex hull's or triangle mesh's wireframe: those shapes
+ * carry no parameters a procedural outline could be built from. `DrawLine` and `DrawText3D`
+ * are the base's two pure virtuals; `DrawTriangle` already falls back to three `DrawLine`s.
  */
 struct PhysicsDebugRenderer final : public JPH::DebugRendererSimple {
     std::vector<gfx::DebugLineVertex>* out = nullptr;
 
     void DrawLine(JPH::RVec3Arg from, JPH::RVec3Arg to, JPH::ColorArg color) override {
         if (out == nullptr) return;
-        // Jolt's Color is already 0xAABBGGRR in memory, which is the layout
-        // DebugLineVertex documents, so this is a read rather than a conversion.
+        // Jolt's Color is already 0xAABBGGRR in memory, the layout `DebugLineVertex`
+        // documents; swizzling here would double-convert it.
         const uint32_t packed = color.mU32;
         out->push_back({glm::vec3(from.GetX(), from.GetY(), from.GetZ()), packed});
         out->push_back({glm::vec3(to.GetX(), to.GetY(), to.GetZ()), packed});
     }
 
-    /// Deliberately empty. Text over a body is the one part of Jolt's debug output this
-    /// engine already has a better answer for -- `recordOverlay` draws real glyphs -- and
-    /// stubbing it beats rasterising strings into a line list.
+    /// Stubbed: pure in the base, and `recordOverlay` draws the engine's own glyphs.
     void DrawText3D(JPH::RVec3Arg, const JPH::string_view&, JPH::ColorArg, float) override {}
 };
 #else
 struct PhysicsDebugRenderer {};
 #endif
 
-// --------------------------------------------------------------- contacts (G7)
-
 namespace {
 
 /**
- * @brief The second derived type in `engine/`, and it is allowed for the first one's reason.
+ * @brief Records what touched during a step, and does nothing else.
  *
- * `PhysicsDebugRenderer` above exists because `JPH::DebugRendererSimple` is how Jolt hands
- * out a hull's wireframe; this exists because `JPH::ContactListener` is how Jolt hands out
- * the fact that two things touched. Both are a dependency's requirement rather than an
- * abstraction this engine chose, which is the line `principles.md` draws: `Game` is still
- * the only base class here that no library demanded.
+ * Jolt calls this from inside `Update`, on job threads, with every body in the world locked.
+ * Creating a body, destroying one or taking a body lock from here deadlocks the step, so the
+ * callback may only write a POD into a vector; `PhysicsWorld::collectContacts` turns that into
+ * something a game can act on once the step is over.
  *
- * **It records and does nothing else.** Jolt calls this from inside `Update`, on job
- * threads, with every body in the world locked -- a caller that created a body, destroyed
- * one or took a body lock from here would deadlock the step, and there is no way to hand
- * that constraint to a game and expect it to hold. So the callback writes a POD into a
- * vector and `PhysicsWorld::collectContacts` turns it into something a game can act on
- * after the step is over.
- *
- * The lookup from `JPH::BodyID` to this engine's slot deliberately does *not* happen here.
- * It is a hash lookup per contact, and moving it out of the callback moves it off the
- * locked path, off N threads and onto one -- which costs nothing, because the drain has to
- * walk the list anyway.
+ * Resolving `JPH::BodyID` to a slot belongs in that drain, not here -- it is a hash lookup per
+ * contact, and doing it here puts it on the locked path and on N threads for no saving, since
+ * the drain walks the list anyway.
  */
 struct ContactRecorder final : public JPH::ContactListener {
-    /// One manifold, in Jolt's terms, because that is all the callback can cheaply say.
+    /// One manifold, in Jolt's terms.
     struct Raw {
         uint32_t body1 = 0; ///< JPH::BodyID's raw value
         uint32_t body2 = 0;
@@ -268,10 +238,9 @@ struct ContactRecorder final : public JPH::ContactListener {
         float speed = 0.0f;
     };
 
-    /// Uncontended in the configuration this engine ships -- `workerThreads` defaults to
-    /// zero and the callbacks then arrive on the stepping thread -- so this is an atomic
-    /// exchange per new contact. It is here rather than conditional on the thread count
-    /// because a lock that appears when a config key changes is a lock nobody ever tests.
+    /// Held unconditionally, not only when `workerThreads` is non-zero: a lock that appears
+    /// when a config key changes is a lock nobody ever tests. Uncontended at the default,
+    /// where the callbacks arrive on the stepping thread.
     std::mutex lock;
     std::vector<Raw> found;
 
@@ -280,19 +249,17 @@ struct ContactRecorder final : public JPH::ContactListener {
         const auto count = static_cast<uint32_t>(manifold.mRelativeContactPointsOn1.size());
         if (count == 0) return;
 
-        // The centroid rather than point zero. A box landing flat gives four points whose
-        // order is the clipper's, so taking the first would put the impact at whichever
-        // corner Jolt happened to emit first and move it between two runs of the same
-        // scene. Relative points summed before the base offset is added, which is the one
-        // arrangement that stays exact when the world origin is far away.
+        // The centroid, not point zero: a box landing flat gives four points in the clipper's
+        // order, so the first one moves between two runs of the same scene. The relative
+        // points are summed before the base offset is added, which is what stays exact when
+        // the world origin is far away.
         JPH::Vec3 sum = JPH::Vec3::sZero();
         for (uint32_t i = 0; i < count; ++i) sum += manifold.mRelativeContactPointsOn1[i];
         const JPH::RVec3 point = manifold.mBaseOffset + sum / static_cast<float>(count);
 
-        // Velocities as they were *before* the solver ran, which is what Jolt's own
-        // documentation says this callback is the place to read for exactly this purpose.
-        // A static body reports zero, so a crate hitting a floor gets the crate's speed
-        // rather than nothing.
+        // Velocities as they were before the solver ran; this callback is the only place they
+        // can be read. A static body reports zero, so a crate hitting a floor gets the crate's
+        // speed rather than nothing.
         const JPH::Vec3 relative = body1.GetPointVelocity(point) - body2.GetPointVelocity(point);
 
         Raw raw;
@@ -300,9 +267,9 @@ struct ContactRecorder final : public JPH::ContactListener {
         raw.body2 = body2.GetID().GetIndexAndSequenceNumber();
         raw.point = toGlm(JPH::Vec3(point));
         raw.normal = toGlm(manifold.mWorldSpaceNormal);
-        // Jolt's normal points from body 1 to body 2, so a body 1 moving toward body 2
-        // gives a positive dot. Negative is a speculative contact detected while the two
-        // are still separating; it is a real contact and its impact is zero.
+        // Jolt's normal points from body 1 to body 2, so closing gives a positive dot.
+        // Negative is a speculative contact caught while the two still separate: a real
+        // contact whose impact is zero, not a value to drop.
         raw.speed = std::max(0.0f, relative.Dot(manifold.mWorldSpaceNormal));
 
         const std::lock_guard<std::mutex> held(lock);
@@ -312,8 +279,8 @@ struct ContactRecorder final : public JPH::ContactListener {
 
 } // namespace
 
-// ------------------------------------------------------------------------- Impl
-
+/// Declaration order is teardown order reversed: `system` is destroyed last, after the layer
+/// tables, the allocator and the job system it holds references to.
 struct PhysicsWorld::Impl {
     JPH::PhysicsSystem system;
     std::unique_ptr<JPH::BroadPhaseLayerInterfaceTable> broadPhase;
@@ -327,22 +294,13 @@ struct PhysicsWorld::Impl {
     std::unique_ptr<PhysicsDebugRenderer> debug;
     bool initialised = false;
 
-    /// `JPH::BodyID`'s raw value to the index this class hands out, so a query can report
-    /// the body it hit in the caller's terms rather than Jolt's.
-    ///
-    /// A map rather than a scan of `bodies`, which is what the obvious version does. The
-    /// scan is O(bodies) *per hit*, and a query surface exists to be called -- a few
-    /// perception checks per agent per frame across a large scene is exactly the shape
-    /// that turns an invisible constant into a profile. Jolt's own body user data is not
-    /// available for this: `addBody` already stores the caller's `userData` there.
+    /// `JPH::BodyID`'s raw value to the index this class hands out. A map rather than a scan
+    /// of `bodies`, which would be O(bodies) *per hit* on a surface built to be called. Jolt's
+    /// own body user data cannot serve: `addBody` already stores the caller's `userData` there.
     std::unordered_map<uint32_t, uint32_t> bodyIndexById;
 
-    /// `PhysicsWorld::handleFor` is what reads this; the generation that completes the
-    /// handle lives in `bodies`, which Impl cannot see.
-
-    /// Registered with the system at init and held for its whole life (G7). By value
-    /// rather than behind a pointer, because the system stores a bare pointer to it and
-    /// this holder already outlives the system it is a member beside.
+    /// By value, because the system stores a bare pointer to it and this holder outlives the
+    /// system it sits beside.
     ContactRecorder contacts;
 };
 
@@ -351,7 +309,6 @@ PhysicsWorld::PhysicsWorld() = default;
 PhysicsWorld::~PhysicsWorld() { shutdown(); }
 
 void PhysicsWorld::init(const PhysicsConfig& cfg, uint32_t expectedBodies) {
-    // Jolt's runtime registration, the broad phase, and the job pool.
     auto zone = core::Profiler::scope("PhysicsWorld::init");
     shutdown();
     ensureJoltRuntime();
@@ -360,14 +317,10 @@ void PhysicsWorld::init(const PhysicsConfig& cfg, uint32_t expectedBodies) {
     if (config.step <= 0.0f) config.step = 1.0f / 60.0f;
     if (config.collisionSteps == 0) config.collisionSteps = 1;
 
-    // **A floor rather than a ceiling** (C40). `grow()` rebuilds the world when a create
-    // outruns this, so the number decides only how much is allocated before that first
-    // happens -- never whether a body exists.
-    //
-    // A stated budget is taken at its word and only raised to what the scene already
-    // declares; the headroom is for the *derived* case, where nothing has said anything and
-    // guessing tight would mean rebuilding during load. A game that states a small number is
-    // saying it wants a small world, which is now a cost question rather than a ceiling.
+    // A floor, not a ceiling: `grow()` rebuilds the world when a create outruns this, so the
+    // number decides only how much is allocated first. A stated budget is taken at its word
+    // and raised only to what the scene already declares; the headroom is for the derived
+    // case, where guessing tight means rebuilding during load.
     createSystem(config.bodyBudget != 0 ? std::max(config.bodyBudget, expectedBodies)
                                         : expectedBodies + kBodyHeadroom);
 }
@@ -382,8 +335,8 @@ void PhysicsWorld::createSystem(uint32_t bodyCapacity) {
     impl->broadPhase->MapObjectToBroadPhaseLayer(kLayerMoving, kBroadPhaseMoving);
 
     impl->objectPairs = std::make_unique<JPH::ObjectLayerPairFilterTable>(kObjectLayerCount);
-    // Static against static is left disabled, which is not an optimisation but the
-    // definition: two things that never move cannot begin to overlap.
+    // Static against static stays disabled: two things that never move cannot begin to
+    // overlap, so enabling it buys pairs that can never fire.
     impl->objectPairs->EnableCollision(kLayerStatic, kLayerMoving);
     impl->objectPairs->EnableCollision(kLayerMoving, kLayerMoving);
 
@@ -392,14 +345,12 @@ void PhysicsWorld::createSystem(uint32_t bodyCapacity) {
 
     impl->temp = std::make_unique<JPH::TempAllocatorImpl>(kTempAllocatorBytes);
     if (config.workerThreads == 0) {
-        // The determinism default. Jolt reproduces a run for a *fixed* thread count, and
-        // zero is the count that is fixed on every machine -- see the header.
+        // The determinism default -- see the header.
         impl->jobs = std::make_unique<JPH::JobSystemSingleThreaded>(JPH::cMaxPhysicsJobs);
     } else {
-        // Default-constructed and `Init`ed separately, because the convenience constructor
-        // starts the threads and `SetThreadInitFunction` has to be set before they run.
-        // The hook is what lets Jolt's workers name their own tracks -- they are threads
-        // that can reach a contact callback, and a contact callback can reach ours.
+        // Default-constructed then `Init`ed, not built with the convenience constructor: that
+        // one starts the threads, and `SetThreadInitFunction` has to be in place before they
+        // run or Jolt's workers never name their profiler tracks.
         auto pool = std::make_unique<JPH::JobSystemThreadPool>();
         pool->SetThreadInitFunction([](int) { core::Profiler::nameThread("physics job"); });
         pool->Init(JPH::cMaxPhysicsJobs, JPH::cMaxPhysicsBarriers, static_cast<int>(config.workerThreads));
@@ -409,10 +360,9 @@ void PhysicsWorld::createSystem(uint32_t bodyCapacity) {
     impl->system.Init(capacity, 0, bodyPairsFor(capacity), contactConstraintsFor(capacity), *impl->broadPhase,
                       *impl->objectVsBroadPhase, *impl->objectPairs);
     impl->system.SetGravity(toJolt(config.gravity));
-    // Installed unconditionally rather than behind a "does anybody want contacts" flag
-    // (G7). What it costs a scene nobody listens to is a `push_back` per *new* manifold,
-    // into storage that stops growing after the first busy step; what a flag would cost is
-    // a game whose contacts are silently missing because it set the flag after `init`.
+    // Installed unconditionally. Gating it on a "does anybody want contacts" flag costs a game
+    // that sets the flag after `init` every contact, silently; the listener costs a scene
+    // nobody listens to one `push_back` per new manifold.
     impl->system.SetContactListener(&impl->contacts);
     impl->initialised = true;
 }
@@ -435,35 +385,18 @@ void PhysicsWorld::shutdown() {
     impl.reset();
 }
 
-// ------------------------------------------------------------------------- cloth (C19)
-
 namespace {
 
 /**
- * Solver settings for a soft body, in one place and taken rather than defaulted.
+ * Solver settings for a soft body, stated rather than defaulted. All three guard the same
+ * failure -- fabric that bounces, twitches and swings forever -- and the envelope property in
+ * `tests/ClothTests.cpp` is what catches a regression in any of them.
  *
- * C19's card names over-reaction as the failure this row would ship -- fabric that
- * bounces, twitches and swings far more than it should, forever -- and Tethered lost that
- * fight in four places, with four hard-coded constants each added against the same
- * symptom. **Jolt's advantage is not incidental: over-reactivity is what its substep and
- * iteration counts exist to control, and they are settings rather than shader constants.**
- * So there are three numbers here, all of them Jolt's own knobs, all of them stated:
- *
- * - `mNumIterations` is the solver's, and 8 rather than the default 5. Too few iterations
- *   means corrections that never converge, which is one of the four causes of the
- *   over-reaction above; the extra three are the cheapest available answer to it and they
- *   are what the envelope property in `tests/ClothTests.cpp` passes on.
- * - `mLinearDamping` at 0.2 rather than 0.1. Damping applied to the *velocity*, which is
- *   the right quantity -- Tethered's velocity threshold froze a slow vertex instead, and
- *   bought a quiet cloth at the price of one that never starts falling. C19's card names
- *   that specific hack as the thing not to reproduce, and this is what it is not.
- * - `mVertexRadius`, so a particle sits slightly off a surface rather than exactly on it.
- *   Zero is Jolt's default and it z-fights against whatever the cloth is resting on.
- *
- * There is deliberately no per-cloth tuning surface. A `substrate_cloth` extras block
- * exposing these would be the fifth authoring schema C19 refused, for the same reason:
- * `extras` cannot carry the per-vertex value the feature actually needs, so half the
- * convention would be in a name and half in a dictionary.
+ * - Iterations above Jolt's default of 5: too few leaves corrections that never converge.
+ * - Damping applied to the *velocity*. A velocity threshold instead buys a quiet cloth at the
+ *   price of one that never starts falling.
+ * - A vertex radius, so a particle sits slightly off a surface. Jolt's default of zero
+ *   z-fights against whatever the cloth rests on.
  */
 constexpr uint32_t kClothSolverIterations = 10;
 constexpr float kClothLinearDamping = 2.0f;
@@ -474,7 +407,7 @@ constexpr float kClothVertexRadius = 0.01f;
 uint32_t PhysicsWorld::createCloth(const ClothTopology& topology) {
     if (impl == nullptr || !impl->initialised) return kNoCloth;
     if (topology.positions.empty() || topology.faces.size() < 3) return kNoCloth;
-    // As `createBody`: the world grows rather than turning a fabric away (C40).
+    // Soft bodies share the rigid bodies' budget, so the held count must include both.
     if (const uint32_t held = static_cast<uint32_t>(bodies.size() + clothes.size());
         held >= capacity && !grow(held + 1)) {
         ++refused;
@@ -487,8 +420,8 @@ uint32_t PhysicsWorld::createCloth(const ClothTopology& topology) {
         const glm::vec3& p = topology.positions[i];
         JPH::SoftBodySharedSettings::Vertex v;
         v.mPosition = JPH::Float3(p.x, p.y, p.z);
-        // Zero is pinned, which is the representation `ClothVertex::invMass` already
-        // holds -- so nothing is being adapted here, only copied.
+        // `ClothVertex::invMass` is already Jolt's convention, zero pinned -- see
+        // `clothInvMass`, which is where the authoring weight is converted.
         v.mInvMass = topology.invMasses[i];
         shared->mVertices.push_back(v);
     }
@@ -500,66 +433,36 @@ uint32_t PhysicsWorld::createCloth(const ClothTopology& topology) {
         shared->AddFace(f);
     }
 
-    /*
-     * Edge, shear *and* bend constraints, which is the thing Jolt gives that Tethered's
-     * ported solver did not: it generated structural edges only, so its cloth resisted
-     * stretching and nothing else -- a curtain that could fold along any diagonal for free.
-     *
-     * One `VertexAttributes` for every vertex rather than one per vertex. Jolt repeats the
-     * last element when the list is shorter than the vertex array, which is documented on
-     * `CreateConstraints` itself, so a uniform fabric needs exactly one. Per-vertex
-     * compliance is the beginning of a cloth *material*, and C19 lists that among the
-     * things this row must not grow.
-     *
-     * Zero compliance is inextensible, which is what fabric is at this scale; a curtain
-     * that visibly stretches under its own weight is rubber. The bend type is Jolt's
-     * distance default -- dihedral is the alternative and it is for volumetric bodies.
-     */
+    // One `VertexAttributes` for the whole sheet: Jolt repeats the last element when the list
+    // is shorter than the vertex array, so a uniform fabric needs exactly one.
     JPH::SoftBodySharedSettings::VertexAttributes attributes;
-    // Inextensible, in-plane. Fabric does not stretch and it does not shear into a
-    // parallelogram, and zero compliance is what says so.
+    // Zero compliance is inextensible, which is what fabric is at this scale; a curtain that
+    // visibly stretches under its own weight is rubber.
     attributes.mCompliance = 0.0f;
     attributes.mShearCompliance = 0.0f;
-    // **Bend constraints off, which is Jolt's own default and is what makes this cloth
-    // rather than sheet metal.** Passing zero here -- which is what the obvious reading of
-    // "stiff everywhere" produces -- makes the bend constraints infinitely stiff and turns
-    // a nine-by-nine sheet into a rigid plate held by an over-constrained system the
-    // Gauss-Seidel solver cannot satisfy. That was measured, and it is the whole of the
-    // over-reaction C19's card predicted this row would ship: the curtain hung in the right
-    // *place* and twitched two millimetres a step forever, and raising the iteration count
-    // from 8 to 30 made it worse rather than better, because more iterations of an
-    // unsatisfiable system is more energy. Limp fabric is both the correct model and the
-    // stable one.
+    // `FLT_MAX` is bend constraints *off*, and it is Jolt's default. Zero -- the obvious
+    // reading of "stiff everywhere" -- makes them infinitely stiff and turns a nine-by-nine
+    // sheet into a plate the Gauss-Seidel solver cannot satisfy: it hangs in the right place
+    // and twitches two millimetres a step forever, and raising the iteration count makes it
+    // worse, because more iterations of an unsatisfiable system is more energy.
     attributes.mBendCompliance = FLT_MAX;
-    /*
-     * **The envelope, enforced by the solver rather than asserted after it.** A long-range
-     * attachment constraint caps how far a vertex may get from the nearest pinned one, and
-     * `GeodesicDistance` measures that along the edges -- so the cap is "no further than
-     * the fabric between them is long", which is exactly the property `ClothTests.cpp`
-     * checks and exactly what a stretching cloth violates.
-     *
-     * It is worth saying what this is *not*. It is not a clamp bolted on to hide a solver
-     * that overshoots; it is a constraint the solver satisfies alongside the others, it is
-     * Jolt's own, and it is the standard answer to the one artefact inextensible cloth
-     * still has after everything else is right -- a long chain of edge constraints
-     * propagates a correction one link per iteration, so the far corner of a sheet learns
-     * about its pin several frames late and travels while it waits.
-     */
+    // The long-range attachment constraint, measured along the edges, caps how far a vertex
+    // may get from the nearest pinned one. Without it a correction propagates one edge per
+    // iteration, so the far corner of a sheet learns about its pin several frames late and
+    // travels while it waits.
     attributes.mLRAType = JPH::SoftBodySharedSettings::ELRAType::GeodesicDistance;
     attributes.mLRAMaxDistanceMultiplier = 1.0f;
     shared->CreateConstraints(&attributes, 1);
     shared->Optimize();
 
-    // Identity position and rotation, because `weldCloth` already put the vertices in
-    // world space -- the node transform is baked in at load and ignored thereafter. A
-    // soft body has no rigid transform to push down a node hierarchy, so there is nothing
-    // for a second placement to mean.
+    // Identity, because `weldCloth` already put the vertices in world space. Placing the body
+    // as well would apply the node transform twice.
     JPH::SoftBodyCreationSettings settings(shared, JPH::RVec3::sZero(), JPH::Quat::sIdentity(), kLayerMoving);
     settings.mNumIterations = kClothSolverIterations;
     settings.mLinearDamping = kClothLinearDamping;
     settings.mVertexRadius = kClothVertexRadius;
     // The body's own position must not drift out from under vertices that are already
-    // world-space, and Jolt is more accurate with a soft body's rotation left at identity.
+    // world-space; `clothPositions` adds this origin back and assumes it has not moved.
     settings.mUpdatePosition = false;
     settings.mMakeRotationIdentity = false;
 
@@ -583,9 +486,8 @@ uint32_t PhysicsWorld::clothParticleCount(uint32_t cloth) const {
 void PhysicsWorld::clothPositions(uint32_t cloth, std::span<glm::vec3> out) const {
     if (impl == nullptr || cloth >= clothes.size() || out.empty()) return;
 
-    // A read lock rather than `GetBodyInterface`, because the vertices are motion-property
-    // state rather than a transform and there is no interface call that hands them over.
-    // Taken and released here, between steps, which is the only time this is called.
+    // A read lock: the vertices are motion-property state, and no `BodyInterface` call hands
+    // them over. Safe only between steps, which is where the caller runs.
     const JPH::BodyLockRead lock(impl->system.GetBodyLockInterface(), JPH::BodyID(clothes[cloth].id));
     if (!lock.Succeeded()) return;
     const JPH::Body& body = lock.GetBody();
@@ -595,9 +497,8 @@ void PhysicsWorld::clothPositions(uint32_t cloth, std::span<glm::vec3> out) cons
     const JPH::RVec3 origin = body.GetCenterOfMassPosition();
     const size_t n = std::min(out.size(), static_cast<size_t>(motion->GetVertices().size()));
     for (size_t i = 0; i < n; ++i) {
-        // Jolt keeps a soft body's vertices relative to its centre of mass. `mUpdatePosition`
-        // is false so that origin does not move, but adding it back is still what makes
-        // these world-space rather than nearly so.
+        // Jolt keeps a soft body's vertices relative to its centre of mass, so the origin has
+        // to be added back even though `mUpdatePosition` is false and it never moves.
         const JPH::Vec3 p = motion->GetVertex(static_cast<uint32_t>(i)).mPosition;
         out[i] = glm::vec3(static_cast<float>(origin.GetX()) + p.GetX(), static_cast<float>(origin.GetY()) + p.GetY(),
                            static_cast<float>(origin.GetZ()) + p.GetZ());
@@ -606,13 +507,10 @@ void PhysicsWorld::clothPositions(uint32_t cloth, std::span<glm::vec3> out) cons
 
 namespace {
 
-// GCC 12 reports `result.GetError()` below as reading an uninitialised
-// `Ref<Shape>`. It is a false positive about `JPH::Result`, which is a tagged union:
-// the two members share storage, the error string is only ever read after
-// `HasError()` says the error member is the live one, and the compiler is tracking
-// the offset rather than the tag. Scoped to these two functions rather than silenced
-// for the file, and narrower still would mean not calling GetError() at all -- which
-// would trade Jolt's account of why a shape was refused for "a shape was refused".
+// GCC 12 reports `result.GetError()` below as reading an uninitialised `Ref<Shape>`. False
+// positive: `JPH::Result` is a tagged union whose members share storage, the error string is
+// read only after `HasError()`, and the compiler tracks the offset rather than the tag. Keep
+// the push/pop around these two functions only.
 #if defined(__GNUC__) && !defined(__clang__)
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wmaybe-uninitialized"
@@ -626,9 +524,8 @@ JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
     switch (desc.resolvedShape()) {
     case ColliderShape::Box: {
         const glm::vec3 he = glm::max(desc.halfExtent, glm::vec3(1e-3f));
-        // The convex radius has to fit inside the box or Jolt refuses it, and its
-        // default of 0.05 is larger than a small crate's half-extent. Scaling it to the
-        // shape is what lets the same schema describe a wall and a die.
+        // The convex radius has to fit inside the box or Jolt refuses the shape, and its
+        // default of 0.05 is larger than a small crate's half-extent.
         const float radius = std::min(0.05f, std::min({he.x, he.y, he.z}) * 0.5f);
         result = JPH::BoxShapeSettings(toJolt(he), radius).Create();
         break;
@@ -673,9 +570,8 @@ JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
         break;
     }
     case ColliderShape::Auto:
-        // Unreachable: resolvedShape() never returns it. Listed rather than defaulted so
-        // a shape added to the enum fails to compile here instead of silently falling
-        // through to whatever the default arm did.
+        // Unreachable: `resolvedShape()` never returns it. Listed rather than defaulted so a
+        // shape added to the enum fails to compile here instead of falling through.
         return nullptr;
     }
 
@@ -686,8 +582,6 @@ JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
 
     JPH::RefConst<JPH::Shape> shape = result.Get();
 
-    // The offset moves the shape within the node, which is what lets a capsule be
-    // authored on a node at the character's feet rather than at its waist.
     if (desc.offset != glm::vec3(0.0f)) {
         JPH::ShapeSettings::ShapeResult offsetResult =
             JPH::RotatedTranslatedShapeSettings(toJolt(desc.offset), JPH::Quat::sIdentity(), shape).Create();
@@ -700,9 +594,8 @@ JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
     return shape;
 }
 
-/// Apply a node's scale to a shape, correcting a scale the shape cannot take. A sphere
-/// under a non-uniform scale is the case that matters: Jolt refuses it outright, and the
-/// alternative to correcting it is a body that silently fails to exist.
+/// Apply a node's scale to a shape, correcting one the shape cannot take. Jolt refuses a
+/// non-uniformly scaled sphere outright, so not correcting it is a body that fails to exist.
 JPH::RefConst<JPH::Shape> scaleShape(const JPH::RefConst<JPH::Shape>& shape, const glm::vec3& scale,
                                      const std::string& name) {
     if (std::abs(scale.x - 1.0f) < 1e-5f && std::abs(scale.y - 1.0f) < 1e-5f && std::abs(scale.z - 1.0f) < 1e-5f) {
@@ -734,15 +627,12 @@ JPH::RefConst<JPH::Shape> scaleShape(const JPH::RefConst<JPH::Shape>& shape, con
 
 BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
     if (impl == nullptr || !impl->initialised) return {};
-    // Refused rather than routed. The old addBody() sent a Character motion to
-    // addCharacter() and returned an index the caller could not tell apart from a body's;
-    // with two handle types that ambiguity is a compile error waiting to be made, so the
-    // caller picks the verb that matches what it is making.
+    // Refused, not routed to `createCharacter`: that would hand back a `BodyId` naming
+    // something that is not a body.
     if (desc.motion == ColliderMotion::Character) return {};
 
-    // Grown rather than refused (C40). `refused` now counts only what Jolt itself would not
-    // give -- a shape it could not build, or a world past its own index ceiling -- so a
-    // non-zero count is a defect again rather than a budget somebody guessed low.
+    // Grown rather than refused, which is what keeps `refused` counting only what Jolt itself
+    // would not give -- a shape it could not build, or its own index ceiling.
     if (bodies.size() >= capacity && !grow(static_cast<uint32_t>(bodies.size()) + 1)) {
         ++refused;
         return {};
@@ -770,17 +660,14 @@ BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
     settings.mAngularDamping = desc.angularDamping;
     settings.mGravityFactor = desc.gravityFactor;
     settings.mUserData = userData;
-    // The 2D constraint, and it is the solver's rather than ours (P7). Jolt zeroes the
-    // disallowed rows of the inverse mass and inertia, so a confined body is never solved
-    // off its plane -- there is nothing to correct afterwards and nothing to drift. A
-    // static body has no motion properties to hold this and Jolt ignores it there, which
-    // is why nothing here refuses the combination.
+    // Jolt zeroes the disallowed rows of the inverse mass and inertia, so a confined body is
+    // never solved off its plane and there is nothing to correct afterwards. A static body has
+    // no motion properties to hold it and Jolt ignores it there.
     settings.mAllowedDOFs =
         desc.freedom == ColliderFreedom::Plane2D ? JPH::EAllowedDOFs::Plane2D : JPH::EAllowedDOFs::All;
     if (desc.mass > 0.0f) {
-        // The inertia tensor still comes from the shape; only the mass is overridden.
-        // Overriding both would need an author to write a 3x3 matrix, which is not a
-        // thing anyone does by hand.
+        // `CalculateInertia`, so the tensor still comes from the shape; overriding both would
+        // need an author to write a 3x3 matrix by hand.
         settings.mOverrideMassProperties = JPH::EOverrideMassProperties::CalculateInertia;
         settings.mMassPropertiesOverride.mMass = desc.mass;
     }
@@ -795,16 +682,15 @@ BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
 
     const uint32_t raw = body->GetID().GetIndexAndSequenceNumber();
 
-    // A retired slot before a new one. Slots are never compacted -- four consumers key off
-    // a body index the way they key off an instance slot -- so reuse is what keeps a world
-    // that spawns and despawns from growing without bound.
+    // A retired slot before a new one. Slots are never compacted -- callers key off a body
+    // index -- so reuse is what keeps a world that spawns and despawns bounded.
     uint32_t index;
     if (!freeBodySlots.empty()) {
         index = freeBodySlots.back();
         freeBodySlots.pop_back();
         Body& slot = bodies[index];
-        // The generation was already moved by destroy(). Reusing it here rather than
-        // bumping it again is what makes exactly one stale-handle boundary per lifetime.
+        // `destroy()` already moved the generation; bumping it again here would burn a second
+        // generation per lifetime for no extra staleness detection.
         slot.live = true;
         slot.id = raw;
         slot.userData = userData;
@@ -820,8 +706,6 @@ BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
         bodies.push_back(slot);
     }
 
-    // The reverse direction, for queries. Written here rather than rebuilt on demand
-    // because this is the only place a body is ever added.
     impl->bodyIndexById[raw] = index;
     return BodyId{index, bodies[index].generation};
 }
@@ -829,10 +713,9 @@ BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
 PhysicsCharacterId PhysicsWorld::createCharacter(const ColliderDesc& desc, uint64_t userData) {
     if (impl == nullptr || !impl->initialised) return {};
 
-    // No budget check here, deliberately, and not an oversight to be corrected: `capacity` is
-    // the body count handed to `PhysicsSystem::Init`, and a CharacterVirtual is not tracked by
-    // the system at all -- it moves by collision queries against a shape it owns. Refusing one
-    // against the body budget would turn characters away over headroom they never consume.
+    // No budget check: `capacity` is the body count handed to `PhysicsSystem::Init`, and a
+    // `CharacterVirtual` is not tracked by the system at all -- it moves by collision queries
+    // against a shape it owns. Adding one turns characters away over headroom they never use.
     JPH::RefConst<JPH::Shape> shape = makeShape(desc);
     if (shape == nullptr) return {};
 
@@ -846,15 +729,12 @@ PhysicsCharacterId PhysicsWorld::createCharacter(const ColliderDesc& desc, uint6
     settings.mShape = shape;
     settings.mMaxSlopeAngle = desc.maxSlopeAngle;
     settings.mMass = desc.mass > 0.0f ? desc.mass : 70.0f;
-    // The plane a supporting contact has to be below for the character to be considered
-    // standing on it. Jolt's own value, expressed against the capsule's radius so a
-    // character authored at any size gets the same behaviour.
+    // The plane a supporting contact must sit below to count as ground. Jolt's own value, but
+    // expressed against the capsule radius so a character authored at any size behaves alike.
     settings.mSupportingVolume = JPH::Plane(JPH::Vec3::sAxisY(), -std::max(desc.radius, 1e-3f));
 
-    // Adopted by the Ref on the same line it is made. Jolt hands back a raw pointer with a
-    // refcount of zero, and holding one across the two container growths below meant an
-    // allocation failure in either would drop the character on the floor. `Ref` takes the
-    // first reference here; the assignments below take their own.
+    // Adopted by the `Ref` on the line it is made: Jolt hands back a raw pointer at refcount
+    // zero, and holding one across the container growths below leaks it if either throws.
     JPH::Ref<JPH::CharacterVirtual> character =
         new JPH::CharacterVirtual(&settings, toJolt(translation), toJolt(rotation), &impl->system);
 
@@ -939,11 +819,9 @@ bool PhysicsWorld::grow(uint32_t needed) {
 
     auto zone = core::Profiler::scope("PhysicsWorld::grow");
 
-    // --------------------------------------------------- read everything out of the old world
-    //
     // Shapes are refcounted, so a `RefConst` held here outlives the system it came from --
-    // which is what makes a capture-then-rebuild possible without re-deriving a single shape
-    // from the `ColliderDesc` that is long gone.
+    // which is what lets the world be captured and rebuilt without re-deriving a shape from a
+    // `ColliderDesc` that is long gone.
     struct SavedBody {
         uint32_t slot = 0;
         JPH::RefConst<JPH::Shape> shape;
@@ -1014,9 +892,8 @@ bool PhysicsWorld::grow(uint32_t needed) {
             savedBodies.push_back(std::move(s));
         }
 
-        // Cloth is a soft body in the same system and rebuilds the same way, except that its
-        // state is per particle: the shared settings carry the topology, and the vertices
-        // carry where the solve had got to. Dropping the second would snap every hanging
+        // A cloth's state is per particle: the shared settings carry the topology, the
+        // vertices carry where the solve had got to. Saving only the first snaps every hanging
         // fabric back to the pose it was welded in.
         for (uint32_t i = 0; i < clothes.size(); ++i) {
             const JPH::BodyLockRead lock(locks, JPH::BodyID(clothes[i].id));
@@ -1035,10 +912,9 @@ bool PhysicsWorld::grow(uint32_t needed) {
         }
     }
 
-    // A `CharacterVirtual` is not in the system, so nothing above reaches it -- and it holds
-    // a `PhysicsSystem*` for its own collision queries, which is exactly why it cannot come
-    // across intact. Its pose and velocity are read here and every window in `Character`
-    // survives untouched, because that state was always this class's rather than Jolt's.
+    // A `CharacterVirtual` is not in the system, so nothing above reaches it, and it holds a
+    // `PhysicsSystem*` for its own queries, so it cannot come across intact. Only its pose and
+    // velocity need saving -- the windows in `Character` are this class's, not Jolt's.
     for (uint32_t i = 0; i < characters.size(); ++i) {
         if (!characters[i].live || impl->characters[i] == nullptr) continue;
         const JPH::CharacterVirtual& c = *impl->characters[i];
@@ -1055,10 +931,9 @@ bool PhysicsWorld::grow(uint32_t needed) {
 
     const uint32_t was = capacity;
 
-    // --------------------------------------------------------------------- the new world
-    // `createSystem` replaces `impl` wholesale, which takes the old system, its broad phase
-    // and every body in it. Nothing captured above points into it: the shapes are refs and
-    // the rest is by value.
+    // `createSystem` replaces `impl` wholesale, taking the old system, its broad phase and
+    // every body in it. Nothing captured above may point into it: the shapes are refs and the
+    // rest is by value.
     createSystem(static_cast<uint32_t>(target));
 
     JPH::BodyInterface& bi = impl->system.GetBodyInterface();
@@ -1071,10 +946,8 @@ bool PhysicsWorld::grow(uint32_t needed) {
         settings.mGravityFactor = s.gravityFactor;
         settings.mAllowedDOFs = s.dofs;
         settings.mUserData = s.userData;
-        // The shape already carries the mass properties it was created with, so nothing is
-        // overridden here: re-deriving from `ColliderDesc::mass` would need the desc, and
-        // overriding from the old body's mass would recompute an inertia tensor that is
-        // already correct.
+        // The shape already carries the mass properties it was created with; overriding from
+        // the old body's mass here would recompute an inertia tensor that is already correct.
         JPH::Body* body = bi.CreateBody(settings);
         if (body == nullptr) {
             core::Logger::error(core::LogCategory::Scene, "Physics: grow lost a body at slot %u", s.slot);
@@ -1085,9 +958,8 @@ bool PhysicsWorld::grow(uint32_t needed) {
             bi.SetLinearAndAngularVelocity(body->GetID(), s.linear, s.angular);
         }
 
-        // **The slot keeps its index and its generation, and only the raw id moves.** That
-        // is the whole reason a growth is invisible to a game: a `BodyId` names a slot in
-        // this class, never a `JPH::BodyID`.
+        // The slot keeps its index and its generation and only the raw id moves, which is what
+        // makes a growth invisible to a game holding a `BodyId`.
         bodies[s.slot].id = body->GetID().GetIndexAndSequenceNumber();
         impl->bodyIndexById[bodies[s.slot].id] = s.slot;
     }
@@ -1129,21 +1001,17 @@ bool PhysicsWorld::grow(uint32_t needed) {
         JPH::Ref<JPH::CharacterVirtual> character =
             new JPH::CharacterVirtual(&settings, s.position, s.rotation, &impl->system);
         character->SetLinearVelocity(s.linear);
-        // **A fresh character has never swept, so it believes it is in mid-air.** Everything
-        // the coyote window and the jump buffer are built on would restart -- a fighter
-        // standing on the floor would report airborne for a step because something else
-        // spawned. This is the same refresh `setCharacterTransform` does after a teleport,
-        // and for the same reason.
+        // A fresh character has never swept and believes it is in mid-air, so without this a
+        // fighter standing on the floor reports airborne for a step because something else
+        // spawned -- restarting the coyote window and the jump buffer with it.
         character->RefreshContacts(impl->system.GetDefaultBroadPhaseLayerFilter(kLayerMoving),
                                    impl->system.GetDefaultLayerFilter(kLayerMoving), {}, {}, *impl->temp);
         impl->characters[s.slot] = character;
     }
 
-    // The broad phase is built from nothing, so it wants the same optimise a load does.
+    // The broad phase was built from nothing, so it needs the same optimise a load does.
     impl->system.OptimizeBroadPhase();
 
-    // Reported rather than silent: an allocation that doubled is a fact about the frame it
-    // happened in, and a game tuning its floor needs to see where the world settled.
     core::Logger::status(core::LogCategory::Scene,
                          "Physics: grew %u -> %u bodies (%zu carried, %zu characters, %zu cloths)", was, capacity,
                          savedBodies.size(), savedCharacters.size(), savedCloths.size());
@@ -1161,7 +1029,7 @@ void PhysicsWorld::reclaim() {
             bi.RemoveBody(jolt);
             bi.DestroyBody(jolt);
             bodies[index].id = 0;
-            // Only now, when nothing in Jolt refers to the slot, may it be handed out.
+            // Only now, with nothing in Jolt referring to the slot, may it be handed out.
             freeBodySlots.push_back(index);
         }
         pendingBodyRemoval.clear();
@@ -1177,8 +1045,8 @@ void PhysicsWorld::reclaim() {
 void PhysicsWorld::finalize() {
     if (impl == nullptr || !impl->initialised) return;
     impl->system.OptimizeBroadPhase();
-    // Both snapshots start equal, so a frame rendered before the first step interpolates
-    // between a state and itself rather than between a state and zero.
+    // Both snapshots start equal, or a frame rendered before the first step interpolates
+    // between a state and zero and draws every body sliding in from the origin.
     snapshot();
     previous = current;
     previousCharacters = currentCharacters;
@@ -1191,8 +1059,8 @@ void PhysicsWorld::snapshot() {
 
     const JPH::BodyInterface& bi = impl->system.GetBodyInterfaceNoLock();
     for (size_t i = 0; i < bodies.size(); ++i) {
-        // A retired slot has no Jolt body to read. Its state is left as it was, which
-        // nothing reads -- every accessor goes through valid() first.
+        // A retired slot has no Jolt body to read; its stale state is unreachable because
+        // every accessor goes through `valid()` first.
         if (!bodies[i].live) continue;
         const JPH::BodyID id(bodies[i].id);
         JPH::Vec3 position;
@@ -1209,21 +1077,9 @@ void PhysicsWorld::snapshot() {
         s.rotation = toGlm(impl->characters[i]->GetRotation());
     }
 
-    /**
-     * **Each pair has to be the same length, and this block is what keeps them so.** Every
-     * accessor interpolates `previous[slot]` against `current[slot]` behind a bounds check on
-     * the current one alone, because `finalize()` starts them equal and `step()` assigns one
-     * to the other.
-     *
-     * A thing created *after* load appends, and its earlier state does not exist. The new
-     * slot therefore starts equal to `current`, which costs it one step without
-     * interpolation on the step it was created. That is the honest answer: zero-filling
-     * would draw it in from the origin.
-     *
-     * Since the four-array split there is nothing here about one kind shifting the other:
-     * a body appended to `current` cannot move a character's slot, so the arrays are only
-     * ever grown at the tail.
-     */
+    // Each pair must stay the same length: every accessor bounds-checks the current array
+    // alone and then indexes both. A slot appended after load starts equal to `current`, so it
+    // costs one uninterpolated step; zero-filling would draw it in from the origin.
     const auto extend = [](std::vector<PhysicsState>& older, const std::vector<PhysicsState>& newer) {
         if (older.size() == newer.size()) return;
         const size_t from = std::min(older.size(), newer.size());
@@ -1238,15 +1094,13 @@ void PhysicsWorld::step(float dt) {
     auto s = core::Profiler::scope("PhysicsWorld::step");
     if (impl == nullptr || !impl->initialised) return;
 
-    // Before anything else in the step, and outside it rather than inside: this is the
-    // one moment at which removing a body from the system is safe. `destroy` only ever
-    // queues.
+    // Before anything else, and outside `Update` rather than inside it: this is the one moment
+    // at which removing a body from the system is safe. `destroy` only ever queues.
     reclaim();
 
-    // The last step's contacts stop being current here, in the same breath as the slots
-    // their handles name -- which is what makes the whole gap between two steps a window
-    // in which a game may read them *and* destroy what they name. Cleared before the
-    // `empty()` return as well, so a world whose last body went away does not keep
+    // Cleared in the same breath as the slots their handles name, which is what makes the
+    // whole gap between two steps a window in which a game may read them *and* destroy what
+    // they name. Before the `empty()` return, so a world whose last body went away stops
     // reporting what it collided with.
     stepContacts.clear();
     impl->contacts.found.clear();
@@ -1256,10 +1110,9 @@ void PhysicsWorld::step(float dt) {
     previous = current;
     previousCharacters = currentCharacters;
 
-    // Characters first, matching Jolt's own samples: a `CharacterVirtual` is not tracked
-    // by the physics system, so it reads the world rather than being solved with it, and
-    // reading it before the step is what makes its contacts agree with the state its
-    // own sweep found.
+    // Characters before `system.Update`, as in Jolt's own samples: a `CharacterVirtual` reads
+    // the world rather than being solved with it, so sweeping it after the step would give it
+    // contacts from a world its own sweep never saw.
     if (!characters.empty()) {
         const JPH::Vec3 gravity = toJolt(config.gravity);
 
@@ -1268,25 +1121,19 @@ void PhysicsWorld::step(float dt) {
             if (!c.live) continue;
             JPH::CharacterVirtual& cv = *impl->characters[i];
 
-            /*
-             * ------------------------------------------------- the two windows (C20)
-             *
-             * Both are counted in *steps*, and this loop is the only thing that advances
-             * them, which is what makes them independent of the frame rate. A window kept
-             * in seconds and compared against an accumulator would be a window whose size
-             * moved with the clock -- and G12 already found that sixty additions of
-             * `1.0f/60.0f` land just under a second, so the seconds version would have
-             * been off by a step at random as well.
-             */
+            // The coyote window and the jump buffer are counted in steps, and this loop is the
+            // only thing that advances them. Keeping either in seconds against an accumulator
+            // makes its size move with the clock: sixty additions of `1.0f/60.0f` land just
+            // under a second, so the window would be off by a step at random.
             const bool launchedLastStep = c.launched;
             c.launched = false;
 
             const JPH::CharacterBase::EGroundState ground = cv.GetGroundState();
             const bool standing = ground == JPH::CharacterBase::EGroundState::OnGround;
 
-            // The sweep that would show a launch has not run yet, so the step *after* one
-            // still reports standing. Refilling the windows there would hand back the
-            // coyote time the launch just spent.
+            // The sweep that would show a launch has not run yet, so the step after one still
+            // reports standing. Dropping `launchedLastStep` hands back the coyote time the
+            // launch just spent, which is a second jump out of thin air.
             if (standing && !launchedLastStep) {
                 c.airSteps = 0;
                 c.coyoteSpent = false;
@@ -1294,10 +1141,8 @@ void PhysicsWorld::step(float dt) {
                 ++c.airSteps;
             }
 
-            // A press latched since the last step opens the buffer; it is not consumed
-            // here, because the whole point is that it survives the steps in which it
-            // cannot be acted on. `+ 1` so that a window of *zero* still allows the jump on
-            // the step the press reaches, which is the only thing "no buffer" can mean.
+            // `+ 1` so that a window of zero still allows the jump on the step the press
+            // reaches, which is the only thing "no buffer" can mean.
             if (c.jump) c.jumpBuffer = c.jumpBufferSteps + 1u;
             c.jump = false;
 
@@ -1312,36 +1157,25 @@ void PhysicsWorld::step(float dt) {
                 }
             }
 
-            /*
-             * ------------------------------------------------- the motion model (C20)
-             *
-             * The horizontal velocity *ramps* toward the request rather than being assigned
-             * it. Written against the velocity relative to whatever the character is
-             * standing on, so a ramp on a moving platform is a ramp against the platform
-             * and not against the world.
-             *
-             * A rate large enough to cover the whole gap in one step reproduces the
-             * assignment this replaced exactly, which is what makes "responsive" a number a
-             * scene can author rather than a line a game had to edit `engine/` to change.
-             *
-             * Steep ground takes the airborne branch, and that is the answer to "what
-             * happens on a face too steep to stand on": gravity accumulates and the
-             * character slides down it. What changed is that it is now *visible* --
-             * `characterGround` says `Sliding` where a bool said mid-air.
-             */
+            // The horizontal velocity ramps toward the request rather than being assigned it,
+            // and the ramp is written against the velocity *relative to the ground*, so it is
+            // a ramp against a moving platform rather than against the world. An acceleration
+            // large enough to close the gap in one step reproduces a plain assignment.
+            //
+            // Steep ground takes the airborne branch, which is what makes gravity accumulate
+            // and the character slide down it.
             JPH::Vec3 velocity = cv.GetLinearVelocity();
             if (!standing) velocity += gravity * dt;
 
-            // The ground's own velocity is the base, so a character standing on a moving
-            // platform moves with it rather than being left behind by it.
+            // The ground's own velocity is the base, or a character standing on a moving
+            // platform is left behind by it.
             const JPH::Vec3 base = standing ? cv.GetGroundVelocity() : JPH::Vec3::sZero();
             JPH::Vec3 relative(velocity.GetX() - base.GetX(), 0.0f, velocity.GetZ() - base.GetZ());
 
             const JPH::Vec3 target = JPH::Vec3(c.moveDirection.x, 0.0f, c.moveDirection.z) * c.moveSpeed;
-            // Which of the two rates applies is decided by whether the request is *faster*
-            // than the current motion, not by whether it is zero: turning around at full
-            // speed is a deceleration through the turn and an acceleration out of it, and
-            // asking the question this way gets that for free.
+            // The rate is chosen on whether the request is *faster* than the current motion,
+            // not on whether it is zero: that is what makes turning around at full speed a
+            // deceleration through the turn and an acceleration out of it.
             const float rate = (target.Length() >= relative.Length() ? c.acceleration : c.deceleration) *
                                (standing ? 1.0f : c.airControl);
             JPH::Vec3 delta = target - relative;
@@ -1353,53 +1187,38 @@ void PhysicsWorld::step(float dt) {
             float vertical = standing ? base.GetY() : velocity.GetY();
             if (launch) {
                 // Added to the ground's own vertical while standing, so a jump off a rising
-                // platform is the platform's speed plus the character's. A coyote launch has
-                // no ground under it to add to, and *replaces* the fall it was in -- a jump
-                // taken late must not be a weaker jump.
+                // platform is the platform's speed plus the character's. A coyote launch
+                // replaces the fall it was in -- a jump taken late must not be a weaker jump.
                 vertical = (standing ? base.GetY() : 0.0f) + c.jumpSpeed;
                 c.coyoteSpent = true;
                 c.launched = true;
             }
             cv.SetLinearVelocity(JPH::Vec3(base.GetX() + relative.GetX(), vertical, base.GetZ() + relative.GetZ()));
 
-            // Per character rather than once for the loop, because `stepHeight` is
-            // authored per collider and Jolt's defaults are absolute metres -- 0.4 up
-            // against 0.5 down, sitting two hundred lines from an `mSupportingVolume` the
-            // same header does scale to the capsule. The ratio between the pair is what
-            // matters and is kept: the step-down has to reach further than the step-up, or
-            // a character that walked up one stair hovers off the next.
+            // Per character, because `stepHeight` is authored per collider and Jolt's defaults
+            // are absolute metres. The ratio is what matters: the step-down has to reach
+            // further than the step-up, or a character that walked up one stair hovers off the
+            // next.
             JPH::CharacterVirtual::ExtendedUpdateSettings updateSettings;
             updateSettings.mWalkStairsStepUp = JPH::Vec3(0.0f, c.stepHeight, 0.0f);
             updateSettings.mStickToFloorStepDown = JPH::Vec3(0.0f, -c.stepHeight * 1.25f, 0.0f);
 
-            // **Taken before the sweep, because the sweep is the only thing that knows what
-            // the request survived.** `ExtendedUpdate` slides the shape and leaves
-            // `mLinearVelocity` exactly as it was set, so reading it back afterwards answers
-            // with the line above rather than with the result -- a character pressed into a
-            // wall reported a full-speed run for as long as the key was held.
+            // Taken before the sweep, because the sweep is the only thing that knows what the
+            // request survived. `ExtendedUpdate` slides the shape and leaves `mLinearVelocity`
+            // exactly as set, so reading that back afterwards answers with the request: a
+            // character pressed into a wall reports a full-speed run while the key is held.
             const JPH::RVec3 before = cv.GetPosition();
 
             cv.ExtendedUpdate(dt, gravity, updateSettings, impl->system.GetDefaultBroadPhaseLayerFilter(kLayerMoving),
                               impl->system.GetDefaultLayerFilter(kLayerMoving), {}, {}, *impl->temp);
 
-            // **What the sweep did, relative to the ground rather than to the world.** This is
-            // the number a locomotion state machine blends on, and gait is what the legs do,
-            // not where the character ends up: standing still on a platform moving at 2 m/s is
-            // `0`, and walking backwards along it at its own speed is `moveSpeed`, not
-            // stillness. The ground is read after `ExtendedUpdate` rather than reusing `base`
-            // from above, because the ground the character is on is one of the things that call
-            // can change.
+            // What the sweep did, relative to the ground rather than the world: a locomotion
+            // machine blends on gait, so standing still on a platform moving at 2 m/s must
+            // read 0. The ground is re-read after `ExtendedUpdate` rather than reusing `base`,
+            // because what the character stands on is one of the things that call can change.
             //
-            // The displacement carries every case the request cannot: a wall takes the
-            // component into it away, a ramp is climbed at the speed the ramp allows, and a
-            // stair-step arrives with the horizontal `WalkStairs` actually moved. It is *not*
-            // fed back into the ramp above -- that integrator is C20's motion model and its
-            // state is the request, so a fighter that leans on a column for a second still has
-            // its speed when the column stops being in the way.
-            //
-            // Kept as a vector rather than collapsed to a length here: the direction is the
-            // same measurement and a caller that wants a heading has nowhere else to get one
-            // -- differencing `characterTransform` gets the carry back.
+            // Not fed back into the ramp above, whose state is the request: a fighter leaning
+            // on a column for a second still has its speed when the column moves away.
             const JPH::Vec3 moved = JPH::Vec3(cv.GetPosition() - before) / dt;
             const JPH::Vec3 under = cv.GetGroundState() == JPH::CharacterBase::EGroundState::OnGround
                                         ? cv.GetGroundVelocity()
@@ -1422,22 +1241,18 @@ void PhysicsWorld::collectContacts() {
         Contact contact;
         contact.a = handleFor(raw.body1);
         contact.b = handleFor(raw.body2);
-        // A manifold this class cannot name both ends of is dropped rather than reported
-        // with an invalid handle, and the reasoning is `overlapSphere`'s: an event a caller
-        // can ask no questions about is one it would have to filter out itself. Nothing
-        // reaches this today -- every rigid body in the world came from `createBody`, and a
-        // `CharacterVirtual` is not in the broad phase at all -- so it is the honest
-        // treatment of a case rather than one that fires.
+        // A manifold this class cannot name both ends of is dropped rather than reported with
+        // an invalid handle: an event a caller can ask no questions about is one it would have
+        // to filter itself.
         if (!contact.a.valid() || !contact.b.valid()) continue;
 
         contact.point = raw.point;
         contact.normal = raw.normal;
         contact.speed = raw.speed;
 
-        // Canonical: `a` is the lower slot. Jolt sorts the pair by `BodyID`, which is a
-        // different order from this class's slots the moment a slot has been reused, so a
-        // caller matching "did the player touch the door" cannot rely on Jolt's. The normal
-        // is defined out of `a`, so swapping the pair has to negate it.
+        // `a` is the lower slot. Jolt sorts the pair by `BodyID`, which stops matching this
+        // class's slot order the moment a slot is reused. The normal is defined out of `a`, so
+        // swapping the pair must negate it.
         if (contact.b.index < contact.a.index) {
             std::swap(contact.a, contact.b);
             contact.normal = -contact.normal;
@@ -1445,10 +1260,10 @@ void PhysicsWorld::collectContacts() {
         stepContacts.push_back(contact);
     }
 
-    // The order is the scene's, not the thread pool's. Two manifolds between the same pair
-    // in one step -- a compound shape resting on two of its children -- are separated by
-    // where they are, because after the pair that is the only thing left which is a
-    // property of the collision rather than of which job finished first.
+    // The order has to be the scene's, not the thread pool's. Position breaks the tie between
+    // two manifolds on one pair -- a compound shape resting on two of its children -- because
+    // after the pair it is the only remaining property of the collision rather than of which
+    // job finished first.
     std::sort(stepContacts.begin(), stepContacts.end(), [](const Contact& l, const Contact& r) {
         if (l.a.index != r.a.index) return l.a.index < r.a.index;
         if (l.b.index != r.b.index) return l.b.index < r.b.index;
@@ -1466,9 +1281,6 @@ glm::mat4 PhysicsWorld::bodyTransform(BodyId id, float alpha) const {
 void PhysicsWorld::setBodyTransform(BodyId id, const glm::mat4& transform) {
     if (impl == nullptr || !valid(id)) return;
     if (!bodies[id.index].moves) {
-        // Static only, since P7. A dynamic body being placed from outside used to be
-        // refused here on the grounds that the solver owns its transform; it owns how the
-        // body *moves*, and a respawn is not movement.
         core::Logger::warn(core::LogCategory::Scene,
                            "Physics: a static body cannot be placed after finalize(); ignoring");
         return;
@@ -1481,27 +1293,17 @@ void PhysicsWorld::setBodyTransform(BodyId id, const glm::mat4& transform) {
 
     JPH::BodyInterface& bi = impl->system.GetBodyInterface();
 
-    /**
-     * **A kinematic body is *moved*, not placed, and the difference is whether anything can
-     * stand on it.** `SetPositionAndRotation` teleports: the body arrives with the velocity
-     * it already had, which for a platform driven from a scene node is zero, for ever.
-     * `CharacterVirtual::GetGroundVelocity` reads the velocity of the body under the
-     * character's feet, so a character on a teleporting platform is handed a ground velocity
-     * of zero and stands still while the platform slides out from under it -- which is
-     * exactly what a rider on the demo's platform did.
-     *
-     * `MoveKinematic` sets the velocity that arrives at the target in one step instead, and
-     * that velocity is the one the character reads. The body still ends the step exactly on
-     * the target, so the mesh riding the same node is where the collider is.
-     *
-     * The step is the config's rather than a measured delta because that is the clock the
-     * solver actually runs on. A frame that runs two steps therefore asks for the whole
-     * frame's travel in one step's time and overshoots by one step, which the next sweep
-     * corrects; a frame that runs none asks for no travel at all. Both are visible only
-     * below the step rate, and the alternative -- threading a per-frame delta through a verb
-     * whose whole point is that it is called from outside the step loop -- buys a wobble at
-     * 30 fps with a parameter every caller has to get right.
-     */
+    // A kinematic body is *moved*, not placed, and the difference is whether anything can
+    // stand on it. `SetPositionAndRotation` teleports, so the body keeps the velocity it had
+    // -- zero, for a platform driven from a scene node -- and
+    // `CharacterVirtual::GetGroundVelocity` then hands its rider zero and leaves it standing
+    // still while the platform slides out from under it. `MoveKinematic` sets the velocity
+    // that arrives at the target in one step, which is the velocity the character reads, and
+    // still ends the step exactly on target.
+    //
+    // The config's step, not a measured delta: that is the clock the solver runs on. A frame
+    // running two steps asks for the whole frame's travel in one step's time and overshoots by
+    // one step, which the next sweep corrects.
     if (bodies[id.index].kinematic) {
         bi.MoveKinematic(JPH::BodyID(bodies[id.index].id), toJolt(translation), toJolt(rotation),
                          std::max(config.step, 1e-6f));
@@ -1510,9 +1312,8 @@ void PhysicsWorld::setBodyTransform(BodyId id, const glm::mat4& transform) {
                                   JPH::EActivation::Activate);
     }
 
-    // Both snapshots, not just the current one. A body placed rather than solved has no
-    // previous state worth interpolating from, and leaving the old one would smear it
-    // back to where it was for the remainder of the frame.
+    // Both snapshots. A body placed rather than solved has no previous state worth
+    // interpolating from, and leaving the old one smears it back for the rest of the frame.
     if (id.index < current.size() && id.index < previous.size()) {
         current[id.index].position = translation;
         current[id.index].rotation = rotation;
@@ -1520,20 +1321,18 @@ void PhysicsWorld::setBodyTransform(BodyId id, const glm::mat4& transform) {
     }
 }
 
-// ----------------------------------------------------------------------- motion (P7)
-
 void PhysicsWorld::addImpulse(BodyId id, const glm::vec3& impulse) {
     if (impl == nullptr || !valid(id)) return;
     const Body& body = bodies[id.index];
     if (!body.moves || body.kinematic) {
-        // Jolt's own `AddImpulse` checks `IsDynamic()` and returns without a word. Wrapping
-        // it means the check happens once, here, with a name and a reason -- an impulse
-        // absorbed silently is a crate that does not move and a log that says nothing.
+        // Jolt's own `AddImpulse` checks `IsDynamic()` and returns without a word, so removing
+        // this leaves a crate that does not move and a log that says nothing.
         core::Logger::warn(core::LogCategory::Scene, "Physics: a %s body takes no impulse; ignoring",
                            body.kinematic ? "kinematic" : "static");
         return;
     }
-    // Wakes it, which the body interface does and the raw `Body::AddImpulse` does not.
+    // The body interface wakes it; the raw `Body::AddImpulse` does not, and the impulse would
+    // then arrive whenever something else woke it.
     impl->system.GetBodyInterface().AddImpulse(JPH::BodyID(body.id), toJolt(impulse));
 }
 
@@ -1544,16 +1343,14 @@ void PhysicsWorld::setLinearVelocity(BodyId id, const glm::vec3& velocity) {
         core::Logger::warn(core::LogCategory::Scene, "Physics: a static body has no velocity to set; ignoring");
         return;
     }
-    // The clamped form. The unclamped one asserts against `mMaxLinearVelocity` in a build
-    // with Jolt's assertions on, which turns a caller's bad arithmetic into an abort in
-    // debug and a working game in release -- the worst pair of behaviours to choose between.
+    // The clamped form. The unclamped one asserts against `mMaxLinearVelocity` with Jolt's
+    // assertions on, turning a caller's bad arithmetic into an abort in debug and a working
+    // game in release.
     impl->system.GetBodyInterface().SetLinearVelocity(JPH::BodyID(body.id), toJolt(velocity));
 }
 
 glm::vec3 PhysicsWorld::linearVelocity(BodyId id) const {
     if (impl == nullptr || !valid(id)) return glm::vec3(0.0f);
-    // Zero for a static body is the body interface's own answer, so there is no second test
-    // for it here.
     return toGlm(impl->system.GetBodyInterface().GetLinearVelocity(JPH::BodyID(bodies[id.index].id)));
 }
 
@@ -1575,11 +1372,10 @@ void PhysicsWorld::setCharacterTransform(PhysicsCharacterId id, const glm::mat4&
     cv.SetRotation(toJolt(rotation));
     cv.SetLinearVelocity(JPH::Vec3::sZero());
 
-    // **The ground state is stale the instant the character moves, and `step()` reads it
-    // before it sweeps.** Without this a character placed over a pit reports standing for
-    // one step -- long enough to spend a jump, refill the coyote window and ramp its
-    // horizontal velocity against a platform that is no longer under it. Jolt does the
-    // collision detection here instead, at the position just written.
+    // The ground state is stale the instant the character moves, and `step()` reads it before
+    // it sweeps. Without this a character placed over a pit reports standing for one step --
+    // long enough to spend a jump, refill the coyote window and ramp its horizontal velocity
+    // against a platform that is no longer under it.
     cv.RefreshContacts(impl->system.GetDefaultBroadPhaseLayerFilter(kLayerMoving),
                        impl->system.GetDefaultLayerFilter(kLayerMoving), {}, {}, *impl->temp);
 
@@ -1588,16 +1384,14 @@ void PhysicsWorld::setCharacterTransform(PhysicsCharacterId id, const glm::mat4&
     c.jump = false;
     c.jumpBuffer = 0u;
     c.launched = false;
-    // What `createCharacter` leaves a character that has not been swept, and for its
-    // reason: a placement into mid-air must not be able to jump out of it on the strength
-    // of ground the character left behind. The step after this one refills both from the
+    // Emptied, not left: a placement into mid-air must not be able to jump out of it on the
+    // strength of ground the character left behind. The next step refills both from the
     // contacts refreshed above.
     c.airSteps = kAirStepsMax;
     c.coyoteSpent = true;
 
-    // Both snapshots, as `setBodyTransform` writes both: a character that moved without the
-    // solver moving it has no previous state worth interpolating from, and leaving the old
-    // one draws it crossing the map for the remainder of the frame.
+    // Both snapshots, as `setBodyTransform` writes both: leaving the previous one draws the
+    // character crossing the map for the rest of the frame.
     if (id.index < currentCharacters.size() && id.index < previousCharacters.size()) {
         currentCharacters[id.index].position = translation;
         currentCharacters[id.index].rotation = rotation;
@@ -1608,8 +1402,8 @@ void PhysicsWorld::setCharacterTransform(PhysicsCharacterId id, const glm::mat4&
 void PhysicsWorld::setCharacterInput(PhysicsCharacterId id, const glm::vec3& moveDirection, bool jump) {
     if (!valid(id)) return;
     characters[id.index].moveDirection = moveDirection;
-    // Latched rather than assigned: a jump pressed between two simulation steps would
-    // otherwise be overwritten by the next frame's `false` and never reach the solver.
+    // Latched, not assigned: a jump pressed between two simulation steps is otherwise
+    // overwritten by the next frame's `false` and never reaches the solver.
     characters[id.index].jump = characters[id.index].jump || jump;
 }
 
@@ -1634,9 +1428,8 @@ CharacterGround PhysicsWorld::characterGround(PhysicsCharacterId id) const {
     switch (impl->characters[id.index]->GetGroundState()) {
     case JPH::CharacterBase::EGroundState::OnGround:
         return CharacterGround::OnGround;
-    // Two of Jolt's four states are one answer here: a face past `maxSlopeAngle`, and a
-    // body that is there but cannot hold the character up. Both mean the same thing to a
-    // game -- something is under it and it is going down anyway.
+    // Two of Jolt's four states give one answer: something is under the character and it is
+    // going down anyway.
     case JPH::CharacterBase::EGroundState::OnSteepGround:
     case JPH::CharacterBase::EGroundState::NotSupported:
         return CharacterGround::Sliding;
@@ -1650,24 +1443,20 @@ glm::vec3 PhysicsWorld::characterGroundNormal(PhysicsCharacterId id) const {
     if (impl == nullptr || !valid(id) || characterGround(id) == CharacterGround::InAir) {
         return glm::vec3(0.0f, 1.0f, 0.0f);
     }
-    // Jolt keeps the last ground it found, so the air case is filtered above rather than
-    // reported: a normal from a face the character left is worse than no normal at all.
+    // Jolt keeps the last ground it found, so the air case must be filtered above: without it
+    // this reports the normal of a face the character has already left.
     return toGlm(impl->characters[id.index]->GetGroundNormal());
 }
 
 BodyId PhysicsWorld::characterGroundBody(PhysicsCharacterId id) const {
     if (impl == nullptr || !valid(id) || characterGround(id) == CharacterGround::InAir) return {};
     const JPH::BodyID under = impl->characters[id.index]->GetGroundBodyID();
-    // `handleFor` answers falsy for geometry this class did not create, which is the honest
-    // report for another character's internal body.
     return under.IsInvalid() ? BodyId{} : handleFor(under.GetIndexAndSequenceNumber());
 }
 
 bool PhysicsWorld::characterJumped(PhysicsCharacterId id) const {
     return valid(id) && characters[id.index].launched;
 }
-
-// ------------------------------------------------------------------------ queries (C2)
 
 BodyId PhysicsWorld::handleFor(uint32_t joltRawId) const {
     const auto it = impl->bodyIndexById.find(joltRawId);
@@ -1677,13 +1466,8 @@ BodyId PhysicsWorld::handleFor(uint32_t joltRawId) const {
     return BodyId{slot, bodies[slot].generation};
 }
 
-//
-// Every one of these leaves the two layer filters at their defaults, on purpose and for
-// the reason `segmentBlocked` has always given: every layer is solid to a query, because a
-// wall and a closed door are in different ones and both stop a bullet as well as a sound.
-// A game that wants to trace against one layer is the trigger to widen this, and widening
-// it means a filter parameter rather than a second set of functions.
-
+// Every query below leaves the two layer filters at their defaults, so every layer is solid:
+// a wall and a closed door are in different ones and both have to stop a bullet and a sound.
 PhysicsWorld::RayHit PhysicsWorld::raycast(const glm::vec3& from, const glm::vec3& to, BodyId ignoreBody) const {
     RayHit hit;
     if (impl == nullptr || !impl->initialised) return hit;
@@ -1691,8 +1475,8 @@ PhysicsWorld::RayHit PhysicsWorld::raycast(const glm::vec3& from, const glm::vec
     const glm::vec3 segment = to - from;
     const JPH::Vec3 origin = toJolt(from);
     const JPH::Vec3 delta = toJolt(segment);
-    // A zero-length segment has nothing between its ends. Checked rather than left to
-    // Jolt, which normalises the direction.
+    // Checked here rather than left to Jolt, which normalises the direction and would divide
+    // by zero.
     if (delta.LengthSq() < 1e-8f) return hit;
 
     JPH::RayCastResult result;
@@ -1712,18 +1496,14 @@ PhysicsWorld::RayHit PhysicsWorld::raycast(const glm::vec3& from, const glm::vec
     hit.point = from + segment * result.mFraction;
     hit.distance = glm::length(segment) * result.mFraction;
 
-    // The normal needs the body, and reading a body means holding its lock -- the physics
-    // system is free to be mid-step on another thread. `Succeeded()` is not a formality:
-    // a body destroyed between the cast and the lock is exactly what the lock is for.
+    // Reading a body means holding its lock -- the system may be mid-step on another thread.
+    // `Succeeded()` is not a formality: a body destroyed between the cast and the lock is
+    // exactly the case it catches.
     const JPH::BodyLockRead lock(impl->system.GetBodyLockInterface(), result.mBodyID);
     if (lock.Succeeded()) {
         hit.normal = toGlm(lock.GetBody().GetWorldSpaceSurfaceNormal(result.mSubShapeID2, toJolt(hit.point)));
     }
 
-    // A hit on something this class did not add -- a character's internal body -- reports
-    // its geometry honestly and `kNoBody` for the index, rather than pretending to a slot
-    // the caller could look up. It is still a hit: `operator bool` reads `distance`, which
-    // was set above, for exactly this case.
     return hit;
 }
 
@@ -1740,9 +1520,8 @@ PhysicsWorld::RayHit PhysicsWorld::sphereCast(const glm::vec3& from, const glm::
                                toJolt(segment));
 
     JPH::ShapeCastSettings settings;
-    // The sweep starts inside whatever it starts inside -- a character probing downward
-    // begins overlapping the floor it is standing on. Reporting those would make every
-    // ground check hit at fraction zero.
+    // A character probing downward starts overlapping the floor it stands on; reporting those
+    // initial overlaps makes every ground check hit at fraction zero.
     settings.mReturnDeepestPoint = false;
 
     JPH::ClosestHitCollisionCollector<JPH::CastShapeCollector> collector;
@@ -1760,8 +1539,8 @@ PhysicsWorld::RayHit PhysicsWorld::sphereCast(const glm::vec3& from, const glm::
     const JPH::ShapeCastResult& r = collector.mHit;
     hit.body = handleFor(r.mBodyID2.GetIndexAndSequenceNumber());
     hit.point = toGlm(r.mContactPointOn2);
-    // Jolt's penetration axis points *into* body 2. A surface normal points out of it, and
-    // out of it is what every caller means by "the normal I bounced off".
+    // Negated because Jolt's penetration axis points *into* body 2, and `RayHit::normal` is
+    // documented as pointing out of the body that was hit.
     hit.normal = -glm::normalize(toGlm(r.mPenetrationAxis));
     hit.distance = glm::length(segment) * r.mFraction;
     return hit;
@@ -1776,10 +1555,9 @@ uint32_t PhysicsWorld::overlapSphere(const glm::vec3& center, float radius, std:
                                                     JPH::RMat44::sTranslation(toJolt(center)),
                                                     JPH::CollideShapeSettings{}, JPH::RVec3::sZero(), collector);
 
-    // Counted separately from what is written, because the return value is the count and
-    // the span is the storage. A body this class did not add is skipped rather than
-    // reported as kNoBody: a caller iterating the results would have to filter it, and
-    // "how many did you find" should not include ones it cannot ask about.
+    // `found` counts overlaps, not writes, which is what lets a caller detect truncation.
+    // Bodies this class did not add are skipped entirely, so the count never includes one the
+    // caller could ask nothing about.
     uint32_t found = 0;
     for (const JPH::CollideShapeResult& r : collector.mHits) {
         const BodyId id = handleFor(r.mBodyID2.GetIndexAndSequenceNumber());
@@ -1791,31 +1569,25 @@ uint32_t PhysicsWorld::overlapSphere(const glm::vec3& center, float radius, std:
 }
 
 bool PhysicsWorld::segmentBlocked(const glm::vec3& from, const glm::vec3& to, BodyId ignoreBody) const {
-    // Implemented over `raycast` rather than beside it. The boolean is still the right
-    // return for the one caller it was written for -- audio occlusion asks whether, not
-    // what -- but two casts of the same ray with the same filters was one of them waiting
-    // to disagree with the other.
+    // Over `raycast`, not beside it: a second cast of the same ray with the same filters is
+    // one waiting to disagree with the other.
     return static_cast<bool>(raycast(from, to, ignoreBody));
 }
 
 void PhysicsWorld::drawDebug(std::vector<gfx::DebugLineVertex>& out, const glm::vec3& cameraPosition) {
     if (impl == nullptr || !impl->initialised) return;
 
-    // `--physics-contacts` has been in `--help` since S4.5 and drew nothing at all, which
-    // is what a flag with no reader looks like from the outside. Jolt's own contact drawing
-    // happens *inside* the step, into `DebugRenderer::sInstance`, and the renderer below is
-    // only attached to an output vector for the duration of this call -- so every line it
-    // produced went into a null pointer. G7's stream is a record that outlives the step, so
-    // there is finally something here to draw.
+    // Drawn from `stepContacts` rather than through Jolt's own contact drawing: that happens
+    // inside the step, into `DebugRenderer::sInstance`, and the renderer below is attached to
+    // an output vector only for the duration of this call, so its lines go nowhere.
     if (debugContacts) {
         for (const Contact& contact : stepContacts) {
-            // White for a graze, red for a hit. 6 m/s is roughly a one-and-a-half metre
-            // fall, which is the speed at which a thing sounds like it landed.
+            // White for a graze, red for a hit. 6 m/s is roughly a one-and-a-half metre fall,
+            // the speed at which a thing sounds like it landed.
             const float hardness = std::min(contact.speed / 6.0f, 1.0f);
             const uint32_t color = gfx::packDebugColor({1.0f, 1.0f - hardness, 1.0f - hardness, 1.0f});
-            // A cross rather than a point, because a line list cannot draw a point, and
-            // three axis-aligned segments read as a marker from any angle a normal-aligned
-            // pair would foreshorten to nothing.
+            // A cross, because a line list cannot draw a point and three axis-aligned segments
+            // read as a marker from angles a normal-aligned pair foreshortens to nothing.
             constexpr float kArm = 0.06f;
             for (int axis = 0; axis < 3; ++axis) {
                 glm::vec3 arm(0.0f);
@@ -1823,8 +1595,6 @@ void PhysicsWorld::drawDebug(std::vector<gfx::DebugLineVertex>& out, const glm::
                 out.push_back({contact.point - arm, color});
                 out.push_back({contact.point + arm, color});
             }
-            // And the normal, scaled by the impact, so the direction and the force are one
-            // thing to look at rather than two.
             out.push_back({contact.point, color});
             out.push_back({contact.point + contact.normal * (0.1f + 0.4f * hardness), color});
         }

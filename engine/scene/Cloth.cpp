@@ -13,22 +13,17 @@ namespace scene {
 namespace {
 
 /**
- * The weld grid, in metres. A tenth of a millimetre: far below anything an author places
- * deliberately and far above the error an exporter's float round trip introduces, which is
- * the window a position weld has to sit in.
+ * The weld grid, in metres. A tenth of a millimetre sits in the only window that works:
+ * below anything an author places deliberately, above an exporter's float round-trip error.
  *
- * A *grid* rather than a radius, so the answer does not depend on which vertex was seen
- * first -- two points either land in the same cell or they do not. A radius search would
- * make the weld order-dependent, and an order-dependent simulation mesh is an
- * order-dependent solve, which is the determinism `Physics.h` spends three paragraphs
- * defending. The cost is the ordinary grid artefact: two points a nanometre apart across a
- * cell boundary stay separate. For fabric that is invisible, and the alternative is not.
+ * A grid, not a radius. A radius search welds differently depending on which vertex was seen
+ * first, and an order-dependent simulation mesh is an order-dependent solve. The price is the
+ * usual grid artefact -- two points a nanometre apart across a cell boundary stay separate.
  */
 constexpr float kWeldGrid = 1.0e-4f;
 
-/// The quantised cell of a world-space position, as three integers. `std::llround` rather
-/// than a cast, because a cast truncates toward zero and would put -0.5 and +0.5 in cells
-/// that are two apart rather than one.
+/// The quantised cell of a world-space position. `std::llround`, not a cast: a cast truncates
+/// toward zero and puts -0.5 and +0.5 two cells apart rather than one.
 struct Cell {
     int64_t x = 0, y = 0, z = 0;
     bool operator==(const Cell& o) const { return x == o.x && y == o.y && z == o.z; }
@@ -36,8 +31,7 @@ struct Cell {
 
 struct CellHash {
     size_t operator()(const Cell& c) const {
-        // FNV-1a over the three, the same fold `layoutDigest` uses and for the same
-        // reason: a sum or an xor lets two coordinates cancel.
+        // FNV-1a over the three. A sum or an xor lets two coordinates cancel.
         uint64_t h = 1469598103934665603ull;
         for (int64_t v : {c.x, c.y, c.z}) {
             const auto u = static_cast<uint64_t>(v);
@@ -66,29 +60,25 @@ ClothTopology weldCloth(const ClothDesc& desc) {
     topo.positions.reserve(desc.vertices.size());
     topo.invMasses.reserve(desc.vertices.size());
 
-    // World space before the weld, not after -- the grid is a world-space grid, so a
-    // scaled mesh welded in object space would weld against a differently sized cell.
+    // World space before the weld: the grid is world-space, so welding in object space would
+    // give a scaled mesh a differently sized cell.
     std::unordered_map<Cell, uint32_t, CellHash> seen;
     seen.reserve(desc.vertices.size() * 2);
 
     for (size_t i = 0; i < desc.vertices.size(); ++i) {
         const glm::vec3 world = glm::vec3(desc.transform * glm::vec4(desc.vertices[i].position, 1.0f));
-        // A span shorter than the vertices leaves the remainder free. The loader sizes
-        // them together and `check_pins.py` refuses a file where they disagree, so this is
-        // a defence rather than a case.
         const float invMass = i < desc.masses.size() ? desc.masses[i].invMass : 1.0f;
 
-        // Insert-or-find in one lookup. The welded index is `positions.size()` at the
-        // moment of first sight, so the numbering is the order the render vertices are in
-        // -- a function of the file and not of the hash table, which is what keeps the
-        // simulation mesh identical between runs. Nothing here ever iterates `seen`.
+        // Particles are numbered by first sight, so the simulation mesh is a function of the
+        // file and not of the hash table -- do not renumber by iterating `seen`, whose order
+        // varies between runs.
         const auto [it, inserted] = seen.emplace(cellOf(world), static_cast<uint32_t>(topo.positions.size()));
         if (inserted) {
             topo.positions.push_back(world);
             topo.invMasses.push_back(invMass);
         } else {
-            // The minimum, so a seam with a pinned side stays pinned. See the field
-            // comment: averaging would invent a weight the author did not write.
+            // The minimum, so a seam with a pinned side stays pinned; averaging invents a
+            // weight the author did not write.
             topo.invMasses[it->second] = std::min(topo.invMasses[it->second], invMass);
         }
         topo.remap[i] = it->second;
@@ -99,10 +89,9 @@ ClothTopology weldCloth(const ClothDesc& desc) {
         const uint32_t a = topo.remap[desc.indices[i]];
         const uint32_t b = topo.remap[desc.indices[i + 1]];
         const uint32_t c = topo.remap[desc.indices[i + 2]];
-        // A weld turns a sliver into a degenerate, and Jolt asserts on one rather than
-        // ignoring it -- `SoftBodySharedSettings::AddFace` has the assert in so many
-        // words. Dropping it here is the only place that check can live, because by the
-        // time the face reaches Jolt the process is already going down in a debug build.
+        // A weld turns a source sliver into a degenerate, and
+        // `SoftBodySharedSettings::AddFace` asserts on one rather than ignoring it -- letting
+        // it through takes a debug build down.
         if (a == b || b == c || a == c) continue;
         topo.faces.push_back(a);
         topo.faces.push_back(b);
@@ -118,9 +107,8 @@ void recomputeClothNormals(std::span<Vertex> vertices, std::span<const uint32_t>
 
     for (Vertex& v : vertices) v.normal = glm::vec3(0.0f);
 
-    // Area-weighted, which is what an unnormalised cross product already is: its length is
-    // twice the triangle's area. So the weighting is free and *not* doing it would cost an
-    // extra normalize per face.
+    // The cross product is left unnormalised on purpose: its length is twice the triangle
+    // area, so the area weighting is free and normalising per face would remove it.
     for (size_t i = 0; i + 2 < indices.size(); i += 3) {
         const uint32_t a = indices[i], b = indices[i + 1], c = indices[i + 2];
         if (a >= vertices.size() || b >= vertices.size() || c >= vertices.size()) continue;
@@ -135,25 +123,22 @@ void recomputeClothNormals(std::span<Vertex> vertices, std::span<const uint32_t>
         Vertex& v = vertices[i];
         const glm::vec4 rest = i < restTangents.size() ? restTangents[i] : v.tangent;
         const float len = glm::length(v.normal);
-        // A vertex no non-degenerate face touched. Up rather than zero, because
-        // `normalize(vec3(0))` is a NaN and the G-buffer shades from whatever it is
-        // handed -- the same trap `SceneParse.cpp` names for a missing TANGENT.
+        // A vertex no non-degenerate face touched falls back to up, not zero:
+        // `normalize(vec3(0))` is a NaN and the G-buffer shades whatever it is handed.
         v.normal = len > 1e-12f ? v.normal / len : glm::vec3(0.0f, 1.0f, 0.0f);
 
-        // Gram-Schmidt from the *rest* tangent, keeping the handedness in w. The UVs did
-        // not move, so the direction the file authored is still the right one; all that
-        // changed is the plane it has to lie in. Starting from `v.tangent` instead would
-        // make this a fold over its own output and the answer a function of how many times
-        // it had been called -- see the header.
+        // Gram-Schmidt from the *rest* tangent, handedness in w untouched. Starting from
+        // `v.tangent` makes this a fold over its own output, and the result a function of how
+        // many times it has been called.
         glm::vec3 t = glm::vec3(rest);
         t -= v.normal * glm::dot(v.normal, t);
         const float tlen = glm::length(t);
         if (tlen > 1e-6f) {
             v.tangent = glm::vec4(t / tlen, rest.w);
         } else {
-            // The tangent went parallel to the normal, which a fold can do. Any
-            // perpendicular will do for a surface whose tangent frame has collapsed;
-            // picking the axis the normal is least aligned to keeps it non-degenerate.
+            // The tangent went parallel to the normal, which a fold can do. Crossing against
+            // the axis the normal is least aligned to is what keeps the result non-degenerate;
+            // a fixed axis produces a zero vector at some orientation.
             const glm::vec3 axis =
                 std::abs(v.normal.y) < 0.9f ? glm::vec3(0.0f, 1.0f, 0.0f) : glm::vec3(1.0f, 0.0f, 0.0f);
             v.tangent = glm::vec4(glm::normalize(glm::cross(axis, v.normal)), rest.w);
@@ -170,10 +155,8 @@ bool ClothSystem::add(PhysicsWorld& world, uint32_t instance, uint32_t primitive
         return false;
     }
 
-    // A cloth pinned nowhere is refused rather than simulated. It falls out of the world
-    // on frame one and reads as an engine bug; `check_pins.py` refuses the same case
-    // before the export leaves Blender, and this is that refusal for a file that never
-    // went through it.
+    // Refused rather than simulated: a cloth pinned nowhere falls out of the world on frame
+    // one and reads as an engine bug.
     const bool anyPinned = std::any_of(topo.invMasses.begin(), topo.invMasses.end(), [](float m) { return m == 0.0f; });
     if (!anyPinned) {
         core::Logger::warn(core::LogCategory::Scene,
@@ -193,16 +176,13 @@ bool ClothSystem::add(PhysicsWorld& world, uint32_t instance, uint32_t primitive
     c.remap = topo.remap;
     c.indices.assign(desc.indices.begin(), desc.indices.end());
 
-    // The rest pose, in world space, because the instance transform is identity from here
-    // on: a soft body has no rigid transform to push down a node hierarchy, so the load
-    // transform is baked in and the node's is ignored thereafter. That is a real
-    // restriction -- a `FABRIC_` mesh cannot be moved by animating its parent -- and it is
-    // recorded in limitations.md rather than left to be discovered.
+    // The load transform is baked into the rest pose and the instance transform is identity
+    // from here on, so animating a `FABRIC_` mesh's parent moves nothing -- see
+    // limitations.md.
     //
-    // Normals go through the inverse transpose rather than the transform, which matters
-    // for the one frame before the first `update` replaces them: a non-uniformly scaled
-    // curtain shaded by its unadjusted normals is visibly wrong, and "visible for one
-    // frame" is exactly the kind of thing that gets attributed to the solver.
+    // Normals go through the inverse transpose, which matters for the one frame before the
+    // first `update`: a non-uniformly scaled curtain shaded by unadjusted normals is visibly
+    // wrong, and a one-frame artefact gets attributed to the solver.
     const glm::mat3 normalMatrix = glm::transpose(glm::inverse(glm::mat3(desc.transform)));
     c.vertices.resize(desc.vertices.size());
     for (size_t i = 0; i < desc.vertices.size(); ++i) {
@@ -212,9 +192,8 @@ bool ClothSystem::add(PhysicsWorld& world, uint32_t instance, uint32_t primitive
         c.vertices[i].tangent =
             glm::vec4(glm::mat3(desc.transform) * glm::vec3(desc.vertices[i].tangent), desc.vertices[i].tangent.w);
     }
-    // Captured *before* the first recompute, so it is the transformed authoring tangent
-    // rather than a once-orthogonalised version of it -- one fewer thing whose value
-    // depends on when it was taken.
+    // Captured before the first recompute: taken after, these would be once-orthogonalised
+    // tangents rather than the authored ones, and their value would depend on when.
     c.restTangents.reserve(c.vertices.size());
     for (const Vertex& v : c.vertices) c.restTangents.push_back(v.tangent);
     recomputeClothNormals(c.vertices, c.indices, c.restTangents);
@@ -235,9 +214,8 @@ void ClothSystem::update(const PhysicsWorld& world) {
         const uint32_t particles = world.clothParticleCount(c.body);
         if (particles == 0) continue;
 
-        // Grown once and reused, never allocated per cloth per frame. The pose-resolve row
-        // measured an allocation per body per step at 179 ns and 2.4% of the step, which
-        // is the whole argument for this being a member and not a local.
+        // Grown and reused, never made a local: an allocation per body per step measured
+        // 179 ns and 2.4% of the step.
         if (scratch.size() < particles) scratch.resize(particles);
         world.clothPositions(c.body, std::span<glm::vec3>(scratch.data(), particles));
 

@@ -18,9 +18,8 @@ namespace gfx {
 
 namespace {
 
-/// Create the parent directory of `path`, if it has one. A capture into
-/// `debug_frames/shot.png` on a fresh checkout would otherwise fail at the write with
-/// an errno nobody reads, and the directory is gitignored so it is routinely absent.
+/// Create the parent directory of `path`, if it has one. The capture directories are
+/// gitignored, so on a fresh checkout every write here starts without one.
 bool ensureParentDir(const std::filesystem::path& path) {
     const std::filesystem::path parent = path.parent_path();
     if (parent.empty()) return true;
@@ -35,9 +34,6 @@ bool ensureParentDir(const std::filesystem::path& path) {
     return true;
 }
 
-/// Expand one packed texel to RGBA8. `bgra` and the 10-bit unpack are the only two
-/// transformations any swapchain format on this hardware needs; everything else is a
-/// straight copy.
 struct Rgba8 {
     uint8_t r, g, b, a;
 };
@@ -74,11 +70,8 @@ uint16_t readU16(const uint8_t* src) {
     return v;
 }
 
-/// IEEE half to float. Written out rather than pulled from a library because the only
-/// alternative in this build is glm's, and dragging glm into a file that otherwise
-/// knows nothing about maths to save fifteen lines is a worse trade than the fifteen
-/// lines. Denormals are handled by the exponent==0 branch; NaN and infinity pass
-/// through as float NaN and infinity and are filtered by the caller's range scan.
+/// IEEE half to float. NaN and infinity pass through unchanged; the caller's range scan
+/// is what filters them.
 float halfToFloat(uint16_t h) {
     const uint32_t sign = static_cast<uint32_t>(h >> 15) << 31;
     const uint32_t exp = (h >> 10) & 0x1Fu;
@@ -89,8 +82,6 @@ float halfToFloat(uint16_t h) {
         if (mant == 0) {
             bits = sign; // signed zero
         } else {
-            // Denormal: renormalise by shifting the mantissa up until the implicit bit
-            // appears, decrementing the exponent for each shift.
             uint32_t e = 0;
             uint32_t m = mant;
             while ((m & 0x400u) == 0) {
@@ -111,11 +102,9 @@ float halfToFloat(uint16_t h) {
     return f;
 }
 
-/// Decode one texel of an intermediate render target to linear floats. Separate from
-/// decodeTexel because the formats are disjoint -- no swapchain is RGBA16F and no
-/// render target is BGRA8 -- and because these have to stay in float to be normalised.
-/// `count` is how many of the four components the format actually carries; the rest are
-/// left at zero so the caller does not average in channels that do not exist.
+/// Decode one texel of an intermediate render target to linear floats. `count` is how
+/// many of the four components the format carries; the rest stay zero, so a caller that
+/// ignores it averages in channels that do not exist.
 void decodeTargetTexel(const uint8_t* src, VkFormat format, float out[4], uint32_t& count) {
     out[0] = out[1] = out[2] = out[3] = 0.0f;
     switch (format) {
@@ -175,17 +164,16 @@ uint32_t captureBytesPerPixel(VkFormat format) {
 
 void recordCaptureCopy(VkCommandBuffer cmd, VkImage image, VkExtent2D extent, VkImageLayout layout, VkBuffer dst,
                        VkImageAspectFlags aspect, uint32_t mip, uint32_t layer) {
-    // The transition covers the whole image, not just the subresource being copied.
-    // Copying one mip of a chain whose other mips are in a different layout would need
-    // per-mip tracking that nothing here has; every target this is used on has a single
-    // layout across all its subresources at the point of capture.
+    // The transition covers the whole image, not the one subresource being copied, so
+    // capturing a mip of a chain whose other mips are in a different layout puts them all
+    // in the wrong one on the way back.
     transitionImage(cmd, image, layout, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                     VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT, VK_ACCESS_2_MEMORY_WRITE_BIT,
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, aspect);
 
     VkBufferImageCopy region{};
-    // Zero rowLength and imageHeight mean "tightly packed to imageExtent", which is
-    // what the decode loop in writeCapturePng assumes.
+    // Left-zeroed `bufferRowLength` and `bufferImageHeight` mean tightly packed, which is
+    // what every decode loop in this file indexes by.
     region.imageSubresource.aspectMask = aspect;
     region.imageSubresource.mipLevel = mip;
     region.imageSubresource.baseArrayLayer = layer;
@@ -197,9 +185,8 @@ void recordCaptureCopy(VkCommandBuffer cmd, VkImage image, VkExtent2D extent, Vk
                     VK_ACCESS_2_TRANSFER_READ_BIT, VK_PIPELINE_STAGE_2_ALL_COMMANDS_BIT,
                     VK_ACCESS_2_MEMORY_READ_BIT | VK_ACCESS_2_MEMORY_WRITE_BIT, aspect);
 
-    // Make the copy visible to a host read. Without this the mapped pointer may hold
-    // whatever was there before, and on a coherent allocation it would appear to work
-    // anyway -- which is exactly the kind of bug that shows up on someone else's GPU.
+    // Make the copy visible to a host read. Dropping this appears to work on a coherent
+    // allocation and returns the previous contents on one that is not.
     VkMemoryBarrier2 toHost{VK_STRUCTURE_TYPE_MEMORY_BARRIER_2};
     toHost.srcStageMask = VK_PIPELINE_STAGE_2_COPY_BIT;
     toHost.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -269,9 +256,6 @@ TargetStats writeTargetPng(const std::filesystem::path& path, const void* pixels
     const size_t count = static_cast<size_t>(extent.width) * static_cast<size_t>(extent.height);
     const auto* src = static_cast<const uint8_t*>(pixels);
 
-    // Two passes over the image: one to find the range, one to map into it. The
-    // alternative -- a fixed exposure -- is what makes an HDR readback a white
-    // rectangle, and a white rectangle is indistinguishable from a broken pass.
     std::vector<float> decoded(count * 4);
     uint32_t components = 0;
     float lo = std::numeric_limits<float>::infinity();
@@ -281,9 +265,8 @@ TargetStats writeTargetPng(const std::filesystem::path& path, const void* pixels
         float texel[4];
         decodeTargetTexel(src + i * bpp, format, texel, components);
         for (uint32_t c = 0; c < 4; ++c) decoded[i * 4 + c] = texel[c];
-        // NaN and infinity are excluded from the range rather than allowed to collapse
-        // it -- one stray infinity would otherwise map the entire image to black. A
-        // pass that produces them is a bug, and the count below is how it surfaces.
+        // Non-finite values are excluded from the range: one stray infinity admitted here
+        // maps the entire image to black.
         for (uint32_t c = 0; c < components && c < 3; ++c) {
             const float v = texel[c];
             if (!std::isfinite(v)) continue;
@@ -349,21 +332,15 @@ CompareResult compareReadback(const std::filesystem::path& capturePath, const st
     const std::vector<uint8_t> src = loadPng(source, sw, sh);
     if (src.empty()) return result;
 
-    // `goldenLoaded` reads as "both images were readable", which is what the caller acts
-    // on: the answer to a missing file is to fix the invocation, not to report a defect.
+    // Here `goldenLoaded` means "both images were readable"; a caller reading it as "the
+    // golden existed" reports a defect where the answer is to fix the invocation.
     result.goldenLoaded = true;
 
-    // The rectangle of the source being asserted about. Zero in either axis is the whole
-    // file, which is every P2 and P4 case; P5 passes one cell of a sheet, so that the
-    // expectation is still computed from the one authored file rather than from a second
-    // PNG somebody would have to keep in step with it.
     const uint32_t rx = (srcRect.width == 0 || srcRect.height == 0) ? 0 : srcRect.x;
     const uint32_t ry = (srcRect.width == 0 || srcRect.height == 0) ? 0 : srcRect.y;
     const uint32_t rw = (srcRect.width == 0 || srcRect.height == 0) ? sw : srcRect.width;
     const uint32_t rh = (srcRect.width == 0 || srcRect.height == 0) ? sh : srcRect.height;
 
-    // A rectangle off the edge of the file is a wrong sheet description, and it is caught
-    // here rather than read past: the same argument the capture-fit check below makes.
     if (rx + rw > sw || ry + rh > sh) {
         result.sizeMismatch = true;
         core::Logger::error(core::LogCategory::Render,
@@ -374,9 +351,8 @@ CompareResult compareReadback(const std::filesystem::path& capturePath, const st
     result.width = rw * scale;
     result.height = rh * scale;
 
-    // A region that does not fit is a configuration error rather than a regression, and it
-    // is reported as a size mismatch for exactly the reason comparePng gives about its own:
-    // comparing what does fit would turn a wrong window size into a plausible-looking diff.
+    // Reported as a size mismatch rather than compared over the part that does fit, which
+    // would turn a wrong window size into a plausible-looking diff.
     if (x < 0 || y < 0 || static_cast<uint32_t>(x) + result.width > cw ||
         static_cast<uint32_t>(y) + result.height > ch) {
         result.sizeMismatch = true;
@@ -393,9 +369,8 @@ CompareResult compareReadback(const std::filesystem::path& capturePath, const st
     uint64_t channelSum = 0;
     for (uint32_t ey = 0; ey < result.height; ++ey) {
         for (uint32_t ex = 0; ex < result.width; ++ex) {
-            // Integer division back to the source texel. The inverse of the expansion, and
-            // exact because the destination is a whole multiple -- which is the property
-            // that makes the blit a byte move in the first place.
+            // Exact only while the destination is a whole multiple of the source; a
+            // fractional scale makes this division silently resample.
             const size_t s = (static_cast<size_t>(ry + ey / scale) * sw + rx + ex / scale) * 4;
             const size_t e = (static_cast<size_t>(ey) * result.width + ex) * 4;
             const size_t c = (static_cast<size_t>(y + static_cast<int32_t>(ey)) * cw +
@@ -410,14 +385,13 @@ CompareResult compareReadback(const std::filesystem::path& capturePath, const st
                 channelSum += d;
             }
 
-            // Zero tolerance, so any difference at all is a differing pixel. There is no
-            // filtered tap anywhere in this path by construction, so the driver-noise
-            // allowance the golden suite makes has nothing to protect here.
+            // Zero tolerance: nothing in this path filters a tap, so the allowance the
+            // golden suite makes for driver noise would only hide a real regression.
             if (worst > 0) {
                 result.differingPixels++;
                 if (worst > result.maxChannelDelta) {
                     result.maxChannelDelta = worst;
-                    // In capture coordinates, because that is the image somebody opens.
+                    // Capture coordinates, not expectation coordinates.
                     result.worstX = static_cast<uint32_t>(x) + ex;
                     result.worstY = static_cast<uint32_t>(y) + ey;
                 }
@@ -488,9 +462,8 @@ SilhouetteResult compareSilhouette(const std::filesystem::path& capturePath,
         return result;
     }
 
-    // The expected mask, expanded exactly as `compareReadback` expands its expectation:
-    // each source texel becomes a scale-by-scale block of its own answer. The threshold is
-    // the shader's, `alpha < cutoff` discards, so at or above it is covered.
+    // The threshold is the shader's: `alpha < cutoff` discards, so at or above it is
+    // covered. A `<=` here shifts the whole mask by one texel ring and fails everything.
     const auto threshold = static_cast<uint32_t>(std::clamp(cutoff, 0.0f, 1.0f) * 255.0f);
     std::vector<uint8_t> mask(static_cast<size_t>(cw) * ch, 0);
     result.maskX0 = cw;
@@ -542,9 +515,7 @@ SilhouetteResult compareSilhouette(const std::filesystem::path& capturePath,
                 }
             }
             if (!diff.empty()) {
-                // Green where the sprite covered and the frame moved, red where it moved and
-                // it should not have, and the background dimmed everywhere else. The red is
-                // the failure, and it is the pixel somebody has to look at.
+                // Red marks the failure -- differing outside the mask; green is expected.
                 const uint8_t shade = static_cast<uint8_t>(background[i] / 4);
                 const bool bad = differs && !covered;
                 diff[i + 0] = bad ? 255 : shade;
@@ -620,14 +591,11 @@ CompareResult comparePng(const std::filesystem::path& capturePath, const std::fi
 
         if (!diff.empty()) {
             if (worst > tolerance) {
-                // Red, scaled so a one-unit difference is still visible. Without the
-                // floor a real regression of 2/255 renders as black and reads as a
-                // clean pass.
+                // The 64 floor keeps a 2/255 regression visible; without it the diff
+                // renders as black and reads as a clean pass.
                 const uint8_t intensity = static_cast<uint8_t>(std::min(255u, 64u + worst * 4u));
                 diff[i * 4 + 0] = intensity;
             } else {
-                // The matching image at a quarter brightness, so the red marks sit on
-                // top of something recognisable rather than on a void.
                 diff[i * 4 + 0] = static_cast<uint8_t>(capture[i * 4 + 0] / 4);
                 diff[i * 4 + 1] = static_cast<uint8_t>(capture[i * 4 + 1] / 4);
                 diff[i * 4 + 2] = static_cast<uint8_t>(capture[i * 4 + 2] / 4);

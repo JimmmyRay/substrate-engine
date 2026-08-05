@@ -7,17 +7,11 @@
 namespace gfx {
 
 /**
- * @brief One end of one debug line, as `debug_line.vert` reads it (S4.5).
+ * @brief One end of one debug line, as `debug_line.vert` reads it.
  *
- * Its own header, and a very small one, for a reason worth stating: this is the only
- * type `scene/Physics.h` and `gfx/Renderer.h` both need, and every other candidate home
- * would have dragged something with it. Putting it in `Renderer.h` would put Vulkan on
- * the physics world's include path; putting it in `Physics.h` would put Jolt on the
- * renderer's. Sixteen bytes in a header of their own cost neither.
- *
- * The colour is packed rather than four floats because a line list is the one vertex
- * stream in this engine that is rebuilt from scratch every frame -- ten thousand lines
- * is 320 KB at this size and 640 at the other, uploaded per frame either way.
+ * A header of its own because `scene/Physics.h` and `gfx/Renderer.h` both need it:
+ * merging it into either puts Vulkan on the physics world's include path or Jolt on the
+ * renderer's.
  */
 struct DebugLineVertex {
     glm::vec3 position{0.0f};

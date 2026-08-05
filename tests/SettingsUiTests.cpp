@@ -8,7 +8,7 @@ using namespace core;
 
 /**
  * @file tests/SettingsUiTests.cpp
- * @brief The generated settings panel (G2), with no device and no window.
+ * @brief The generated settings panel, with no device and no window.
  *
  * What is worth testing here is not that widgets appear. It is the two claims the
  * generated panel makes that a screenshot cannot check:
@@ -145,7 +145,7 @@ TEST(SettingsUi, AModuleIsMatchedOnAWholeKeySegment) {
 }
 
 /**
- * @brief A row a game declared draws and writes exactly as an engine row does (D17).
+ * @brief A row a game declared draws and writes exactly as an engine row does.
  *
  * The claim that makes a game's setting a setting rather than a second config system: the
  * panel is generated from the table, and `declare` puts a row in the table, so a game's

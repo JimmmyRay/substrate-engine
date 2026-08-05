@@ -7,8 +7,8 @@
 namespace gfx {
 namespace {
 
-// SPIR-V 1.x physical layout. The names match the specification's tables so they can
-// be looked up; the numeric values are the specification's, not ours.
+// Names and numeric values are the SPIR-V specification's, so they can be looked up
+// against its tables rather than reasoned about here.
 constexpr uint32_t kMagic = 0x07230203u;
 constexpr size_t kHeaderWords = 5;
 
@@ -75,17 +75,17 @@ ReflectedModule reflectSpirv(const std::vector<uint32_t>& code) {
     };
     std::vector<VariableInfo> variables;
 
-    // A single forward pass. SPIR-V requires types and decorations to precede the
-    // OpVariables that use them, so nothing here needs a second pass -- but the
-    // variables are resolved afterwards anyway, because OpName may follow anything.
+    // One forward pass: SPIR-V requires types and decorations to precede the OpVariables
+    // using them. The variables are still resolved after the loop, because OpName may
+    // follow anything.
     size_t i = kHeaderWords;
     while (i < code.size()) {
         const uint32_t word = code[i];
         const uint32_t opcode = word & 0xFFFFu;
         const uint32_t length = word >> 16;
 
-        // A zero-length instruction would loop forever; a length past the end would
-        // read out of bounds. Either means the module is not what it claims to be.
+        // A zero-length instruction loops forever and a length past the end reads out of
+        // bounds; both are reachable from a truncated module.
         if (length == 0 || i + length > code.size()) return {};
 
         switch (opcode) {
@@ -129,7 +129,8 @@ ReflectedModule reflectSpirv(const std::vector<uint32_t>& code) {
         case OpTypeArray:
             if (length >= 4) {
                 arrayElement[code[i + 1]] = code[i + 2];
-                // Resolved below; the length is an OpConstant id, already seen.
+                // The length is an OpConstant id, which SPIR-V guarantees has already
+                // been seen -- a second pass would be needed otherwise.
                 const auto it = constants.find(code[i + 3]);
                 arrayLength[code[i + 1]] = it != constants.end() ? it->second : 0u;
             }
@@ -172,8 +173,8 @@ ReflectedModule reflectSpirv(const std::vector<uint32_t>& code) {
         const auto ptrIt = pointers.find(v.pointerType);
         if (ptrIt == pointers.end()) continue;
 
-        // Peel array wrappers. `sampler2D textures[]` is a runtime array of sampled
-        // images and binds as one descriptor with many elements, not many descriptors.
+        // Peel array wrappers: `sampler2D textures[]` binds as one descriptor with many
+        // elements, not as many descriptors.
         uint32_t pointee = ptrIt->second.pointee;
         uint32_t count = 1;
         while (true) {
@@ -209,8 +210,7 @@ ReflectedModule reflectSpirv(const std::vector<uint32_t>& code) {
             }
             break;
         case Pointee::Unknown:
-            // An acceleration structure or something else not yet handled. Left as
-            // MAX_ENUM, which the caller reads as "no opinion" and skips.
+            // Left as MAX_ENUM, which the caller reads as "no opinion" and skips.
             break;
         }
 

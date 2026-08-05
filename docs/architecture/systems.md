@@ -682,6 +682,40 @@ the buffer the deformation dispatch just wrote, under a TLAS **rebuilt** every f
 `1 + N` instances. A TLAS is rebuilt rather than refitted because a refit degrades under
 exactly what a character walking across a room produces. **0.169 ms for six structures.**
 
+**There are three tiers, and the split is by *how* a thing moves rather than by whether it
+moves.** `staticBlas` bakes each geometry's transform into the structure and is built once at
+load. `dynamicBlas` is the tier above: one structure per deformed instance, whose vertices
+`skinning.comp` rewrites. Between them sits the case both of those miss — an instance that
+**moves without deforming**. A crate a solver pushes has the vertices it always had, so it
+needs no refit, but its transform changes and a baked transform cannot. Sorted into the static
+tier it draws in its new place and traces in its old one, which reads as a shadow left behind
+by a knocked-over crate. It belongs in `rigidBlas`: model space, no baked transform, placed by
+a TLAS instance whose 3x4 is rewritten each frame beside the deformed ones. `scene::accelTier`
+is the selector and it reads the instance's flags, so it needs no device and lives in the scene
+layer. The TLAS is `1 + dynamicBlas.size() + rigidSlot.size()` instances.
+
+**One BLAS per *primitive* among the rigid movers, not one per mover.** Six crates are six
+transforms over one cube, so `rigidBlas` holds a structure per distinct primitive and
+`rigidSlot` is the per-instance list beside it — longer than `rigidBlas` whenever movers share
+a primitive, which is the usual case and why the two cannot be indexed by each other. Nothing
+downstream has to know, because `instanceCustomIndex` belongs to the TLAS instance rather than
+to the BLAS, so two instances sharing a structure still resolve to their own hit record and
+material.
+
+**`instanceCustomIndex + geometryIndex` is the hit-record index, and it holds only under two
+conditions.** The static BLAS must be the TLAS's first instance with a custom index of 0, and
+every dynamic BLAS must hold exactly one geometry — then the static tier's geometry indices are
+already `0..N-1` and a dynamic BLAS's custom index carries the whole offset, so one expression
+covers both with no sentinel and no branch. Adding a second geometry to a dynamic BLAS, or
+emitting the tiers in another order, silently shifts every record.
+
+**A refit trades trace quality for build time.**
+`VK_BUILD_ACCELERATION_STRUCTURE_MODE_UPDATE_KHR` keeps the tree topology and moves its bounds,
+which is correct only while the vertices stay roughly where they were — the case a skeleton
+animating a mesh is. A pose that wanders far from the one the structure was built in degrades
+it, and a character that turned inside out would want a periodic full rebuild. Nothing does
+that, because nothing has measured a case where it matters.
+
 **The refit costs five times what the deformation does** — 0.123 ms against 0.024 for one
 character — so it runs only while ray tracing is on. The first version refitted
 unconditionally, arguing that a structure refitted only while tracing is one frame stale
@@ -1787,6 +1821,47 @@ mesh it describes, so a depth-tested wireframe of a box collider on a box is eit
 or z-fighting. The line data reaches the renderer as `renderer.debugLines`, a plain vertex
 vector the application fills, so `gfx/` gains no dependency on physics. **0.0094 ms CPU
 and 0.0041 ms GPU** for ~1,900 lines.
+
+---
+
+## The spatial index
+
+`engine/scene/SpatialIndex.{h,cpp}`. A BVH answering the three questions the engine could
+otherwise only answer by walking every instance: what a ray passes through, what is inside a
+box, and what is inside a frustum. Each has a caller that asks it every frame or on every
+click — click-to-select, an audio occlusion probe, a trigger volume, a query the CPU asks
+before the GPU cull runs.
+
+**It indexes instance bounds, not scene-tree nodes**, and that is what makes it need no tree:
+`InstanceTable` already keeps a world-space box per slot and already refreshes it in
+`setTransform`, which is the only thing that can invalidate one. Every consumer asks about
+things in the world, and in this engine a thing in the world is an instance. The frustum query
+takes `gfx::Frustum`, the same plane set the light culling uses, so "inside" is defined once.
+
+**Boxes, not triangles.** `raycast` returns the instances a ray *could* hit, nearest box entry
+first — a broadphase, which is what a BVH over AABBs can honestly be. The narrow phase is
+`PhysicsWorld::raycast` where a scene has colliders, or the caller's own triangle test where it
+does not. Conflating the two is how a picking system ends up selecting the object whose *box*
+was in front.
+
+**Median split of the longest axis, not SAH.** This index is rebuilt whenever the table's
+topology changes and refitted whenever anything moves, so build time is paid far more often
+than a static-scene index would pay it; a median split builds in one pass over the centroids
+and queries within a small factor of SAH on the scenes this engine loads. **The trigger for SAH
+is a profile showing queries dominating builds**, and not before.
+
+**A moved instance does not make the index stale — it makes it want a refit**, and conflating
+the two is how an index gets rebuilt sixty times a second. `stale()` compares
+`table.revision()` and so answers a question about topology; `refit` is the answer to motion,
+one bottom-up pass over the *nodes* with no sort and no allocation. A tree refitted after large
+movement gets progressively worse-shaped without ever becoming wrong, and `build` is what fixes
+the shape — a caller that moves everything every frame should call it instead.
+
+Nodes are stored depth-first so the left child is always adjacent and only one index is kept,
+which is what holds a node at 32 bytes and the traversal at a stack of `uint32_t`. Four
+instances per leaf rather than one: a leaf test is a box test either way, and four boxes tested
+linearly beat three more levels of traversal on every scene measured. The boxes are copied out
+of the table at build and refresh, so a query needs no table at all.
 
 ---
 

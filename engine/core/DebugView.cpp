@@ -4,9 +4,9 @@ namespace core {
 
 namespace {
 
-/// The one list. Order is the enum's, which is also the order `lighting_body.glsl`
-/// branches on and the order `advanceDebugView` walks, so the names, the shader and the
-/// F-key cycle cannot disagree about what comes after what.
+/// Must stay in the enum's order: `lighting_body.glsl` branches on it and
+/// `advanceDebugView` walks it, so reordering here moves the F-key cycle out of step with
+/// the shader.
 constexpr core::Named<DebugView> kDebugViews[] = {
     {"lit", DebugView::Lit},           {"albedo", DebugView::Albedo},
     {"normal", DebugView::Normal},     {"orm", DebugView::Orm},
@@ -15,8 +15,7 @@ constexpr core::Named<DebugView> kDebugViews[] = {
 };
 static_assert(core::namesEveryValue(kDebugViews), "a view reachable from the enum and from no name");
 
-/// `none` is an input convenience for `clamp` and is second, so it parses and is never
-/// written back: what a save writes is the canonical spelling.
+/// `none` must stay second: the first name for a value is what a save writes back.
 constexpr core::Named<TonemapOperator> kTonemaps[] = {
     {"aces", TonemapOperator::Aces},
     {"reinhard", TonemapOperator::Reinhard},
@@ -41,10 +40,9 @@ const char* debugViewKey(DebugView view) {
 
 DebugView advanceDebugView(DebugView view, int step) {
     const int count = static_cast<int>(DebugView::Count);
-    // Both operands are reduced before they are summed, so the sum sits in
-    // (-count, 2*count) and the single `+ count` is enough to make the last modulo
-    // non-negative. Reducing only one of them is the version that looks right and lets a
-    // large negative `step` fall off the front.
+    // *Both* operands are reduced before the sum, so it sits in (-count, 2*count) and one
+    // `+ count` makes the last modulo non-negative. Reducing only one looks right and lets
+    // a large negative `step` fall off the front.
     const int index = (static_cast<int>(view) % count + step % count + count) % count;
     return static_cast<DebugView>(index);
 }

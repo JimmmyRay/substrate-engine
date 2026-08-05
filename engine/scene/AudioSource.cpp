@@ -20,9 +20,9 @@ using core::json::readFloat;
 using core::json::readString;
 using core::json::readVec;
 
-/// An unrecognised spelling keeps the default *and says so*, exactly as `Collider.cpp`
-/// does and for the same reason: a typo in an attenuation model is a source that is
-/// quietly the wrong loudness, and the file it came from looks correct.
+/// An unrecognised spelling keeps the default *and says so*: silently keeping it makes a
+/// typo in an attenuation model a source that is quietly the wrong loudness, from a file
+/// that looks correct.
 template <typename Enum, size_t N>
 void readEnum(const Value& parent, const char* key, const char* const (&names)[N], Enum& out, const char* what,
               const std::string& owner) {
@@ -55,17 +55,13 @@ uint64_t audioDecodedBytes(float seconds, uint32_t sampleRate, uint32_t channels
 bool audioShouldStream(AudioLoad load, float seconds, float thresholdSeconds) {
     if (load == AudioLoad::Stream) return true;
     if (load == AudioLoad::Decode) return false;
-    // A length the decoder could not state before opening the file is a decoded
-    // footprint nobody can bound, and the whole value of the decode path is that its
-    // cost is known in advance. So it streams.
+    // A length the decoder could not state is a decoded footprint nobody can bound, and
+    // the decode path's whole value is that its cost is known in advance.
     if (seconds <= 0.0f) return true;
     return seconds > thresholdSeconds;
 }
 
 bool parseSceneAudioSources(const rapidjson::Value& nodesArray, std::vector<AudioSourceDesc>& out) {
-    // The document is parsed once, by the caller, and handed to all three readers
-    // (C14). It used to be parsed here, and in the other two, and that was about
-    // three quarters of a large scene's load -- see core/Json.h.
     const Value* nodes = &nodesArray;
 
     for (rapidjson::SizeType n = 0; n < nodes->Size(); ++n) {
@@ -81,8 +77,8 @@ bool parseSceneAudioSources(const rapidjson::Value& nodesArray, std::vector<Audi
         if (a.name.empty()) a.name = "node " + std::to_string(n);
 
         core::json::readString(*def, "file", a.file);
-        // The one key with no default. Refused here rather than at load, because this is
-        // where the file said it and the message can name the node.
+        // Refused here rather than at load, because this is the only place that can name
+        // the node the source came from.
         if (a.file.empty()) {
             core::Logger::warn(core::LogCategory::Audio, "Audio source '%s': no 'file' -- skipped", a.name.c_str());
             continue;
@@ -109,16 +105,15 @@ bool parseSceneAudioSources(const rapidjson::Value& nodesArray, std::vector<Audi
         readBool(*def, "occlusion", a.occlusion);
 
         // An inner cone wider than its outer one is a fade that runs backwards, and
-        // miniaudio's spatializer does not defend against it. Corrected and said so,
-        // which is what S4.2 does for a capsule under non-uniform scale.
+        // miniaudio's spatializer does not defend against it.
         if (a.coneOuterAngle < a.coneInnerAngle) {
             core::Logger::warn(core::LogCategory::Audio,
                          "Audio source '%s': coneOuterAngle is inside coneInnerAngle -- widening the outer to match",
                          a.name.c_str());
             a.coneOuterAngle = a.coneInnerAngle;
         }
-        // Same shape of correction. A max inside the min is a source that is silent
-        // everywhere including at the listener's own feet.
+        // A max inside the min is a source silent everywhere, including at the listener's
+        // own feet.
         if (a.maxDistance > 0.0f && a.maxDistance < a.minDistance) {
             core::Logger::warn(core::LogCategory::Audio,
                          "Audio source '%s': maxDistance %.2f is inside minDistance %.2f -- ignoring the cap",

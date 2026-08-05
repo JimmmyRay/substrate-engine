@@ -8,7 +8,7 @@ using namespace scene;
 
 /**
  * @file tests/SimulationTests.cpp
- * @brief The step order, run with no device (C27).
+ * @brief The step order, run with no device.
  *
  * `scene/Simulation.cpp` is the one place the order of a step is written, and it is hosted —
  * so the thing a headless server would run is the thing this file runs, rather than a

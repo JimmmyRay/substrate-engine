@@ -14,7 +14,7 @@ using namespace scene;
 
 /**
  * @file tests/MeshLodTests.cpp
- * @brief The LOD chain data model, and the coverage arithmetic that selects out of it (C17).
+ * @brief The LOD chain data model, and the coverage arithmetic that selects out of it.
  *
  * Two halves, and neither of them can be checked by the golden suite:
  *

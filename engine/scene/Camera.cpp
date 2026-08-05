@@ -27,17 +27,13 @@ void Camera::frameBounds(const glm::vec3& boundsMin, const glm::vec3& boundsMax)
     const float longExtent = longAxisIsX ? extent.x : extent.z;
     distance = longExtent > 0.0f ? longExtent * 0.25f : 5.0f;
 
-    // Scale clipping to the scene rather than hard-coding units: Sponza is ~30 units
-    // across its longest axis once its 0.008 root scale is applied, a test cube is 1. A
-    // near plane is a fraction of what is being looked at or it eats the geometry, which
-    // is a derivation with no user answer and therefore no settings row -- one of the
-    // ones D11 audited and kept.
+    // Scaled to the scene rather than a fixed number of units: Sponza is ~30 units across
+    // its longest axis once its 0.008 root scale is applied, and a test cube is 1. A near
+    // plane fixed for one of those eats the geometry of the other.
     nearPlane = std::max(radius * 0.002f, 0.01f);
 
-    // The orthographic half of the same scaling, set whichever mode is current: a camera
-    // framed on a scene and then switched to Orthographic would otherwise need two
-    // numbers picked by hand before it showed anything. A box the height of the bounding
-    // sphere, and a far plane past the far side of it.
+    // Set whichever mode is current, so a camera framed here and then switched to
+    // Orthographic needs no numbers picked by hand before it shows anything.
     orthoHeight = std::max(radius, 1.0f);
     orthoFar = std::max(radius * 4.0f, 1.0f);
 }
@@ -52,15 +48,11 @@ glm::mat4 Camera::view() const { return glm::lookAt(position(), focus, glm::vec3
 
 glm::mat4 Camera::projection(float aspect) const {
     if (projectionMode == Projection::Orthographic) {
-        // Reverse-Z, hand-built, and that is the whole reason this is not `glm::ortho`.
-        // The library call is forward-Z: near at 0 and far at 1. Feeding it to this
-        // renderer inverts every `depth > FAR_DEPTH` test, fights a depth buffer cleared
-        // to 0 and fights the `GREATER` compare ops, and each of those three failures
-        // looks like a different bug.
-        //
-        // Near maps to 1 and `orthoFar` to 0, exactly as the perspective branch does, so
-        // nothing downstream of the matrix has to know which one it got. Y is negated for
-        // Vulkan's downward clip-space Y.
+        // Hand-built because `glm::ortho` is forward-Z: near at 0 and far at 1. That
+        // inverts every `depth > FAR_DEPTH` test, fights a depth buffer cleared to 0 and
+        // fights the `GREATER` compare ops, and each of the three looks like a different
+        // bug. Near maps to 1 and `orthoFar` to 0, as the perspective branch does; Y is
+        // negated for Vulkan's downward clip-space Y.
         const float halfHeight = orthoHeight * 0.5f;
         const float invRange = 1.0f / (orthoFar - nearPlane);
 
@@ -93,8 +85,8 @@ glm::vec4 Camera::depthLinear() const {
     //
     // which is what `viewDistance()` in frame.glsl evaluates, and these are its four
     // coefficients in that order. Taken from the matrix rather than recomputed from
-    // `nearPlane` and `orthoFar`, so the linearization cannot say something the
-    // projection does not; `aspect` is 1 because neither of those two rows contains it.
+    // `nearPlane` and `orthoFar`, so the linearization cannot say something the projection
+    // does not. `aspect` is 1 because neither of those two rows contains it.
     const glm::mat4 p = projection(1.0f);
     return glm::vec4(p[3][3], p[3][2], p[2][3], p[2][2]);
 }

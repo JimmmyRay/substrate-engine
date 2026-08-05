@@ -15,7 +15,7 @@ using namespace scene;
 
 /**
  * @file tests/NavMeshTests.cpp
- * @brief The walkable surface, the path through it, and the walk along it (C12).
+ * @brief The walkable surface, the path through it, and the walk along it.
  *
  * Three stages and three kinds of property:
  *
@@ -728,7 +728,7 @@ TEST(NavMesh, AFalsyStartSeesNothing) {
     EXPECT_FALSE(nav.corridorClear({500.0f, 0.0f, 500.0f}, {0.5f, 0.0f, 0.5f}, 0.0f));
 }
 
-// ================================================ the plane a flat world lies in (D18)
+// ================================================ the plane a flat world lies in
 
 namespace {
 

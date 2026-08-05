@@ -216,7 +216,7 @@ TEST(LightBudget, MovingTheCameraChangesWhichLightsSurvive) {
 // it tested; see `gfx::Light.h` for what the schema was for and why it comes back when
 // shadows do.
 
-// ============================================== runtime decals (C3)
+// ============================================== runtime decals
 //
 // `decalAt` is the other half of "spawn something where the hit was". It lives in
 // gfx/Decal.h rather than gfx/Renderer.h precisely so it can be tested here: everything
@@ -263,7 +263,7 @@ TEST(DecalPlacement, AZeroNormalLeavesItUnrotatedRatherThanDegenerate) {
     EXPECT_NEAR(glm::length(glm::vec3(d.transform[1])), 1.0f, 1e-5f);
 }
 
-// ============================================ light volume culling (C8)
+// ============================================ light volume culling
 //
 // The property everything else rests on: `lightVisible` is conservative and exact, so
 // culling by it cannot change a shaded pixel. If any of these are wrong, the golden set

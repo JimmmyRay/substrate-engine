@@ -29,9 +29,8 @@ bool readWorldSave(core::SaveReader& in, WorldSave& out, std::string& reason) {
         return false;
     }
 
-    // Sized against what is actually left rather than against the number in the file. A
-    // count is 4 bytes and an entry is 68, so a corrupt count is otherwise a request to
-    // allocate gigabytes on behalf of a file we have already decided not to trust.
+    // Checked against what is actually left, not trusted from the file: a count is 4 bytes
+    // and an entry is 68, so a corrupt one is otherwise a request to allocate gigabytes.
     constexpr size_t kEntryBytes = sizeof(uint32_t) + sizeof(glm::mat4);
     if (static_cast<size_t>(slots) * kEntryBytes > in.remaining()) {
         reason = "the save claims " + std::to_string(slots) + " instance slots, which is more than the section holds";

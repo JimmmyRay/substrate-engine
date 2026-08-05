@@ -22,8 +22,8 @@ namespace core {
 namespace input {
 namespace {
 
-/// One row of a code table. The tables are generated from the same X-lists the enums
-/// are, so a key that exists cannot be missing a name.
+/// One row of a code table. The tables are generated from the same X-lists as the enums,
+/// so a hand-written row here could go missing a name where a generated one cannot.
 struct CodeName {
     int code;
     const char* name;
@@ -63,8 +63,8 @@ template <size_t N> int codeOf(const CodeName (&table)[N], std::string_view name
     return -1;
 }
 
-/// Rescales the live part of the range so that the first movement past the deadzone
-/// starts from zero rather than jumping to it.
+/// Rescales the live part of the range, so the first movement past the deadzone starts from
+/// zero rather than jumping to it.
 float applyDeadzone(float v, float deadzone) {
     if (deadzone <= 0.0f || deadzone >= 1.0f) return v;
     const float magnitude = std::fabs(v);
@@ -73,17 +73,15 @@ float applyDeadzone(float v, float deadzone) {
     return v < 0.0f ? -scaled : scaled;
 }
 
-/// How far an axis must travel before a capture accepts it as a deliberate press.
-/// Well past the deadzone: a stick that rests slightly off-centre must not bind
-/// itself the moment a rebind is armed.
+/// How far an axis must travel before a capture accepts it as a deliberate press. Well past
+/// the deadzone: any closer and a stick resting off-centre binds itself the moment a rebind
+/// is armed.
 constexpr float kCaptureAxisThreshold = 0.6f;
 
 const std::string kEmptyString;
 const std::vector<Binding> kNoBindings;
 
 } // namespace
-
-// ============================================================== binding names
 
 std::string bindingName(const Binding& b) {
     switch (b.source) {
@@ -181,12 +179,9 @@ std::vector<Binding> bindingListFromName(std::string_view text) {
     return out;
 }
 
-// ================================================================== InputMap
-
 ActionId InputMap::declare(std::string name, std::string_view defaultBindings) {
-    // `findDeclared` and not `find`, which deliberately does not see a retired row:
-    // re-declaring one is what revives it, with the same id and the bindings the player
-    // left on it.
+    // `findDeclared`, not `find`: `find` cannot see a retired row, and re-declaring one is
+    // what revives it with the same id and the bindings the player left on it.
     if (const ActionId existing = findDeclared(name); existing != kInvalidAction) {
         actions[existing].live = true;
         return existing;
@@ -199,12 +194,9 @@ ActionId InputMap::declare(std::string name, std::string_view defaultBindings) {
     actions.push_back(std::move(a));
     const ActionId id = static_cast<ActionId>(actions.size() - 1);
 
-    // A config row that named this action before anything declared it wins over the
-    // default it was just given -- the row this map is reached by is the row the player
-    // edited. Erased as it is taken, and that is the trap: a store that kept it would
-    // replay the file over a later rebind every time a scheme was retired and revived,
-    // because reviving *is* re-declaring. Only the live list moves, so `defaults` still
-    // holds what the code shipped and `isDefault` is what makes the next save write this.
+    // Erased as it is taken. Keeping the row replays the file over a later rebind every
+    // time a scheme is retired and revived, because reviving *is* re-declaring. Only the
+    // live list moves, so `defaults` still holds what the code shipped.
     for (auto row = parked.begin(); row != parked.end(); ++row) {
         if (row->first != actions[id].name) continue;
         actions[id].bindings = bindingListFromName(row->second);
@@ -219,9 +211,7 @@ void InputMap::setParkedBindings(std::vector<std::pair<std::string, std::string>
 }
 
 std::vector<InputMap::Conflict> InputMap::conflicts() const {
-    // Quadratic over actions x bindings, and deliberately so: this runs once at startup
-    // over a table of tens, and a hash map keyed on a Binding would be more machinery than
-    // the whole check is worth.
+    // Quadratic, and safely so only while this runs once at startup over a table of tens.
     std::vector<Conflict> out;
     for (size_t i = 0; i < actions.size(); ++i) {
         if (!actions[i].live) continue; // A row out of circulation competes for nothing.
@@ -229,12 +219,10 @@ std::vector<InputMap::Conflict> InputMap::conflicts() const {
             if (b.source == Binding::Source::Unbound) continue;
             for (size_t j = i + 1; j < actions.size(); ++j) {
                 if (!actions[j].live) continue;
-                // A mouse binding where exactly one side is pointer-mode exempt is not a
+                // A mouse binding with exactly one side pointer-mode exempt is not a
                 // collision: `resolve` already returns zero for the non-exempt one whenever
-                // the exempt one can fire, so the two are never live together. This is the
-                // query agreeing with the resolver rather than inventing a second notion of
-                // "not at the same time" beside it. `Ui.Click` against any game action a
-                // player has put on Mouse.Left is that pair, and it is correct.
+                // the exempt one can fire. Dropping this makes the query disagree with the
+                // resolver, and reports `Ui.Click` against every game action on Mouse.Left.
                 if (b.source == Binding::Source::Mouse &&
                     actions[i].pointerExempt != actions[j].pointerExempt) {
                     continue;
@@ -266,9 +254,9 @@ ActionId InputMap::findDeclared(std::string_view name) const {
 void InputMap::retire(ActionId id) {
     if (id >= actions.size()) return;
     actions[id].live = false;
-    // Zeroed now rather than left to `beginFrame`, which skips dead rows: a read between
-    // this call and the next frame has to see the action already gone, and a row revived
-    // later must not fire an edge out of the state it was retired holding.
+    // Zeroed now rather than left to `beginFrame`, which skips dead rows: a read before the
+    // next frame would still see the action held, and a row revived later would fire an
+    // edge out of the state it was retired holding.
     for (ActionState& s : actions[id].state) s = ActionState{};
 }
 
@@ -319,7 +307,6 @@ void InputMap::resetToDefault(ActionId id) {
     if (id < actions.size()) actions[id].bindings = bindingListFromName(actions[id].defaults);
 }
 
-// --------------------------------------------------------------- event feed
 
 void InputMap::onKey(Key key, bool down) {
     const int code = static_cast<int>(key);
@@ -337,9 +324,8 @@ void InputMap::onMouseButton(MouseButton button, bool down) {
 
 void InputMap::onCursorPos(double x, double y) {
     if (!cursorSeen) {
-        // The first report is a position, not a movement. Seeding the previous frame
-        // with it is what stops the pointer's distance from the window origin becoming
-        // one enormous delta on frame one.
+        // The first report is a position, not a movement. Without seeding the previous
+        // frame, the pointer's distance from the window origin becomes one enormous delta.
         cursorPrevFrame[0] = x;
         cursorPrevFrame[1] = y;
         cursorSeen = true;
@@ -357,12 +343,10 @@ void InputMap::setGamepad(const GamepadState& pad, uint32_t index) {
 }
 
 void InputMap::setPlayerCount(uint32_t count) {
-    // At least one, always. A map with no players resolves nothing, and every query in the
-    // engine would go quiet with no error anywhere -- which is the failure mode this whole
-    // row exists to remove rather than to add a second instance of.
+    // At least one, always: a map with no players resolves nothing, and every query in the
+    // engine goes quiet with no error anywhere.
     const size_t want = std::max<size_t>(1, count);
-    // Player 0's devices are kept and the new ones get none. See the header: an engine
-    // that handed pad `i` to player `i` would be inventing a seating plan.
+    // Player 0's devices are kept and the new players get none -- see the header.
     players.resize(want);
     for (Action& a : actions) a.state.resize(want);
 }
@@ -382,14 +366,12 @@ bool InputMap::gamepadConnected() const {
 bool InputMap::gamepadConnected(uint32_t pad) const { return pad < pads.size() && pads[pad].connected; }
 
 void InputMap::loseFocus() {
-    // No synthetic release events needed: an action that was held now resolves to
-    // nothing, and the level test in beginFrame reports that as a release by itself.
+    // No synthetic release events: `beginFrame`'s level test already reports an action that
+    // now resolves to nothing as a release.
     for (bool& down : keys) down = false;
     for (bool& down : mouse) down = false;
     for (GamepadState& pad : pads) pad = GamepadState{};
 }
-
-// ---------------------------------------------------------------- resolution
 
 float InputMap::resolve(const Binding& b, const PlayerDevices& devices, bool textExempt,
                         bool pointerExempt) const {
@@ -409,11 +391,9 @@ float InputMap::resolve(const Binding& b, const PlayerDevices& devices, bool tex
         return 0.0f;
     }
     case Binding::Source::PadAxis: {
-        // **The deadzone is applied per pad, before the pads are combined**, and that is a
-        // defect fixed rather than a detail. The merged state this replaced took the
-        // largest magnitude across every connected pad first and deadzoned the result, so
-        // an idle second pad's stick drift -- which is under the deadzone and therefore
-        // nothing -- became the first pad's movement whenever the first pad was centred.
+        // The deadzone is applied per pad, *before* the pads are combined. Combining first
+        // lets an idle second pad's stick drift -- under the deadzone, and therefore
+        // nothing -- become the first pad's movement whenever the first pad is centred.
         float best = 0.0f;
         for (uint32_t i = 0; i < pads.size(); ++i) {
             if (!holdsPad(devices, i) || !pads[i].connected) continue;
@@ -443,9 +423,9 @@ bool InputMap::edgePressed(const Binding& b, const PlayerDevices& devices, bool 
         return false;
     }
     case Binding::Source::PadAxis: {
-        // Per pad, so the edge belongs to the stick that crossed rather than to the
-        // maximum across pads -- two players deflecting opposite ways would otherwise
-        // cancel into an edge neither of them made.
+        // Per pad, so the edge belongs to the stick that crossed. Taking the maximum across
+        // pads first lets two players deflecting opposite ways cancel into an edge neither
+        // of them made.
         for (uint32_t i = 0; i < pads.size(); ++i) {
             if (!holdsPad(devices, i) || !pads[i].connected) continue;
             const float now = std::clamp(applyDeadzone(pads[i].axes[b.code], gamepadDeadzone) * b.scale, 0.0f, 1.0f);
@@ -461,8 +441,8 @@ bool InputMap::edgePressed(const Binding& b, const PlayerDevices& devices, bool 
 }
 
 bool InputMap::serviceCapture() {
-    // Escape first, and never bindable: an armed capture that cannot be abandoned is
-    // a menu that eats the next keystroke whatever the user meant by it.
+    // Escape first, and never bindable: an armed capture that cannot be abandoned eats the
+    // next keystroke whatever the user meant by it.
     if (keyPressedFrame[static_cast<int>(Key::Escape)]) {
         captureTarget = kInvalidAction;
         return true;
@@ -475,11 +455,9 @@ bool InputMap::serviceCapture() {
     for (int i = 0; i < kMouseButtonCount && found.source == Binding::Source::Unbound; ++i) {
         if (mousePressedFrame[i]) found = Binding{Binding::Source::Mouse, i, 1.0f};
     }
-    // **Any pad, and the binding it produces names none of them.** A rebind menu is asking
-    // which *control* the person wants, and `Pad.A` means the A button of whichever pad the
-    // player who pressed it holds -- which is what makes one saved profile work for two
-    // players on two pads. Who holds which pad is `PlayerDevices`, and it is not a property
-    // of a binding.
+    // Any pad, and the binding produced names none of them: `Pad.A` is the A button of
+    // whichever pad the player holds. Recording the pad index here would make one saved
+    // profile stop working for a second player on a second pad.
     for (uint32_t p = 0; p < pads.size() && found.source == Binding::Source::Unbound; ++p) {
         if (!pads[p].connected) continue;
         const GamepadState before = p < padsLast.size() ? padsLast[p] : GamepadState{};
@@ -513,8 +491,8 @@ void InputMap::beginFrame() {
         mousePressedEvents[i] = false;
     }
 
-    // Whether a capture was armed on entry, not after servicing: the control that ends
-    // a capture must not also fire the action it was just bound to.
+    // Armed on entry, not after servicing, or the control that ends a capture also fires
+    // the action it was just bound to.
     const bool suppressed = capturing();
     captureDone = suppressed && serviceCapture();
 
@@ -531,8 +509,8 @@ void InputMap::beginFrame() {
         // Sized here rather than at `declare`, so an action declared before
         // `setPlayerCount` and one declared after it answer the same number of players.
         if (a.state.size() != players.size()) a.state.resize(players.size());
-        // Resized first, so an action retired before `setPlayerCount` and one retired
-        // after it answer the same number of players once it is revived.
+        // Resized *before* the liveness test, or a revived action answers a stale player
+        // count.
         if (!a.live) continue;
 
         for (size_t p = 0; p < players.size(); ++p) {
@@ -551,19 +529,13 @@ void InputMap::beginFrame() {
                 s.pressed = false;
                 s.released = false;
             } else {
-                // A tap: a bound control went down and back up inside one frame, so the
-                // action reads as not held at both ends and the level test sees nothing.
-                // Both edges fire, and both are true at once -- which is the honest report.
+                // A tap -- down and back up inside one frame -- fires both edges, because
+                // the level test sees nothing at either end. The `!rawHeld && !heldLast`
+                // guard keeps this about the *action*: without it, releasing one of two
+                // bound keys while the other stays down reads as a release.
                 //
-                // The `!rawHeld && !heldLast` guard is what keeps this about the *action*
-                // rather than its sources. Releasing one of two bound keys while the other
-                // stays down is not a release of the action, and a per-source release flag
-                // would say it was.
-                //
-                // The stated limit: a control released and pressed again inside one frame,
-                // while the action was already held, reports no new edge. Seeing that needs
-                // an event queue rather than a per-frame state, and at this frame rate it
-                // means two presses inside three milliseconds.
+                // The stated limit: a control released and pressed again inside one frame
+                // while the action was already held reports no new edge.
                 const bool tapped = anyPressed && !rawHeld && !s.heldLast;
 
                 s.value = raw;
@@ -571,8 +543,9 @@ void InputMap::beginFrame() {
                 s.pressed = (rawHeld && !s.heldLast) || tapped;
                 s.released = (!rawHeld && s.heldLast) || tapped;
             }
-            // Tracked through a suppressed frame as well, so releasing the key that ended a
-            // capture does not read as a press on the frame after it.
+            // Outside the `suppressed` branch on purpose: without tracking through a
+            // suppressed frame, releasing the key that ended a capture reads as a press on
+            // the frame after it.
             s.heldLast = rawHeld;
         }
     }
@@ -580,10 +553,9 @@ void InputMap::beginFrame() {
     padsLast = pads;
 }
 
-// A player past the end answers as an unbound action does, which is what makes shrinking
-// the count safe: a player who has left is a player pressing nothing. A retired action
-// answers the same way, and is tested here as well as zeroed by `retire` so that a read
-// between the retirement and the next frame already sees it gone.
+// A player past the end and a retired action both answer as an unbound action does, which
+// is what makes shrinking the player count safe. `actionLive` is tested here as well as
+// zeroed by `retire`, so a read between the retirement and the next frame sees it gone.
 float InputMap::value(ActionId id, uint32_t player) const {
     return actionLive(id) && player < actions[id].state.size() ? actions[id].state[player].value : 0.0f;
 }
@@ -624,12 +596,11 @@ void InputMap::setPointerModeExempt(ActionId id, bool exempt) {
     if (id < actions.size()) actions[id].pointerExempt = exempt;
 }
 
-// ============================================================== the pointer
 
 namespace {
 
-/// One cursor, so one flag, and it is a *desire*: this translation unit includes no window,
-/// and the frame loop is what calls the platform with it.
+/// One cursor, so one flag, and it records a *desire*: this translation unit includes no
+/// window, so the frame loop is what calls the platform with it.
 bool mouseGrabDesired = false;
 
 } // namespace
@@ -639,7 +610,6 @@ void mouseRelease() { mouseGrabDesired = false; }
 bool mouseGrabbed() { return mouseGrabDesired; }
 void mouseGrabReset() { mouseGrabDesired = false; }
 
-// ========================================================= scripted input
 
 namespace {
 
@@ -650,9 +620,9 @@ constexpr std::string_view kStepSeparators = ", \t\n\r";
 } // namespace
 
 bool Script::parse(std::string_view text) {
-    // Into a local and swapped at the end, which is the whole of "all or nothing": a
-    // malformed step at the end of a long script must not leave the beginning of it
-    // loaded, because a half-applied script reports a result against half a scenario.
+    // Built locally and swapped in at the end. Parsing into `list` directly leaves a
+    // malformed script half-loaded, and a half-applied script reports a result against half
+    // a scenario.
     std::vector<Step> parsed;
 
     for (size_t at = 0; at < text.size();) {
@@ -683,9 +653,8 @@ bool Script::parse(std::string_view text) {
         }
 
         std::string_view action = token.substr(colon + 1);
-        // The pad selector comes off first, because the edge suffix is part of the
-        // action's spelling and this is not -- `Player.Forward+@1` is player two pushing
-        // forward, not an action nobody declared (C26).
+        // The pad selector comes off before the edge suffix: `Player.Forward+@1` has to
+        // read as player two pushing forward, not as an action nobody declared.
         uint32_t pad = 0;
         if (const size_t at = action.rfind('@'); at != std::string_view::npos) {
             const std::string_view digitsPad = action.substr(at + 1);
@@ -697,7 +666,8 @@ bool Script::parse(std::string_view text) {
             }
             action.remove_suffix(action.size() - at);
         }
-        // Read before it is stripped: a bare action is a third case, not a defaulted one.
+        // Read before the suffix is stripped: a bare action is a third case, not a
+        // defaulted one.
         const char suffix = action.empty() ? '\0' : action.back();
         const bool explicitEdge = suffix == '+' || suffix == '-';
         if (explicitEdge) action.remove_suffix(1);
@@ -710,9 +680,7 @@ bool Script::parse(std::string_view text) {
             parsed.push_back({frame, std::string(action), suffix == '+', pad});
         } else {
             // A bare action is a tap: down and up on the same frame, in that order.
-            // `beginFrame` reports both edges for exactly this, so the one-frame press
-            // that most actions are actually used as stays one token rather than two
-            // that a script has to keep in step.
+            // `beginFrame` reports both edges for exactly this.
             parsed.push_back({frame, std::string(action), true, pad});
             parsed.push_back({frame, std::string(action), false, pad});
         }
@@ -736,22 +704,21 @@ std::vector<std::string> Script::unknownActions(const InputMap& map) const {
     std::vector<std::string> missing;
     for (const Step& s : list) {
         if (map.find(s.action) != kInvalidAction) continue;
-        // Deduplicated, because a tap is two steps and a typo would otherwise be
-        // reported twice for having been written once.
+        // Deduplicated: a tap is two steps, so a typo would be reported twice for having
+        // been written once.
         if (std::find(missing.begin(), missing.end(), s.action) == missing.end()) missing.push_back(s.action);
     }
     return missing;
 }
 
 void Script::apply(InputMap& map, uint64_t frame) const {
-    // The pad is rebuilt by replaying every step up to this frame rather than carried
-    // between calls, because `setGamepad` takes a whole state: pressing one button has to
-    // restate every other one still down. Replay is what keeps `apply` a function of the
-    // frame index and nothing else. Keys and mouse buttons need none of that -- the map
-    // already holds them as level state -- so they are fed once, on the frame that names
-    // them.
-    // One state per pad the script names, rather than one for all of them (C26). A script
-    // that drives only pad 1 leaves pad 0 exactly where the hardware left it.
+    // The pad state is rebuilt by replaying every step up to this frame rather than carried
+    // between calls: `setGamepad` takes a whole state, so pressing one button has to
+    // restate every other one still down, and the replay is what keeps `apply` a function
+    // of the frame index alone. Keys and mouse buttons are level state in the map already.
+    //
+    // One state per pad the script names, so a script driving only pad 1 leaves pad 0 where
+    // the hardware left it.
     std::vector<GamepadState> built(kMaxPads);
     std::vector<bool> touched(kMaxPads, false);
 
@@ -777,12 +744,10 @@ void Script::apply(InputMap& map, uint64_t frame) const {
             break;
         case Binding::Source::PadAxis:
             touched[s.pad] = true;
-            // The sign belongs to the binding, not to the step: `Camera.Forward` is
-            // `Pad.LeftY-`, so pressing it means driving that axis to -1 and letting
-            // `resolve` multiply the scale back out. Full travel rather than something
-            // just past `kDigitalThreshold`, because a script asking for an action wants
-            // the action and not the edge of it -- and because an analog action reads the
-            // value, so half a stick would be half the speed.
+            // The sign belongs to the binding, not the step: `Camera.Forward` is
+            // `Pad.LeftY-`, so pressing it drives that axis to -1 and `resolve` multiplies
+            // the scale back out. Full travel rather than just past `kDigitalThreshold`,
+            // because an analog action reads the value -- half a stick is half the speed.
             if (b.code >= 0 && b.code < kPadAxisCount) {
                 built[s.pad].axes[b.code] = s.down ? std::copysign(1.0f, b.scale) : 0.0f;
             }
@@ -798,7 +763,6 @@ void Script::apply(InputMap& map, uint64_t frame) const {
     }
 }
 
-// ================================================================== UTF-8
 
 size_t utf8SequenceLength(const std::string& s, size_t at) {
     if (at >= s.size()) return 0;
@@ -807,8 +771,8 @@ size_t utf8SequenceLength(const std::string& s, size_t at) {
     if ((lead & 0xE0u) == 0xC0u) length = 2;
     else if ((lead & 0xF0u) == 0xE0u) length = 3;
     else if ((lead & 0xF8u) == 0xF0u) length = 4;
-    // A malformed lead byte advances by one rather than zero: a walk that cannot make
-    // progress is an editor that hangs on a byte nobody can see.
+    // A malformed lead byte must advance by one, never zero: a walk that cannot make
+    // progress hangs the editor on a byte nobody can see.
     return std::min(length, s.size() - at);
 }
 
@@ -842,7 +806,6 @@ size_t utf8Previous(const std::string& s, size_t at) {
 }
 } // namespace
 
-// ================================================================= TextInput
 
 void TextInput::setActive(bool on) {
     if (activeFlag == on) return;
@@ -861,8 +824,8 @@ void TextInput::onChar(uint32_t codepoint) {
     if (encoded.empty()) return;
 
     if (maxBytes != 0 && buffer.size() + encoded.size() > maxBytes) {
-        // Reported rather than silently dropped: a field that stops accepting input
-        // with no signal is indistinguishable from a keyboard that stopped working.
+        // Reported rather than silently dropped: a field that stops accepting input with no
+        // signal is indistinguishable from a keyboard that stopped working.
         overflowFlag = true;
         return;
     }
@@ -957,21 +920,19 @@ bool TextInput::takeCancelled() {
     return was;
 }
 
-// ====================================================== binding persistence
 
 uint32_t applyBindings(InputMap& map, const std::vector<std::pair<std::string, std::string>>& table) {
     uint32_t applied = 0;
     std::vector<std::pair<std::string, std::string>> park;
     for (const auto& [name, list] : table) {
         // `findDeclared`, so a row the game retired before startup finished still receives
-        // the player's edit. Through `find` it read as an unknown action, fell back to its
-        // default, and the next save wrote nothing for it because it then *was* the default.
+        // the player's edit. Through `find` it reads as unknown, falls back to its default,
+        // and the next save drops the edit because the value then *is* the default.
         const ActionId id = map.findDeclared(name);
         if (id == kInvalidAction) {
-            // Not a warning, and not yet a loss: this runs once, and half the actions a
-            // game will ever declare may not exist at this moment -- a camera declares its
-            // rows when it is installed. Whether the name is unknown or merely early is not
-            // knowable here, and the caller that can tell reads `parkedBindings()`.
+            // Not a warning: this runs once, and a camera declares its rows when it is
+            // installed, so unknown and merely early are indistinguishable here. The caller
+            // that can tell reads `parkedBindings()`.
             Logger::debug(LogCategory::Input, "Config binds \"%s\", which nothing has declared yet; held",
                           name.c_str());
             park.emplace_back(name, list);
@@ -994,7 +955,7 @@ bool saveBindings(const InputMap& map, const std::string& configPath) {
         existing.ParseStream(stream);
         if (existing.HasParseError()) {
             // Refuse rather than overwrite: a config that fails to parse still holds
-            // settings, and replacing it with two keys loses all of them.
+            // settings, and replacing it with two keys loses every one of them.
             Logger::error(LogCategory::Input, "Cannot save bindings: %s is not valid JSON (%s at %zu)",
                           configPath.c_str(), rapidjson::GetParseError_En(existing.GetParseError()),
                           existing.GetErrorOffset());
@@ -1036,10 +997,9 @@ bool saveBindings(const InputMap& map, const std::string& configPath) {
     writer.SetIndent(' ', 2);
     doc.Accept(writer);
 
-    // Written beside the config and renamed over it, which is what keeps the parse-error
-    // refusal above worth making: the file this is about to replace is the player's whole
-    // settings file, and `trunc` would empty it before there is any way to know the write
-    // will succeed.
+    // Written beside the config and renamed over it. The file being replaced is the
+    // player's whole settings file, and `trunc` would empty it before there is any way to
+    // know the write will succeed.
     if (!writeFileAtomically(configPath, std::string(text.GetString()) + '\n', LogCategory::Input, "bindings")) {
         return false;
     }

@@ -14,7 +14,7 @@ using namespace scene;
 
 /**
  * @file tests/WorldSaveTests.cpp
- * @brief The engine's save section, and the four ways it declines to apply one (C6).
+ * @brief The engine's save section, and the four ways it declines to apply one.
  *
  * `SaveFileTests` covers the stream; this covers the *decision*. The property that matters
  * is not that a transform round-trips -- it is that a save which does not describe the

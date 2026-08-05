@@ -9,7 +9,7 @@ using namespace ai;
 
 /**
  * @file tests/PlannerTests.cpp
- * @brief The decision layer (C24).
+ * @brief The decision layer.
  *
  * **The tests that matter are the ones about *derived* routes rather than authored ones.**
  * A planner that only ever returned the single action whose effects match the goal would

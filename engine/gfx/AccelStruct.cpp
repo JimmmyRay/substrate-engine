@@ -23,8 +23,6 @@ VkTransformMatrixKHR toVkTransform(const glm::mat4& m) {
     return out;
 }
 
-/// Allocate the buffer an acceleration structure lives in and create the structure on
-/// it. The two are always created together and always destroyed together.
 void createStructure(const VulkanContext& ctx, GpuAccelStruct& as, VkDeviceSize size,
                      VkAccelerationStructureTypeKHR type) {
     as.buffer = createBuffer(ctx, size,
@@ -45,8 +43,8 @@ void createStructure(const VulkanContext& ctx, GpuAccelStruct& as, VkDeviceSize 
     as.address = vkGetAccelerationStructureDeviceAddressKHR(ctx.device, &addrInfo);
 }
 
-/// Scratch for a build. Freed by the caller once the build has completed, which is why
-/// every load-time build here is a blocking immediate submit.
+/// Scratch for a build. The caller frees it, so a build using it must have completed --
+/// which is why every load-time build here goes through a blocking immediate submit.
 GpuBuffer createScratch(const VulkanContext& ctx, VkDeviceSize size, VkDeviceAddress& address,
                         const char* name = nullptr) {
     GpuBuffer scratch = createBuffer(
@@ -64,9 +62,6 @@ GpuBuffer createScratch(const VulkanContext& ctx, VkDeviceSize size, VkDeviceAdd
 
 VkDeviceSize alignUp(VkDeviceSize v, VkDeviceSize a) { return (v + a - 1) & ~(a - 1); }
 
-/// Fill a triangles descriptor. The five fields that differ between the static and
-/// dynamic tiers are arguments; the rest are the same in both and stating them twice
-/// is how one of them ends up different by accident.
 VkAccelerationStructureGeometryKHR triangleGeometry(VkDeviceAddress vertices, VkDeviceSize stride,
                                                     uint32_t maxVertex, VkDeviceAddress indices,
                                                     VkDeviceAddress transforms, bool opaque = true) {
@@ -83,21 +78,11 @@ VkAccelerationStructureGeometryKHR triangleGeometry(VkDeviceAddress vertices, Vk
     VkAccelerationStructureGeometryKHR geometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     geometry.geometryType = VK_GEOMETRY_TYPE_TRIANGLES_KHR;
     geometry.geometry.triangles = tri;
-    /**
-     * Opaque, including the alpha-masked foliage -- see the header for what that costs
-     * and why it is not fixed here.
-     *
-     * Emissive geometry is the exception, and it is how a light escapes the mesh that
-     * represents it. A shadow ray traces without `gl_RayFlagsOpaqueEXT`, so an opaque
-     * triangle is confirmed by the implementation and terminates the ray, while a
-     * non-opaque one is offered to the shader as a *candidate* -- and rayshadow.glsl
-     * never confirms one. Emissive geometry therefore occludes nothing.
-     *
-     * A reflection ray passes `gl_RayFlagsOpaqueEXT`, which forces every triangle opaque
-     * for that ray, so the same geometry is still hit and still seen in reflections. The
-     * flag is per ray, which is what lets one mesh be invisible to shadows and visible to
-     * everything else without a second acceleration structure or a second TLAS instance.
-     */
+    // Clearing the bit is what lets a light escape the emissive mesh representing it:
+    // `rayshadow.glsl` traces without `gl_RayFlagsOpaqueEXT` and never confirms a
+    // candidate, so a non-opaque triangle occludes nothing, while reflection rays force
+    // opacity per ray and still see it. Marking emissive geometry opaque here puts every
+    // emissive mesh back in its own shadow.
     geometry.flags = opaque ? VK_GEOMETRY_OPAQUE_BIT_KHR : 0;
     return geometry;
 }
@@ -148,34 +133,24 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
                            uint32_t deformedVertexCount, const std::vector<uint32_t>& deformedBase,
                            const scene::InstanceTable& instances, const std::vector<uint8_t>& emissiveMaterials,
                            SceneAccelStruct& out) {
-    // A BLAS per primitive plus a TLAS, and it is built twice during load.
     auto zone = core::Profiler::scope("buildSceneAccelStruct");
-    // Live slots, split by tier. A geometry index is not an instance slot: the table
-    // may hold holes, and a BLAS geometry with no triangles is legal but pointless.
+    // A geometry index is not an instance slot -- the table holds holes -- which is why
+    // every consumer downstream goes through these lists rather than indexing `instances`.
     std::vector<uint32_t> staticSlots;
     std::vector<uint32_t> dynamicSlots;
     std::vector<uint32_t> rigidSlots;
     for (uint32_t s = 0; s < instances.slotCount(); ++s) {
         if ((instances.slot(s).meta.z & scene::kInstanceLive) == 0u) continue;
         if (instances.drawRanges()[s].indexCount == 0) continue;
-        // **A blended surface occludes nothing, and the raster path already said so.**
-        // `buildCommands` skips `kInstanceBlended` when it fills the shadow cascade, so
-        // leaving it in here made one surface cast a shadow under ray queries and none
-        // without them -- which is not a quality difference between two shadow techniques,
-        // it is the two disagreeing about what is there. A 10 m intersection-highlight
-        // sphere around a character is the case that showed it: an opaque black disc under
-        // ray queries, nothing at all with `--no-ray-query`.
-        //
-        // It leaves blended surfaces out of traced *reflections* as well, which is the same
-        // trade and the same reason: a hit is shaded by `shadeRayHit` from one opaque
-        // surface's material, and a translucent one has no single answer to give it.
+        // Must match `buildCommands`, which skips `kInstanceBlended` when it fills the
+        // shadow cascade. Admitting blended surfaces here makes them cast a shadow under
+        // ray queries and none with `--no-ray-query` -- the two paths disagreeing about
+        // what is in the scene, not about how it is shaded.
         if ((instances.slot(s).meta.z & scene::kInstanceBlended) != 0u) continue;
 
-        // A deformed instance only reaches the dynamic tier when there is somewhere for
-        // its vertices to have been written and an index array to rebase. Without those
-        // it falls back to the static tier and traces against its bind pose, which is
-        // wrong but visible -- and is exactly what 3.9 did for every skinned mesh.
-        // `accelTier` argues why that fallback is static rather than rigid.
+        // Without a deformed vertex range and an index array to rebase there is nothing
+        // for the dynamic tier to trace, so the instance falls back to static and traces
+        // against its bind pose.
         const bool deformable = deformedVertices != VK_NULL_HANDLE && !sceneIndices.empty() &&
                                 s < deformedBase.size() && deformedBase[s] != UINT32_MAX;
         switch (scene::accelTier(instances.slot(s).meta.z, deformable)) {
@@ -189,7 +164,6 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
     const VkDeviceAddress vertexAddress = bufferAddress(ctx, vertexBuffer);
     const VkDeviceAddress indexAddress = bufferAddress(ctx, indexBuffer);
 
-    // ------------------------------------------------------- static tier (3.9)
     VkAccelerationStructureBuildGeometryInfoKHR staticBuild{
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
     std::vector<VkAccelerationStructureGeometryKHR> geometries;
@@ -202,16 +176,12 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_SIZES_INFO_KHR};
 
     if (!staticSlots.empty()) {
-        // One VkTransformMatrixKHR per geometry, in one device-local buffer the build
-        // reads by address. A geometry's transform is baked into the BLAS, which is what
-        // lets a single BLAS hold a whole flattened node hierarchy.
         transforms.reserve(staticSlots.size());
         for (uint32_t s : staticSlots) transforms.push_back(toVkTransform(instances.slot(s).model));
 
-        // The same thing again, host-side and unflattened, for `staticTierStale`. Kept as
-        // the glm matrix rather than reading the row-major 3x4 back, because the comparison
-        // is against `instances.slot(s).model` and a transpose in the middle of it is a
-        // place to get the sense wrong for no gain.
+        // The same transforms again for `staticTierStale`, kept as glm rather than read
+        // back from the row-major 3x4: the comparison is against `slot(s).model`, and a
+        // transpose in the middle of it is a place to get the sense wrong for no gain.
         out.staticSlot = staticSlots;
         out.staticBaked.clear();
         out.staticBaked.reserve(staticSlots.size());
@@ -248,8 +218,6 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         }
 
         staticBuild.type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-        // Trace-time performance over build time: this is built once at load and then
-        // read every frame for the rest of the process.
         staticBuild.flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
         staticBuild.mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
         staticBuild.geometryCount = static_cast<uint32_t>(geometries.size());
@@ -264,9 +232,9 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         staticBuild.scratchData.deviceAddress = staticScratchAddress;
     }
 
-    // ------------------------------------------------------ dynamic tier (S2.5)
-    // Indices rebased onto the deformed vertex buffer, once. See the header for why the
-    // draw path needs no equivalent and this does.
+    // A build range has only an added `firstVertex`, never the signed `vertexOffset` the
+    // indirect draw path uses, so indices onto the deformed vertex buffer have to be
+    // rebased once here rather than corrected per frame.
     std::vector<VkAccelerationStructureGeometryKHR> dynGeometry(dynamicSlots.size());
     std::vector<VkAccelerationStructureBuildGeometryInfoKHR> dynBuild(dynamicSlots.size());
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> dynRange(dynamicSlots.size());
@@ -309,30 +277,17 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         dynScratch.resize(dynamicSlots.size());
 
         for (size_t i = 0; i < dynamicSlots.size(); ++i) {
-            // No baked transform: the deformed vertices are already in model space, and
-            // where the object *is* belongs to the TLAS instance. That is the whole
-            // reason a moving object needs its own BLAS.
+            // No baked transform: the deformed vertices are model space and the TLAS
+            // instance carries where the object is. Baking one here freezes it in place.
             dynGeometry[i] = triangleGeometry(out.deformedVertexAddress, out.vertexStride,
                                               out.deformedMaxVertex, out.dynamicIndexAddress, 0);
 
             dynBuild[i] = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
             dynBuild[i].type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-            // Fast *trace* rather than fast build, plus ALLOW_UPDATE. This used to prefer
-            // the build, on the reasoning that a structure refitted every frame pays its
-            // build cost every frame and that for one character among a hundred thousand
-            // static triangles the build is the side that shows up.
-            //
-            // **That reasoning had a scene in it, and it does not hold when the deformed
-            // geometry is most of what a ray can hit.** An arena authoring its collision
-            // separately is ~500 visible triangles, so two skinned characters are 99% of
-            // the traced scene rather than a rounding error in it -- and a fast-build tree
-            // over 56k triangles costs every shadow ray far more than the per-frame build
-            // saves. Measured on `battle_arena`: 38.2 ms a frame down to the numbers in
-            // this card's outcome, with the build itself moving by a fraction of that.
-            //
-            // The flags must match the refit's in `refitAccelStructures`, because an update
-            // whose source was built under different flags is undefined. `updateScratchSize`
-            // below is queried from *these* flags, so the scratch follows automatically.
+            // Must match the flags `refitSceneAccelStruct` builds with: a structure
+            // rebuilt under flags other than the ones it was created with is undefined,
+            // not merely slower. Preferring fast build here costs every shadow ray that
+            // enters a character far more than the per-frame build saves.
             dynBuild[i].flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR |
                                 VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
             dynBuild[i].mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
@@ -352,10 +307,9 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
             dynBuild[i].dstAccelerationStructure = out.dynamicBlas[i].handle;
             dynBuild[i].scratchData.deviceAddress = scratchAddress;
 
-            // **Build scratch, not update scratch**, because the per-frame pass rebuilds
-            // rather than refits -- see `refitAccelStructures`. A build needs the larger
-            // of the two, and sizing this from `updateScratchSize` while issuing a build
-            // is a buffer overrun the validation layers do not catch.
+            // Build scratch, not update scratch: the per-frame pass rebuilds. Sizing this
+            // from `updateScratchSize` while issuing a build is a buffer overrun the
+            // validation layers do not catch.
             maxUpdateScratch = std::max(maxUpdateScratch, sizes.buildScratchSize);
 
             dynRange[i] = {};
@@ -364,17 +318,9 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         }
     }
 
-    // -------------------------------------------------------------- rigid tier
-    // Movers that do not deform. Their vertices are the scene's own and never change, so
-    // there is no rebasing to do and nothing to refit: what they need is a BLAS with *no*
-    // baked transform, so the TLAS instance is free to carry one that changes.
-    //
-    // One structure per distinct primitive, shared by every mover drawing it. The key is
-    // the index range plus the opacity, because two instances of one mesh with different
-    // materials can disagree about whether a shadow ray passes through them, and that is
-    // a property of the geometry rather than of the TLAS instance. A linear scan over the
-    // distinct keys, not a map: the list is one entry per *mesh* a game makes movable,
-    // which is tens where the mover count is thousands.
+    // One structure per distinct primitive, shared by every mover drawing it. Opacity is
+    // part of the key because it is baked into the geometry rather than the TLAS
+    // instance, so two movers of one mesh with different materials cannot share a BLAS.
     struct RigidKey {
         uint32_t firstIndex;
         uint32_t indexCount;
@@ -402,9 +348,8 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         }
         if (found == rigidKeys.size()) {
             rigidKeys.push_back(key);
-            // Indices unrebased, exactly as the static tier leaves them: the build reads
-            // them at a byte offset with `firstVertex` 0, so they still address the
-            // scene's own vertex buffer and the shader can use them unmodified.
+            // Unrebased, with `firstVertex` 0, so the indices still address the scene's
+            // own vertex buffer and `GpuHitRecord::deformed` stays 0 for this tier.
             rigidGeometry.push_back(
                 triangleGeometry(vertexAddress, vertexStride, vertexCount - 1, indexAddress, 0, key.opaque));
             rigidBuild.push_back({VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR});
@@ -422,9 +367,6 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
 
         for (size_t i = 0; i < rigidKeys.size(); ++i) {
             rigidBuild[i].type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-            // Fast trace and no ALLOW_UPDATE, unlike the deformed tier: this is built
-            // once at load and then read every frame for the rest of the process. Moving
-            // it costs a TLAS transform, not a build.
             rigidBuild[i].flags = VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
             rigidBuild[i].mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
             rigidBuild[i].geometryCount = 1;
@@ -446,28 +388,22 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
     }
     out.rigidSlot = rigidSlots;
 
-    // ------------------------------------------------------------- hit records
-    // One record per BLAS geometry, static tier first. See GpuHitRecord for why the
-    // shader's lookup is `instanceCustomIndex + geometryIndex` and why that needs the
-    // three tiers laid out in exactly this order.
+    // Static, then deformed, then rigid. `GpuHitRecord`'s indexing scheme is this order;
+    // emitting the tiers in any other shifts every shader's lookup.
     {
         std::vector<GpuHitRecord> records;
         records.reserve(staticSlots.size() + dynamicSlots.size() + rigidSlots.size());
 
         for (uint32_t slot : staticSlots) {
-            // The static tier's indices were never rebased -- the build reads them at a
-            // byte offset and firstVertex is 0 -- so they still index the scene's own
-            // vertex buffer, and the shader can use them unmodified.
             records.push_back({instances.drawRanges()[slot].firstIndex, slot, 0u, 0u});
         }
         for (size_t i = 0; i < dynamicSlots.size(); ++i) {
             records.push_back({out.dynamicGeometry[i].indexByteOffset / static_cast<uint32_t>(sizeof(uint32_t)),
                                dynamicSlots[i], 1u, 0u});
         }
-        // One per rigid *instance* rather than per rigid BLAS, and that is the whole
-        // reason sharing a structure between movers costs nothing downstream: the record
-        // is found through `instanceCustomIndex`, so two crates over one cube still
-        // resolve to their own slot and their own material.
+        // One per rigid *instance*, not per rigid BLAS: the record is reached through
+        // `instanceCustomIndex`, so movers sharing a structure still resolve to their own
+        // slot and material.
         for (uint32_t slot : rigidSlots) {
             records.push_back({instances.drawRanges()[slot].firstIndex, slot, 0u, 0u});
         }
@@ -486,9 +422,8 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         out.sceneIndexAddress = indexAddress;
     }
 
-    // ---------------------------------------------------------------------- tlas
-    // One instance for the static BLAS -- identity, because its transforms are baked --
-    // and one per dynamic BLAS carrying that instance's world transform.
+    // The static BLAS's instance is identity because its transforms are already baked in;
+    // giving it one here applies the transform twice.
     std::vector<VkAccelerationStructureInstanceKHR> tlasInstances;
     if (out.staticBlas.handle != VK_NULL_HANDLE) {
         VkAccelerationStructureInstanceKHR inst{};
@@ -501,10 +436,9 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
     for (size_t i = 0; i < out.dynamicBlas.size(); ++i) {
         VkAccelerationStructureInstanceKHR inst{};
         inst.transform = toVkTransform(instances.slot(out.dynamicSlot[i]).model);
-        // The record index, not the instance slot. `instanceCustomIndex + geometryIndex`
-        // is how a shader finds the hit record, and a dynamic BLAS's geometry index is
-        // always 0 -- so this field carries the whole offset past the static tier. It is
-        // 24 bits, which caps the scene at 16.7M BLAS geometries.
+        // The record index, not the instance slot -- a dynamic BLAS's geometry index is
+        // always 0, so this carries the whole offset past the static tier. 24 bits, which
+        // caps the scene at 16.7M BLAS geometries.
         inst.instanceCustomIndex = static_cast<uint32_t>(staticSlots.size() + i);
         inst.mask = 0xFF;
         inst.flags = VK_GEOMETRY_INSTANCE_TRIANGLE_FACING_CULL_DISABLE_BIT_KHR;
@@ -513,9 +447,6 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
     }
     for (size_t i = 0; i < rigidSlots.size(); ++i) {
         VkAccelerationStructureInstanceKHR inst{};
-        // The one line the whole tier exists for. `refitSceneAccelStruct` rewrites it
-        // every frame from the same field, so a crate the solver pushes traces where it
-        // is drawn rather than where it was loaded.
         inst.transform = toVkTransform(instances.slot(rigidSlots[i]).model);
         inst.instanceCustomIndex = static_cast<uint32_t>(staticSlots.size() + dynamicSlots.size() + i);
         inst.mask = 0xFF;
@@ -524,9 +455,8 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
         tlasInstances.push_back(inst);
     }
 
-    // Host-visible and never staged: the transforms are rewritten every frame by
-    // refitSceneAccelStruct, and a staging copy per frame to move 64 bytes an instance
-    // would cost more than the write it replaces.
+    // Host-visible and never staged: `refitSceneAccelStruct` writes straight through
+    // `mapped` every frame, so making this device-local breaks the refit path.
     out.instanceBuffer =
         createBuffer(ctx, tlasInstances.size() * sizeof(VkAccelerationStructureInstanceKHR),
                      VK_BUFFER_USAGE_ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY_BIT_KHR |
@@ -565,11 +495,9 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
     tlasBuild.dstAccelerationStructure = out.tlas.handle;
     tlasBuild.scratchData.deviceAddress = tlasScratchAddress;
 
-    // ------------------------------------------------------------------- record
-    // Every BLAS then the TLAS, in one submit, with a barrier between: the TLAS build
-    // reads each BLAS's device address, so the bottom level has to be complete first.
-    // This is the one ordering constraint in the whole file and it is invisible in the
-    // API -- there is no handle dependency for the validation layers to notice.
+    // Every BLAS, then a barrier, then the TLAS. The TLAS build reads each BLAS by device
+    // address, so there is no handle dependency for the validation layers to catch if the
+    // barrier is dropped or the order swapped.
     VkCommandBuffer cmd = uploader.beginImmediate(ctx);
 
     if (out.staticBlas.handle != VK_NULL_HANDLE) {
@@ -608,15 +536,10 @@ void buildSceneAccelStruct(const VulkanContext& ctx, Uploader& uploader, VkBuffe
     for (GpuBuffer& b : rigidScratch) destroyBuffer(ctx, b);
     destroyBuffer(ctx, tlasScratch);
 
-    // ----------------------------------------------- persistent refit scratch
-    // Allocated once, at the size the worst frame needs, because allocating inside a
-    // frame is exactly what this exists to avoid. Every dynamic BLAS gets its own
-    // region so the updates need no barrier between them, and the TLAS rebuild's
-    // scratch sits past the end of all of them.
-    //
-    // Gated on `hasDynamic()` rather than on the dynamic BLASes alone: a scene of crates
-    // and no characters refits nothing and still rebuilds its TLAS every frame, and
-    // without this it would reach that rebuild with a null scratch buffer.
+    // Allocated once, at the size the worst frame needs. Every dynamic BLAS gets its own
+    // region so the per-frame builds need no barrier between them; the TLAS scratch sits
+    // past the end of all of them. Gated on `hasDynamic()`, not on the dynamic BLASes:
+    // a scene of crates alone still rebuilds its TLAS and would find a null scratch here.
     if (out.hasDynamic()) {
         const VkDeviceSize align = std::max<VkDeviceSize>(ctx.asScratchAlignment, 1);
         out.blasUpdateScratchStride = alignUp(std::max<VkDeviceSize>(maxUpdateScratch, 1), align);
@@ -647,21 +570,13 @@ bool staticTierStale(const SceneAccelStruct& as, const scene::InstanceTable& ins
         const uint32_t s = as.staticSlot[i];
         if (s >= instances.slotCount()) return true;
         const scene::GpuInstance& live = instances.slot(s);
-        // A slot the game reused for something else is stale whatever its transform says,
-        // and a dead one is stale because the structure is still tracing it.
         if ((live.meta.z & scene::kInstanceLive) == 0u) return true;
-        // Deformed instances that fell back to this tier are excluded, and they are the
-        // reason this is not simply "did any baked transform change". Their transform moves
-        // every frame by design -- `accelTier` says why the fallback is Static -- so
-        // including them would rebuild the whole structure once per frame in any scene with
-        // a skinned mesh and no deformed buffer yet.
+        // Deformed fallbacks move every frame by design; including them rebuilds the whole
+        // structure once per frame in any scene with a skinned mesh and no deformed buffer.
         if ((live.meta.z & scene::kInstanceDeformed) != 0u) continue;
-        // **The flag, not only the transform, and this is the case that matters most.**
-        // `initPhysics` sets `kInstanceDynamic` on everything it gives a body to, and it
-        // runs *after* the game's `setInstances` has already baked those instances into the
-        // static tier. They then fall, and their traced copies stay at the spawn -- twelve
-        // frozen box shadows in `physics.gltf`, and a sphere with no shadow under it at all.
-        // Checking the transform alone would miss a mover that has not moved yet.
+        // The flag, not only the transform: `initPhysics` sets `kInstanceDynamic` after
+        // `setInstances` has already baked those instances in, so a mover that has not
+        // fallen yet still has to invalidate the structure.
         if ((live.meta.z & scene::kInstanceDynamic) != 0u) return true;
         if (scene::movedSinceBake(as.staticBaked[i], live.model)) return true;
     }
@@ -672,24 +587,20 @@ void refitSceneAccelStruct(const VulkanContext& ctx, VkCommandBuffer cmd, const 
                            SceneAccelStruct& as) {
     if (!as.hasDynamic() || as.refitScratch.buffer == VK_NULL_HANDLE) return;
 
-    // The TLAS instance array first, because it is a plain memory write and the build
-    // that reads it is recorded after. `staticFirst` is the offset the static BLAS's
-    // instance occupies when there is one.
+    // The instance array is written host-side, so it must be finished before the build
+    // that reads it is recorded below.
     auto* tlasInstances = static_cast<VkAccelerationStructureInstanceKHR*>(as.instanceBuffer.mapped);
     const size_t staticFirst = as.staticBlas.handle != VK_NULL_HANDLE ? 1u : 0u;
     for (size_t i = 0; i < as.dynamicSlot.size(); ++i) {
         tlasInstances[staticFirst + i].transform = toVkTransform(instances.slot(as.dynamicSlot[i]).model);
     }
-    // The rigid tier, in the same array and by the same rule. This is the whole of what
-    // moving one costs: no refit, no rebuild, one 3x4 written where the previous frame's
-    // was -- and it is why a mover must not be baked into `staticBlas`, which has no such
-    // line to write.
+    // The rigid tier follows the deformed one in the same array; the two loops' order
+    // here has to match the order `buildSceneAccelStruct` appended them in.
     const size_t rigidFirst = staticFirst + as.dynamicSlot.size();
     for (size_t i = 0; i < as.rigidSlot.size(); ++i) {
         tlasInstances[rigidFirst + i].transform = toVkTransform(instances.slot(as.rigidSlot[i]).model);
     }
 
-    // ------------------------------------------------------------ BLAS refits
     std::vector<VkAccelerationStructureGeometryKHR> geometry(as.dynamicBlas.size());
     std::vector<VkAccelerationStructureBuildGeometryInfoKHR> build(as.dynamicBlas.size());
     std::vector<VkAccelerationStructureBuildRangeInfoKHR> range(as.dynamicBlas.size());
@@ -701,25 +612,14 @@ void refitSceneAccelStruct(const VulkanContext& ctx, VkCommandBuffer cmd, const 
 
         build[i] = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_BUILD_GEOMETRY_INFO_KHR};
         build[i].type = VK_ACCELERATION_STRUCTURE_TYPE_BOTTOM_LEVEL_KHR;
-        // **The same flags the structure was built with**, and an update whose source was
-        // built under different ones is undefined rather than merely slower. If the tier's
-        // preference changes in `buildAccelStructures`, it changes here in the same edit.
+        // The same flags `buildSceneAccelStruct` created these structures with; rebuilding
+        // under different ones is undefined, not merely slower.
         build[i].flags = VK_BUILD_ACCELERATION_STRUCTURE_ALLOW_UPDATE_BIT_KHR |
                          VK_BUILD_ACCELERATION_STRUCTURE_PREFER_FAST_TRACE_BIT_KHR;
-        // **Build, not update, and the difference is the whole cost of this tier.**
-        //
-        // A refit moves the AABBs and keeps the tree. That is correct output and almost
-        // free -- 0.11 ms for two characters -- but the tree it keeps is the one built from
-        // the *bind* pose, arms out and legs straight. A skinned character spends every
-        // frame somewhere else, so the retained hierarchy is one whose nodes overlap far
-        // more than a tree built for the pose on screen, and every ray entering it pays
-        // that overlap. Measured on `battle_arena`: refitting cost 22 ms of `Lighting`
-        // against 0.23 ms for the same scene with no characters in it -- traversal, not
-        // building, and the cheapness of the refit was what hid it.
-        //
-        // A rebuild is the fix rather than a periodic re-build because the pose differs
-        // every frame; there is no interval at which the retained tree is fresh. The build
-        // shows up in `AsRefit` and is the trade this line makes on purpose.
+        // Build, not update. A refit keeps the tree built from the *bind* pose, whose
+        // nodes overlap far more than one built for the pose on screen -- cheap to record
+        // and paid back by every ray that enters the character, which is why the cost
+        // lands in `Lighting` rather than in `AsRefit` where it would be noticed.
         build[i].mode = VK_BUILD_ACCELERATION_STRUCTURE_MODE_BUILD_KHR;
         build[i].srcAccelerationStructure = VK_NULL_HANDLE;
         build[i].dstAccelerationStructure = as.dynamicBlas[i].handle;
@@ -743,19 +643,15 @@ void refitSceneAccelStruct(const VulkanContext& ctx, VkCommandBuffer cmd, const 
     dep.memoryBarrierCount = 1;
     dep.pMemoryBarriers = &barrier;
 
-    // Skipped whole when nothing deforms -- a scene of crates has every BLAS it will ever
-    // need. `infoCount` may not be zero, and the barrier below orders BLAS writes against
-    // the TLAS read, so with no builds recorded there is nothing for it to order.
+    // `infoCount` may not be zero, so a scene with no deformed geometry must skip the call
+    // rather than pass an empty array.
     if (!build.empty()) {
         vkCmdBuildAccelerationStructuresKHR(cmd, static_cast<uint32_t>(build.size()), build.data(), rangePtr.data());
         vkCmdPipelineBarrier2(cmd, &dep);
     }
 
-    // --------------------------------------------------------- TLAS rebuild
-    // Rebuilt rather than refitted. A TLAS over a handful of instances costs less to
-    // build than the bookkeeping that would decide whether a refit is still valid, and
-    // a refitted TLAS degrades in exactly the case a character walking across a room
-    // produces -- large translations relative to the instance's own size.
+    // Rebuilt, not refitted: a refitted TLAS degrades under exactly the large translations
+    // a character crossing a room produces.
     VkAccelerationStructureGeometryKHR tlasGeometry{VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_KHR};
     tlasGeometry.geometryType = VK_GEOMETRY_TYPE_INSTANCES_KHR;
     tlasGeometry.geometry.instances = {VK_STRUCTURE_TYPE_ACCELERATION_STRUCTURE_GEOMETRY_INSTANCES_DATA_KHR};
@@ -778,7 +674,7 @@ void refitSceneAccelStruct(const VulkanContext& ctx, VkCommandBuffer cmd, const 
     VkAccelerationStructureBuildRangeInfoKHR* tlasRanges = &tlasRange;
     vkCmdBuildAccelerationStructuresKHR(cmd, 1, &tlasBuild, &tlasRanges);
 
-    // And once more, for the shaders that trace against the result.
+    // Reused: the same `dep` now orders the TLAS write against every shader that traces.
     barrier.dstStageMask = VK_PIPELINE_STAGE_2_FRAGMENT_SHADER_BIT | VK_PIPELINE_STAGE_2_COMPUTE_SHADER_BIT;
     barrier.dstAccessMask = VK_ACCESS_2_ACCELERATION_STRUCTURE_READ_BIT_KHR;
     vkCmdPipelineBarrier2(cmd, &dep);

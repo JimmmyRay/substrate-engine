@@ -300,7 +300,7 @@ TEST(CameraTest, TheControllerAsksForThePointerAndTheBaseNeverDoes) {
     mouseGrabReset();
 }
 
-// ---------------------------------------------------------------- projections (P3)
+// ---------------------------------------------------------------- projections
 
 TEST(CameraTest, BothProjectionsPutTheNearPlaneAtDepthOne) {
     const Camera perspective = framedAs(Camera::Projection::Perspective);
@@ -425,7 +425,7 @@ TEST(CameraTest, FramingASceneSizesTheOrthographicBoxAsWellAsTheNearPlane) {
     EXPECT_NEAR(depthAt(camera, camera.orthoFar), 0.0f, 1e-5f);
 }
 
-// ------------------------------------------------------- the other three controllers (C37)
+// ------------------------------------------------------- the other three controllers
 
 namespace {
 

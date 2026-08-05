@@ -11,7 +11,7 @@
 
 /**
  * @file tools/sim.cpp
- * @brief Step a scene with no Vulkan device and no window (C27).
+ * @brief Step a scene with no Vulkan device and no window.
  *
  * A dedicated server, a CI regression run on a GPU-less box and a batch tuning job all want
  * the same thing: the simulation, advanced, with nothing on screen. `--headless` is not that

@@ -290,7 +290,7 @@ TEST(SampleClip, CubicSplineRotationsComeBackNormalised) {
     }
 }
 
-// ================================================= morph weight channels (S2.1)
+// ================================================= morph weight channels
 
 namespace {
 
@@ -704,7 +704,7 @@ TEST(SceneAnimator, SamplingRestartsFromTheBindPoseEachUpdate) {
     expectVecNear(glm::vec3(anim.worldTransforms(anim.characterAt(0))[0][3]), glm::vec3(3.0f, 0.0f, 0.0f));
 }
 
-// ========================================================= playback (S2.3)
+// ========================================================= playback
 
 namespace {
 
@@ -824,7 +824,7 @@ TEST(Playback, FindClipLooksUpByName) {
     EXPECT_EQ(anim.findClip("nothing"), SceneAnimator::kNoSkin);
 }
 
-// ==================================================== state machine (S2.4)
+// ==================================================== state machine
 
 namespace {
 
@@ -1003,7 +1003,7 @@ TEST(StateMachine, ATransitionWithAFadeBlendsRatherThanCuts) {
     EXPECT_NEAR(xOf(anim, 0), 0.5f, 1e-4f) << "halfway between the idle and walk clips";
 }
 
-// ========================================== lifetimes: create and destroy (C1)
+// ========================================== lifetimes: create and destroy
 //
 // The animator is the one subsystem where a handle cannot protect every reference: a
 // character's *slot* is written into GpuInstance::meta.w and crosses to the GPU. These
@@ -1101,7 +1101,7 @@ TEST(AnimatorLifetime, FindClipReportsItsOwnSentinelRatherThanACharacterOne) {
     EXPECT_NE(anim.findClip("hold"), SceneAnimator::kNoClip);
 }
 
-// ================================================ animation events (C7)
+// ================================================ animation events
 //
 // "A footstep on the frame the foot lands" is the milestone, and the property that makes
 // it work at a bad frame rate is that *every* crossing in the step fires, not the nearest.
@@ -1235,7 +1235,7 @@ TEST(AnimationEvents, EventsAreReportedPerCharacter) {
     EXPECT_NE(anim.firedEvents()[0].character, anim.firedEvents()[1].character);
 }
 
-// ================================================== root motion (C7)
+// ================================================== root motion
 //
 // Without this a locomotion clip authored with the feet planted makes the mesh walk while
 // the controller stands still, and the character slides. The two halves have to happen
@@ -1397,7 +1397,7 @@ TEST(RootMotion, IsReportedPerCharacter) {
     EXPECT_GT(anim.rootMotion(b).x, anim.rootMotion(a).x) << "the faster character covered more ground";
 }
 
-// ================================== weights a game writes rather than a clip (G11)
+// ================================== weights a game writes rather than a clip
 //
 // The half of G11 the row turned on. `create` sizes a character's weight block from
 // `rig.bind.weights` -- what the *file* declared -- so a mesh made in code has nowhere for
@@ -1553,7 +1553,7 @@ TEST(CodeMadeMorphWeights, ATargetOutsideTheBlockIsIgnored) {
     EXPECT_NEAR(anim.morphWeight(banner, 2), 0.0f, kEps);
 }
 
-// ============================================ a machine per character (C23)
+// ============================================ a machine per character
 
 namespace {
 

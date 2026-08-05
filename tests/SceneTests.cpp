@@ -15,7 +15,7 @@ using namespace scene;
 
 /**
  * @file tests/SceneTests.cpp
- * @brief The scene tree (G3), with no device, no window and no solver.
+ * @brief The scene tree, with no device, no window and no solver.
  *
  * Four properties carry everything else this class claims:
  *
@@ -348,7 +348,7 @@ TEST(Scene, ClearingLeavesNothingAndNoStaleOrder) {
     EXPECT_FALSE(scene.valid(a));
 }
 
-// ============================================================== walking it (G6)
+// ============================================================== walking it
 //
 // `order()`, `find()` and `parent()` were all pinned above against the *sweep*, which is
 // what G3 built them for. These pin the same class of query against a reader from outside:
@@ -588,7 +588,7 @@ TEST(Scene, TheAttachmentRecordReadsBackExactlyWhatWasAttached) {
     EXPECT_FALSE(scene.attachments(plain).hasOffset);
 }
 
-// ------------------------------------------------------ turning toward a heading (C30)
+// ------------------------------------------------------ turning toward a heading
 
 /**
  * The turn was a game's for as long as there was one game, and the arc rule said so. It is
@@ -671,7 +671,7 @@ TEST(Scene, AnAuthoredForwardIsAnOffsetRatherThanASignFlipInTheCaller) {
     EXPECT_NEAR(authored.x, 0.0f, 1e-4f);
 }
 
-// ================================================================ components (C42)
+// ================================================================ components
 
 namespace {
 /// A game's own per-node data, of a type the engine has never heard of. Non-trivial on

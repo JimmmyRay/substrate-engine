@@ -110,15 +110,14 @@ bool hasDeviceExtension(VkPhysicalDevice dev, const char* name) {
  */
 bool repairLayerPath() {
 #ifdef _WIN32
-    // Nothing to repair, and nothing that could be. Every line below is Linux: four
-    // hardcoded filesystem locations and a `:` separator. Windows discovers explicit
-    // layers through HKLM\SOFTWARE\Khronos\Vulkan\ExplicitLayers, where there is no
-    // standard directory list to append and VK_LAYER_PATH does not shadow the registry
-    // the way it shadows the loader's search path here.
+    // Windows discovers explicit layers through the registry key
+    // HKLM\SOFTWARE\Khronos\Vulkan\ExplicitLayers, which VK_LAYER_PATH does not shadow,
+    // and there is no standard directory list to append -- everything below is
+    // Linux-only by construction.
     return false;
 #else
     const char* current = std::getenv("VK_LAYER_PATH");
-    if (current == nullptr) return false; // nothing to repair
+    if (current == nullptr) return false;
 
     // The loader's standard explicit-layer locations on Linux.
     static const char* kStandardDirs[] = {
@@ -153,12 +152,9 @@ bool repairLayerPath() {
     }
 
     setenv("VK_LAYER_PATH", joined.c_str(), /*overwrite=*/1);
-    // **Not a warning.** Overriding a VK_LAYER_PATH that would have hidden the layers is
-    // this function's whole job, and the caller re-checks `hasLayer` immediately after --
-    // so reaching here is the repair working, on a run that is about to have validation.
-    // The case worth warning about is the repair *not* being enough, and `init` already
-    // says so. Raising this back to `warn` puts an orange line on every debug launch for a
-    // condition the engine handles by design, which is how a log stops being read.
+    // Not a warning: reaching here is the repair succeeding, and `init` already warns when
+    // it was not enough. Raising this to `warn` puts an orange line on every debug launch
+    // for a condition the engine handles by design.
     core::Logger::status(core::LogCategory::Vulkan, "VK_LAYER_PATH hid the system layers; appended standard paths");
     core::Logger::debug(core::LogCategory::Vulkan, "VK_LAYER_PATH is now %s", joined.c_str());
     return true;
@@ -182,7 +178,6 @@ VkSampleCountFlagBits VulkanContext::clampSampleCount(uint32_t requested) const 
     VkSampleCountFlags supported =
         properties.limits.framebufferColorSampleCounts & properties.limits.framebufferDepthSampleCounts;
 
-    // Walk down from the request to the highest supported count that does not exceed it.
     const VkSampleCountFlagBits order[] = {VK_SAMPLE_COUNT_8_BIT, VK_SAMPLE_COUNT_4_BIT, VK_SAMPLE_COUNT_2_BIT,
                                            VK_SAMPLE_COUNT_1_BIT};
     for (VkSampleCountFlagBits bit : order) {
@@ -196,8 +191,8 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
 
     validationEnabled = enableValidation && hasLayer(kValidationLayer);
 
-    // Layer discovery happens on demand, so fixing the search path here — before the
-    // instance exists — is enough to make the layer visible on a second look.
+    // Layer discovery happens on demand, so the search path can still be repaired here --
+    // once the instance exists it cannot.
     if (enableValidation && !validationEnabled && repairLayerPath()) {
         validationEnabled = hasLayer(kValidationLayer);
     }
@@ -207,15 +202,11 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
         core::Logger::warn(core::LogCategory::Vulkan, "Install vulkan-validationlayers, or check VK_LAYER_PATH");
     }
 
-    // From project(Substrate VERSION ...) in CMakeLists.txt, which is the one place the
-    // number is written. It used to be spelled out here as well, and two copies of a
-    // version is one copy that silently goes stale -- the release artifact's filename
-    // comes from CMake, so the drift would show up as a binary reporting a version that
-    // no longer matched the file it shipped in.
+    // From project(Substrate VERSION ...) in CMakeLists.txt -- the only place the number
+    // is written, and the same place the release artifact's filename comes from.
     constexpr uint32_t kSubstrateVkVersion =
         VK_MAKE_VERSION(SUBSTRATE_VERSION_MAJOR, SUBSTRATE_VERSION_MINOR, SUBSTRATE_VERSION_PATCH);
 
-    // ------------------------------------------------------------------ instance
     VkApplicationInfo app{VK_STRUCTURE_TYPE_APPLICATION_INFO};
     app.pApplicationName = "Substrate";
     app.applicationVersion = kSubstrateVkVersion;
@@ -231,19 +222,14 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
 
     std::vector<const char*> extensions(glfwExts, glfwExts + glfwExtCount);
 
-    // Not gated on validation. The messenger below is, but the rest of what this
-    // extension carries -- vkCmdBeginDebugUtilsLabelEXT and vkSetDebugUtilsObjectNameEXT
-    // -- is what makes a RenderDoc capture legible, and Release is the configuration
-    // whose frame is worth attributing. Enabling it costs nothing when nothing
-    // implements it: the loader hands back null function pointers and every call site
-    // checks. The RenderDoc capture layer advertises it itself, so this is available
-    // whenever a capture is being taken even with layers otherwise off.
+    // Not gated on validation: pass labels and object names are what make a Release
+    // capture legible, and the loader hands back null function pointers where nothing
+    // implements the extension.
     //
-    // `validationEnabled ||` rather than the probe alone because the validation layer
-    // supplies the extension itself, and a layer's extensions do not show up in a
-    // global enumeration taken before that layer is enabled. Dropping the disjunction
-    // would silently turn the messenger off on a loader that does not export
-    // debug_utils on its own.
+    // `validationEnabled ||` rather than the probe alone, because the validation layer
+    // supplies this extension itself and a layer's extensions do not appear in a global
+    // enumeration taken before that layer is enabled. Dropping the disjunction turns the
+    // messenger off on any loader that does not export debug_utils on its own.
     debugUtilsEnabled = validationEnabled || hasInstanceExtension(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
     if (debugUtilsEnabled) extensions.push_back(VK_EXT_DEBUG_UTILS_EXTENSION_NAME);
 
@@ -254,10 +240,8 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
 
     VkDebugUtilsMessengerCreateInfoEXT dbgInfo = debugMessengerInfo();
 
-    // Sync validation is a feature *of* the layer, so it is only meaningful once the
-    // layer is in. Chained ahead of the messenger rather than instead of it: both have
-    // to reach vkCreateInstance, and the messenger has to stay reachable from `pNext`
-    // so that errors raised during instance creation still arrive somewhere.
+    // Chained ahead of the messenger rather than instead of it: both must reach
+    // `vkCreateInstance`, or errors raised during instance creation arrive nowhere.
     constexpr VkValidationFeatureEnableEXT kSyncFeature = VK_VALIDATION_FEATURE_ENABLE_SYNCHRONIZATION_VALIDATION_EXT;
     VkValidationFeaturesEXT validationFeatures{VK_STRUCTURE_TYPE_VALIDATION_FEATURES_EXT};
     validationFeatures.enabledValidationFeatureCount = 1;
@@ -289,7 +273,6 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
 
     vkCheck(glfwCreateWindowSurface(instance, window, nullptr, &surface), "glfwCreateWindowSurface");
 
-    // ----------------------------------------------------------- physical device
     uint32_t deviceCount = 0;
     vkEnumeratePhysicalDevices(instance, &deviceCount, nullptr);
     if (deviceCount == 0) core::Logger::critical(core::LogCategory::Vulkan, "No Vulkan physical devices found");
@@ -318,10 +301,9 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
             if (fams[i].queueFlags & VK_QUEUE_GRAPHICS_BIT) {
                 if (gfx == UINT32_MAX) gfx = i;
             }
-            // A *dedicated* transfer family (4.6b): transfer capable, and neither
-            // graphics nor compute. On a discrete card that is the DMA engine, which
-            // copies while the graphics queue keeps drawing -- which is the whole point
-            // of streaming a texture in rather than stalling for it.
+            // Transfer capable and neither graphics nor compute -- on a discrete card the
+            // DMA engine. Accepting a family that also draws would put uploads back on the
+            // queue they are meant to run beside.
             if ((fams[i].queueFlags & VK_QUEUE_TRANSFER_BIT) &&
                 (fams[i].queueFlags & (VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT)) == 0) {
                 if (transfer == UINT32_MAX) transfer = i;
@@ -341,9 +323,8 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
             physicalDevice = candidate;
             graphicsFamily = gfx;
             presentFamily = present;
-            // Falls back to the graphics family where there is no dedicated one, which
-            // keeps every caller on one path: the ownership transfer below is skipped
-            // when the two indices are equal, and nothing else changes.
+            // Falls back to the graphics family; `Uploader` skips the ownership transfer
+            // when the two indices are equal, so no caller branches on this.
             transferFamily = transfer == UINT32_MAX ? gfx : transfer;
             properties = props;
         }
@@ -367,7 +348,6 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
         core::Logger::warn(core::LogCategory::Vulkan, "timestampComputeAndGraphics is false; GPU zones will be unavailable");
     }
 
-    // ------------------------------------------------------------ logical device
     std::set<uint32_t> uniqueFamilies{graphicsFamily, presentFamily, transferFamily};
     std::vector<VkDeviceQueueCreateInfo> queueInfos;
     const float priority = 1.0f;
@@ -386,41 +366,33 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
     VkPhysicalDeviceVulkan12Features vk12{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VULKAN_1_2_FEATURES};
     vk12.timelineSemaphore = VK_TRUE;
     vk12.bufferDeviceAddress = VK_TRUE;
-    // The whole scene binds one descriptor set with every texture in a single array,
-    // so primitives differ only by push constants. That needs runtime-sized arrays
-    // and non-uniform indexing.
+    // The whole scene binds one descriptor set holding every texture in one array, which
+    // needs runtime-sized arrays and non-uniform indexing.
     vk12.descriptorIndexing = VK_TRUE;
     vk12.runtimeDescriptorArray = VK_TRUE;
     vk12.shaderSampledImageArrayNonUniformIndexing = VK_TRUE;
     vk12.descriptorBindingPartiallyBound = VK_TRUE;
     vk12.descriptorBindingVariableDescriptorCount = VK_TRUE;
     vk12.scalarBlockLayout = VK_TRUE;
-    // The draw count for an indirect pass comes out of a buffer the culling dispatch
-    // wrote, not out of a number the CPU knew (0.11, 4.2). Without this the CPU would
-    // have to read the count back, which is a round-trip that costs more than the
-    // culling saved.
+    // The draw count comes out of the buffer the culling dispatch wrote; without this the
+    // CPU has to read it back, a round-trip costing more than the culling saved.
     vk12.drawIndirectCount = VK_TRUE;
     vk12.pNext = &vk13;
 
     VkPhysicalDeviceFeatures2 features{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2};
     features.features.samplerAnisotropy = VK_TRUE;
     features.features.fillModeNonSolid = VK_TRUE;
-    // Indirect submission (0.11). `multiDrawIndirect` is what makes one vkCmd* cover
-    // every draw in a pass; `drawIndirectFirstInstance` is what lets each of those
-    // draws carry its own instance slot, which is how a vertex shader finds its
-    // transform now that there are no per-draw push constants.
+    // `drawIndirectFirstInstance` is how a vertex shader finds its transform: each draw
+    // carries its own instance slot, there being no per-draw push constants.
     features.features.multiDrawIndirect = VK_TRUE;
     features.features.drawIndirectFirstInstance = VK_TRUE;
-    // shadowmask.frag writes its result with imageStore, which is a store from the
-    // fragment stage. Without this every storage image a fragment shader declares must
-    // carry the NonWritable decoration, and the validation layer rejects the module --
-    // the compute shaders' stores are unaffected either way.
+    // Without this every storage image a fragment shader declares must carry the
+    // NonWritable decoration, and the validation layer rejects `shadowmask.frag` outright.
     features.features.fragmentStoresAndAtomics = VK_TRUE;
     features.pNext = &vk12;
 
-    // Checked rather than assumed. Both are Vulkan 1.0 core features and every
-    // desktop driver offers them, but "every draw in the frame silently became draw
-    // zero" is not a failure mode worth discovering from a screenshot.
+    // Checked rather than assumed: a driver missing these turns every draw in the frame
+    // into draw zero, which is not a failure mode to discover from a screenshot.
     {
         VkPhysicalDeviceFeatures available{};
         vkGetPhysicalDeviceFeatures(physicalDevice, &available);
@@ -435,10 +407,9 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
 
     std::vector<const char*> deviceExts{VK_KHR_SWAPCHAIN_EXTENSION_NAME};
 
-    // ------------------------------------------------------------- ray query (3.9)
-    // All three or none: ray query needs acceleration structures, and acceleration
-    // structures need deferred host operations even when nothing is deferred to a
-    // host thread. Requesting a subset produces a device that cannot trace anything.
+    // All three or none: ray query needs acceleration structures, which need deferred host
+    // operations even when nothing is deferred. A subset produces a device that cannot
+    // trace anything.
     VkPhysicalDeviceAccelerationStructureFeaturesKHR asFeatures{
         VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ACCELERATION_STRUCTURE_FEATURES_KHR};
     VkPhysicalDeviceRayQueryFeaturesKHR rqFeatures{VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_RAY_QUERY_FEATURES_KHR};
@@ -467,13 +438,10 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
         asScratchAlignment = asProps.minAccelerationStructureScratchOffsetAlignment;
     }
 
-    // ------------------------------------------------ calibrated timestamps (5.4)
-    // Requested wherever the device offers it *and* offers CLOCK_MONOTONIC as a host
-    // domain. Both halves matter: the extension without a matching host clock would
-    // hand back a timestamp on a clock nothing else in this process reads.
-    // The null check is the availability check for the entry point itself: volk leaves
-    // the pointer unresolved where the loader does not expose it, exactly as it does
-    // for vkCmdBeginDebugUtilsLabelEXT.
+    // Both halves matter: the extension without CLOCK_MONOTONIC among the host domains
+    // yields timestamps on a clock nothing else in this process reads. The null check is
+    // the availability test for the entry point -- volk leaves it unresolved where the
+    // loader does not expose it.
     if (vkGetPhysicalDeviceCalibrateableTimeDomainsEXT != nullptr &&
         hasDeviceExtension(physicalDevice, VK_EXT_CALIBRATED_TIMESTAMPS_EXTENSION_NAME)) {
         uint32_t domainCount = 0;
@@ -520,7 +488,6 @@ void VulkanContext::init(GLFWwindow* window, bool enableValidation, bool allowRa
     core::Logger::status(core::LogCategory::Vulkan, "Transfer queue: family %u (%s)", transferFamily,
                    transferFamily == graphicsFamily ? "shared with graphics" : "dedicated");
 
-    // ----------------------------------------------------------------- allocator
     VmaVulkanFunctions fns{};
     fns.vkGetInstanceProcAddr = vkGetInstanceProcAddr;
     fns.vkGetDeviceProcAddr = vkGetDeviceProcAddr;
@@ -548,8 +515,8 @@ VulkanContext::MemoryUsage VulkanContext::memoryUsage() const {
     vmaGetHeapBudgets(allocator, budgets);
 
     for (uint32_t heap = 0; heap < memoryProperties.memoryHeapCount; ++heap) {
-        // Device-local heaps only: host-visible staging churn is not what the MSAA
-        // memory baseline is about.
+        // Device-local heaps only, so staging churn does not move the `VRAM [...]` line
+        // the MSAA memory baseline is read from.
         if ((memoryProperties.memoryHeaps[heap].flags & VK_MEMORY_HEAP_DEVICE_LOCAL_BIT) == 0) continue;
         usage.allocatedBytes += budgets[heap].statistics.allocationBytes;
         usage.reservedBytes += budgets[heap].statistics.blockBytes;

@@ -11,7 +11,7 @@
 
 /**
  * @file tests/ClothTests.cpp
- * @brief Cloth, checked by the two properties an image could not assert (C19).
+ * @brief Cloth, checked by the two properties an image could not assert.
  *
  * The golden suite pins a frame byte for byte, and the thing worth asserting about cloth
  * is not what it looks like on frame 60 -- it is that it stays inside a box and settles.

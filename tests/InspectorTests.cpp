@@ -212,7 +212,7 @@ TEST(Inspector, MovingAnObjectRefreshesTheBoundsTheInspectorReadsBack) {
     EXPECT_FLOAT_EQ(b.worldMax.x, 11.0f);
 }
 
-// ============================================================ the node inspector (G6)
+// ============================================================ the node inspector
 //
 // The second panel, and the checks the card it came from never had. `golden-11` proves the
 // image did not move and `scaffold` proves a game links; neither can say whether the list

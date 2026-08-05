@@ -16,7 +16,7 @@ using namespace input;
 
 /**
  * @file tests/BindingMenuTests.cpp
- * @brief The rebind menu (S1.4), which is where S1.1, S1.2 and S1.5 meet.
+ * @brief The rebind menu, which is where S1.1, S1.2 and S1.5 meet.
  *
  * The menu produces lines of text rather than draw calls, which is what makes this
  * file possible at all: every decision it makes -- what is selected, what the filter

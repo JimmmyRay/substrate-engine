@@ -8,12 +8,10 @@ namespace {
 
 /// Slab test. Returns the entry distance, or a negative number for a miss.
 ///
-/// The division by a zero component is deliberate and correct: IEEE gives +/-inf, the
-/// comparisons below order correctly against it, and the only case that needs care is a
-/// ray exactly on a slab plane, where 0 * inf is NaN and every comparison is false --
-/// which reads as a miss on that axis and is what the `tmax >= tmin` guard turns into a
-/// miss overall. Branching on each component instead costs three tests per node to avoid
-/// an answer that is already right.
+/// Requires IEEE division semantics: a zero direction component gives +/-inf, which orders
+/// correctly, and a ray exactly on a slab plane gives NaN, which fails every comparison and
+/// so falls out of the `tmin > tmax` guard as a miss. Do not add per-component branches to
+/// "fix" this -- they cost three tests per node and change no answer.
 float rayBoxEntry(const glm::vec3& origin, const glm::vec3& invDirection, const glm::vec3& boxMin,
                   const glm::vec3& boxMax, float maxDistance) {
     const glm::vec3 t0 = (boxMin - origin) * invDirection;
@@ -25,7 +23,7 @@ float rayBoxEntry(const glm::vec3& origin, const glm::vec3& invDirection, const 
     const float tmax = std::min(std::min(hi.x, hi.y), hi.z);
 
     if (tmax < 0.0f || tmin > tmax || tmin > maxDistance) return -1.0f;
-    // A ray starting inside the box enters at zero rather than at a negative distance,
+    // Clamped so a ray starting inside the box enters at zero rather than behind itself,
     // which is what makes a click inside a building select the building.
     return std::max(tmin, 0.0f);
 }
@@ -35,10 +33,8 @@ bool boxesOverlap(const glm::vec3& aMin, const glm::vec3& aMax, const glm::vec3&
            aMax.z >= bMin.z;
 }
 
-/// The same test `gfx::lightVisible` makes, against a box instead of a sphere: a box is
-/// outside when it is entirely behind any one plane. Conservative in the corner case two
-/// planes share -- a box may be kept that no plane's half-space alone excludes -- and that
-/// is the right direction to be wrong in for a culler.
+/// Conservative: a box straddling two planes' shared corner is kept even though no plane's
+/// half-space alone excludes it. Erring the other way drops visible geometry.
 bool boxInFrustum(const gfx::Frustum& frustum, const glm::vec3& boxMin, const glm::vec3& boxMax) {
     for (const glm::vec4& plane : frustum.planes) {
         // The corner furthest along the plane normal. If even that is behind, all eight are.
@@ -71,9 +67,8 @@ void SpatialIndex::build(const InstanceTable& table) {
 
     if (order.empty()) return;
 
-    // Worst case is one leaf per kLeafSize instances plus the internal nodes above them,
-    // which is under 2n/kLeafSize. Reserved so the recursion never reallocates under the
-    // references it holds.
+    // Worst case is under 2n/kLeafSize nodes. Reserved up front so `buildRange` cannot
+    // reallocate `tree` under a node it is still writing.
     tree.reserve(2 * (order.size() / kLeafSize + 1));
     (void)buildRange(0, static_cast<uint32_t>(order.size()));
 }
@@ -100,9 +95,8 @@ uint32_t SpatialIndex::buildRange(uint32_t first, uint32_t count) {
     const glm::vec3 extent = centroidMax - centroidMin;
     const int axis = extent.x > extent.y ? (extent.x > extent.z ? 0 : 2) : (extent.y > extent.z ? 1 : 2);
 
-    // A leaf, either because it is small enough or because every centroid is at the same
-    // point. The second is not a corner case to tolerate but the shape a scene of stacked
-    // instances actually takes, and splitting it would recurse until the stack overflowed.
+    // The zero-extent arm is not a corner case: stacked instances share a centroid, and
+    // splitting them recurses until the stack overflows.
     if (count <= kLeafSize || extent[axis] <= 0.0f) {
         tree[self].firstItem = first;
         tree[self].itemCount = count;
@@ -111,9 +105,8 @@ uint32_t SpatialIndex::buildRange(uint32_t first, uint32_t count) {
 
     const float split = (centroidMin[axis] + centroidMax[axis]) * 0.5f;
 
-    // Partitioned in lockstep: `order` and `centroids` are two columns of one table, and a
-    // sort that moved one without the other would silently pair a slot with a stranger's
-    // centroid.
+    // `order`, `boxes` and `centroids` are three columns of one table: swapping any without
+    // the others silently pairs a slot with a stranger's box.
     uint32_t mid = first;
     for (uint32_t i = first; i < first + count; ++i) {
         if (centroids[i][axis] >= split) continue;
@@ -123,10 +116,9 @@ uint32_t SpatialIndex::buildRange(uint32_t first, uint32_t count) {
         ++mid;
     }
 
-    // Every centroid landed on one side. Possible with a spatial median even when the
-    // extent is non-zero -- one outlier and a tight cluster does it -- so the halves are
-    // taken by count instead. An unbalanced split is a slower tree; an empty one is
-    // infinite recursion.
+    // A spatial median can put every centroid on one side even with non-zero extent -- one
+    // outlier against a tight cluster does it. An unbalanced split is a slower tree; an empty
+    // one is infinite recursion, so fall back to halving by count.
     if (mid == first || mid == first + count) mid = first + count / 2;
 
     (void)buildRange(first, mid - first);
@@ -137,9 +129,8 @@ uint32_t SpatialIndex::buildRange(uint32_t first, uint32_t count) {
 
 void SpatialIndex::refit(const InstanceTable& table) {
     if (tree.empty()) return;
-    // The item boxes first, from the table, then the tree from them. Two passes rather
-    // than one because a node's box is the union of its children's, and a leaf reading a
-    // box its sibling had already refreshed would be reading two different frames.
+    // Every item box first, then the tree from them. Folding the two passes together would
+    // let one leaf read refreshed boxes and its sibling stale ones.
     for (size_t i = 0; i < order.size(); ++i) boxes[i] = table.slotBounds(order[i]);
     refitNode(0);
 }
@@ -163,9 +154,8 @@ void SpatialIndex::refitNode(uint32_t node) {
     const uint32_t right = n.firstItem;
     refitNode(left);
     refitNode(right);
-    // Re-read: the recursion above may have reallocated nothing, but it did write through
-    // `tree`, and holding a reference across it is the kind of thing that is correct today
-    // and a use-after-invalidate the day this grows a push_back.
+    // Re-indexed rather than reusing `n`: the recursion writes through `tree`, so a reference
+    // held across it becomes a use-after-invalidate the day this grows a push_back.
     tree[node].boundsMin = glm::min(tree[left].boundsMin, tree[right].boundsMin);
     tree[node].boundsMax = glm::max(tree[left].boundsMax, tree[right].boundsMax);
 }
@@ -177,9 +167,9 @@ SpatialIndex::RayHit SpatialIndex::raycast(const glm::vec3& origin, const glm::v
 
     const glm::vec3 invDirection = 1.0f / direction;
 
-    // An explicit stack rather than recursion. A BVH traversal is the classic place a
-    // deep tree turns a query into a stack overflow, and 64 is past the depth a median
-    // split can reach for any instance count this engine can hold.
+    // Explicit stack, not recursion: a deep tree is where a BVH query becomes a stack
+    // overflow. 64 is past the depth a median split reaches for any instance count this
+    // engine can hold, and the push below drops nodes rather than growing it.
     uint32_t stack[64];
     uint32_t top = 0;
     stack[top++] = 0;
@@ -190,8 +180,8 @@ SpatialIndex::RayHit SpatialIndex::raycast(const glm::vec3& origin, const glm::v
         const SpatialNode& n = tree[index];
 
         const float entry = rayBoxEntry(origin, invDirection, n.boundsMin, n.boundsMax, best);
-        // Re-tested against `best` rather than only on push: a node queued before a closer
-        // hit was found is exactly what this prunes, and it is where most of the saving is.
+        // Re-tested against `best` on pop, not only on push: a node queued before a closer
+        // hit was found is where most of the pruning comes from.
         if (entry < 0.0f || entry > best) continue;
 
         if (n.itemCount != 0) {

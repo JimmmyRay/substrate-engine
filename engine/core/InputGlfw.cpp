@@ -12,9 +12,9 @@ namespace core {
 namespace input {
 namespace {
 
-/// Every code in Input.h, checked against the macro it claims to equal. A mismatch is
-/// a build failure here rather than a key that quietly stops working at runtime --
-/// which is the entire reason the header is allowed to hard-code GLFW's numbers.
+/// Every code in Input.h, checked against the macro it claims to equal. Removing one makes
+/// a mismatch a key that quietly stops working instead of a build failure -- and these are
+/// the entire reason the header may hard-code GLFW's numbers.
 #define SUBSTRATE_ASSERT_CODE(name, value, glfwMacro)                                                                  \
     static_assert(static_cast<int>(Key::name) == (glfwMacro), "input::Key::" #name " no longer matches " #glfwMacro);
 SUBSTRATE_KEY_LIST(SUBSTRATE_ASSERT_CODE)
@@ -51,16 +51,13 @@ bool isTrigger(int axis) {
 } // namespace
 
 void pollGamepads(InputMap& map) {
-    // **One call per pad, and nothing merges them** (C26). This loop used to fold every
-    // connected pad into a single state -- any button on any pad read as pressed, and each
-    // axis took the largest magnitude across all of them -- so it enumerated the devices
-    // and then deliberately threw away which one had acted. Local co-op was not hard, it
-    // was inexpressible.
+    // One call per pad, and nothing merges them: folding the pads into a single state
+    // throws away which one acted, which makes local co-op inexpressible.
     //
-    // The joystick id is the pad index the map holds, so a player assigned to pad 1 is
-    // assigned to the same physical pad across an unplug and a reconnect. A slot with no
-    // gamepad in it is reported as disconnected rather than skipped, or a pad unplugged
-    // mid-run would keep answering with the state it had when it left.
+    // The joystick id is the pad index the map holds, so a player assigned to pad 1 keeps
+    // the same physical pad across an unplug and a reconnect. An empty slot is reported as
+    // disconnected rather than skipped, or a pad unplugged mid-run keeps answering with the
+    // state it had when it left.
     uint32_t index = 0;
     for (int jid = GLFW_JOYSTICK_1; jid <= GLFW_JOYSTICK_LAST && index < kMaxPads; ++jid, ++index) {
         GamepadState state;
@@ -73,8 +70,8 @@ void pollGamepads(InputMap& map) {
             }
             if (!map.gamepadConnected(index)) Logger::debug(LogCategory::Input, "Gamepad %d: %s", jid, glfwGetGamepadName(jid));
         }
-        // Only as far as the map has already seen: growing to sixteen slots on a machine
-        // with one pad would make every resolve walk fifteen empty entries for ever.
+        // Only as far as the map has already seen. Growing to sixteen slots on a machine
+        // with one pad makes every resolve walk fifteen empty entries for ever.
         if (state.connected || index < map.padCount()) map.setGamepad(state, index);
     }
 }

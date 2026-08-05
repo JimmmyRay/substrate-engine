@@ -13,7 +13,7 @@ using namespace scene;
 
 /**
  * @file tests/AudioSourceTests.cpp
- * @brief The audio schema and the stream-versus-decode crossover (S5.2).
+ * @brief The audio schema and the stream-versus-decode crossover.
  *
  * This half of S5 needs no device, no file and no mixer -- it is a JSON reader and a
  * threshold -- which is what makes it the cheapest place to pin the properties that would
@@ -199,7 +199,7 @@ TEST(AudioSource, GlbIsUnwrapped) {
     EXPECT_EQ(out[0].file, "a.wav");
 }
 
-// --------------------------------------------------------------- the crossover (S5.2)
+// --------------------------------------------------------------- the crossover
 
 TEST(AudioCrossover, ThresholdDecidesWhenTheAuthorDoesNot) {
     EXPECT_FALSE(audioShouldStream(AudioLoad::Auto, 1.0f, 5.0f));

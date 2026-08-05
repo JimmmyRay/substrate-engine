@@ -13,32 +13,16 @@ struct VulkanContext;
 
 /**
  * @file Ktx2.h
- * @brief Read a KTX2 container holding an already-compressed mip chain (4.6a).
+ * @brief Read a KTX2 container holding an already-compressed mip chain.
  *
- * ## What this deliberately is not
+ * **Not a transcoder.** Only files whose levels are already the bytes
+ * `vkCmdCopyBufferToImage` needs are accepted; `scripts/ktx2.py` does the transcode
+ * offline. A supercompressed or universal-format file is rejected with a reason rather
+ * than half-loaded, and the caller falls back to the source PNG.
  *
- * It is not libktx, and it is not a transcoder. KTX2 is a container that can hold
- * BasisLZ or UASTC payloads which must be *transcoded* into a GPU format at load time,
- * and supporting that would mean vendoring the Basis universal codec -- tens of
- * thousands of lines to convert one representation into another that the offline tool
- * could have written in the first place.
- *
- * So `scripts/ktx2.py` does the transcode offline and writes plain BC7 (or BC5, or
- * whatever the device wants), and this reads a file whose levels are already the bytes
- * `vkCmdCopyBufferToImage` needs. The whole reader is a header parse and a level index:
- * a few hundred lines against a library, because the file it accepts is the easy half
- * of the format and the offline tool is where the hard half belongs.
- *
- * A file this cannot use -- supercompressed, or in a universal format -- is *rejected
- * with a reason* rather than half-loaded. The caller falls back to the source PNG,
- * which is the behaviour that makes the cache optional rather than load-bearing.
- *
- * ## Level order
- *
- * KTX2 stores levels smallest first in the file, but the level index is ordered base
- * level first. `levels[0]` here is the base level, matching Vulkan's mip numbering; the
- * byte offsets it carries run backwards through the file, and that is the format's
- * doing rather than a mistake.
+ * KTX2 stores levels smallest first in the file while its level index runs base level
+ * first. `levels[0]` here is the base level, so its byte offsets run *backwards* through
+ * the file -- that is the format, not a mistake.
  */
 struct Ktx2Image {
     VkFormat format = VK_FORMAT_UNDEFINED;
@@ -54,8 +38,7 @@ struct Ktx2Image {
     };
     std::vector<Level> levels;
 
-    /// The whole file. Held rather than streamed because every level is uploaded in one
-    /// batch and the file is already smaller than the decoded image it replaces.
+    /// The whole file; `Level::offset` indexes into it, so it must outlive the upload.
     std::vector<std::byte> bytes;
 
     [[nodiscard]] bool valid() const { return format != VK_FORMAT_UNDEFINED && !levels.empty(); }
@@ -72,8 +55,8 @@ struct Ktx2Image {
 [[nodiscard]] bool formatSupported(const VulkanContext& ctx, VkFormat format);
 
 /// Whether `format` carries sRGB-encoded colour. The engine decides sRGB-ness from the
-/// material slot an image is used in; this is what lets a mismatch between that and the
-/// cache file be reported instead of silently changing the image's gamma.
+/// material slot instead, so a disagreement between the two silently changes an image's
+/// gamma unless it is checked here.
 [[nodiscard]] bool formatIsSrgb(VkFormat format);
 
 } // namespace gfx

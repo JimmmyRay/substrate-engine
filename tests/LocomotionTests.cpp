@@ -14,7 +14,7 @@ using namespace scene;
 
 /**
  * @file tests/LocomotionTests.cpp
- * @brief The driver between the character controller and the state machine (G15).
+ * @brief The driver between the character controller and the state machine.
  *
  * `Physics.cpp` and `Animation.cpp` are both hosted, so the pairing and every parameter it
  * writes are checkable without a device — including the case this row is really about,
@@ -200,7 +200,7 @@ TEST(LocomotionDriver, TwoCharactersOnTwoMachinesFedFromTwoColliders) {
 }
 
 TEST(LocomotionDriver, TwoPlayersOnTwoPadsDriveTwoCharactersToTwoDifferentGaits) {
-    // **G17's whole claim, with no `Engine` and no device.** Two players (C26), two
+    // **G17's whole claim, with no `Engine` and no device.** Two players, two
     // controllers, two rigs, two locomotion pairs -- driven from two pads and arriving at two
     // different `speed` values. The engine used to hold one `playerCharacterIndex` latched
     // from the first `Character` collider it walked, so the second of these was unnameable
@@ -402,7 +402,7 @@ TEST(LocomotionDriver, AnInvalidHandleIsNotPaired) {
     EXPECT_EQ(driver.pairCount(), 0u);
 }
 
-// ------------------------------------------- a vocabulary per rig, not per driver (D19)
+// ------------------------------------------- a vocabulary per rig, not per driver
 
 /**
  * The row's whole claim, and the case the singular `Parameters` could not express: a human

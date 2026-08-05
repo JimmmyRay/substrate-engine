@@ -371,7 +371,7 @@ TEST_F(SpriteTableTest, TenThousandSpritesSortOnceAndKeepTheirOrder) {
     }
 }
 
-// ------------------------------------------------------------------ sheets and clips (P5)
+// ------------------------------------------------------------------ sheets and clips
 
 /**
  * P5's half, and it is the half the readback cannot cover on its own. The readback proves

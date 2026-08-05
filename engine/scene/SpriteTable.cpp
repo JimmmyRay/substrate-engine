@@ -9,10 +9,8 @@ namespace scene {
 
 namespace {
 
-/// RGBA8, in the order `unpackUnorm4x8` reads it. The same packing `OverlayVertex` uses
-/// for the same reason: a tint is a colour a person picked, eight bits per channel is
-/// what a colour picker offers, and white round-trips exactly -- which is the property the
-/// readback check is built on.
+/// RGBA8, in the order `unpackUnorm4x8` reads it. White round-trips exactly, which is what
+/// the readback check is built on.
 uint32_t packTint(const glm::vec4& c) {
     const auto q = [](float v) {
         const float clamped = std::min(std::max(v, 0.0f), 1.0f);
@@ -22,38 +20,34 @@ uint32_t packTint(const glm::vec4& c) {
 }
 
 /// Layer order first, creation order second, as one unsigned key so the comparison is a
-/// single 64-bit test. The XOR flips the sign bit, which is what maps a signed order onto
-/// an unsigned that sorts the same way -- without it a background at -10 would draw last.
+/// single 64-bit test. The XOR flips the sign bit, mapping a signed order onto an unsigned
+/// that sorts the same way; without it a background at -10 draws last.
 uint64_t sortKey(int32_t layerOrder, uint32_t sequence) {
     const auto biased = static_cast<uint32_t>(layerOrder) ^ 0x80000000u;
     return (static_cast<uint64_t>(biased) << 32) | sequence;
 }
 
-/// How long `c` runs, in seconds. Derived rather than stored: a clip retimed by changing
-/// `fps` would otherwise carry a duration that no longer agrees with it, which is the
-/// two-copies bug this table already refuses for image dimensions.
+/// How long `c` runs, in seconds. Derived rather than stored, or a clip retimed by
+/// changing `fps` carries a duration that no longer agrees with it.
 float clipDuration(const SpriteClip& c) {
     if (c.count == 0 || !(c.fps > 0.0f)) return 0.0f;
     return static_cast<float>(c.count) / c.fps;
 }
 
 /**
- * @brief The frame-selection arithmetic, and the one line in P5 that can be wrong quietly.
+ * @brief The frame-selection arithmetic. Reachable from a public method, so every
+ *        degenerate input is answered rather than assumed away.
  *
- * `first + min(floor(time * fps), count - 1)`, with every degenerate input answered rather
- * than assumed away, because this is reachable from a public method:
- *
- * - A zero `count` or a non-positive `fps` holds `first`. There is no run to index into
- *   and no rate to index at, and dividing by either is how a NaN reaches a UV rect.
- * - A negative or NaN `time` is `first`. `advance` never produces one -- it wraps or
- *   clamps into `[0, duration]` -- but `frameAt` is public and a caller may.
- * - A `time` at or past the duration is the **last** cell. That is not a defensive clamp:
+ * - A zero `count` or a non-positive `fps` holds `first`; dividing by either is how a NaN
+ *   reaches a UV rect.
+ * - A negative or NaN `time` is `first`. `advance` never produces one, but `frameAt` is
+ *   public and a caller may.
+ * - A `time` at or past the duration is the **last** cell, not a clamp for safety's sake:
  *   `time * fps` reaches exactly `count` at the duration, which is where a `ClampToEnd`
  *   playback sits for as long as it is held, and `count` is one past the end.
  *
- * The `float` to `uint32_t` conversion is guarded rather than trusted: converting a value
- * outside the destination's range is undefined, and `count` is the bound that makes it
- * defined here.
+ * The `float` to `uint32_t` conversion is guarded because converting a value outside the
+ * destination's range is undefined, and `count` is the bound that makes it defined.
  */
 uint32_t clipFrame(const SpriteClip& c, float time) {
     if (c.count == 0 || !(c.fps > 0.0f)) return c.first;
@@ -63,8 +57,8 @@ uint32_t clipFrame(const SpriteClip& c, float time) {
     return c.first + static_cast<uint32_t>(f);
 }
 
-/// The clip a bad handle or a bad index resolves to. Empty, so every accessor above it
-/// answers with "nothing plays" rather than indexing past the end (D6).
+/// The clip a bad handle or a bad index resolves to, so every accessor answers "nothing
+/// plays" rather than indexing past the end.
 const SpriteClip& noClip() {
     static const SpriteClip empty{.name = {}, .first = 0, .count = 0, .fps = 0.0f, .loop = LoopMode::Loop, .events = {}};
     return empty;
@@ -99,13 +93,10 @@ void SpriteTable::shutdown() {
     sortDirty = false;
     imageRevision = 0;
     images = nullptr;
-    // Emptying `gpu` is a mutation of what the renderer copies, and the counter climbs
-    // through a shutdown rather than resetting: a table re-`init`ed into a renderer that
-    // still holds per-slot revisions from the old one must not be able to match them.
+    // Climbs through a shutdown rather than resetting: a table re-`init`ed into a renderer
+    // that still holds per-slot revisions from the old one must not be able to match them.
     ++rev;
 }
-
-// ------------------------------------------------------------------------- layers
 
 SpriteLayerId SpriteTable::createLayer(const SpriteLayerDesc& desc) {
     uint32_t slot = 0;
@@ -120,14 +111,12 @@ SpriteLayerId SpriteTable::createLayer(const SpriteLayerDesc& desc) {
     Layer& layer = layers[slot];
     layer.order = desc.order;
     layer.live = true;
-    // Generation zero is "never issued", so a fresh slot starts at one -- see Handle.h for
-    // why that is the reservation rather than an index sentinel.
+    // Generation zero is "never issued" -- see Handle.h.
     if (layer.generation == 0) layer.generation = 1;
     ++liveLayers;
 
-    // A new layer changes nothing until something is in it, but a *reused* slot may be
-    // reached by sprites created before this call is over, and the key it contributes has
-    // changed. One flag either way.
+    // A reused slot may still be reached by sprites created before this call, and the key
+    // it contributes has changed.
     sortDirty = true;
     return SpriteLayerId{slot, layer.generation};
 }
@@ -135,9 +124,9 @@ SpriteLayerId SpriteTable::createLayer(const SpriteLayerDesc& desc) {
 void SpriteTable::destroyLayer(SpriteLayerId id) {
     if (!valid(id)) return;
 
-    // Its sprites go with it, and they go through `destroy` rather than being torn out
-    // here: that is what moves each one's generation, so a handle a game is still holding
-    // reports staleness instead of naming a slot the next sprite will take.
+    // Its sprites go through `destroy` rather than being torn out here, because that is
+    // what moves each one's generation -- a handle a game still holds must report
+    // staleness instead of naming a slot the next sprite will take.
     for (uint32_t s = 0; s < records.size(); ++s) {
         if (records[s].live && records[s].layer == id.index) destroy(SpriteId{s, records[s].generation});
     }
@@ -163,8 +152,6 @@ void SpriteTable::setLayerOrder(SpriteLayerId id, int32_t order_) {
     sortDirty = true;
 }
 
-// ------------------------------------------------------------------------ sprites
-
 SpriteId SpriteTable::create(SpriteLayerId layer, const SpriteDesc& desc) {
     if (!valid(layer)) return {};
 
@@ -185,10 +172,9 @@ SpriteId SpriteTable::create(SpriteLayerId layer, const SpriteDesc& desc) {
     r.index = static_cast<uint32_t>(gpu.size());
     if (r.generation == 0) r.generation = 1;
 
-    // A reused slot inherits nothing from whoever held it. `destroy` already detached it
-    // from `animated`, so these are the fields that would otherwise still name the dead
-    // sprite's sheet and frame -- and `frame` in particular has to be `kNoFrame` or the
-    // first `play` would decide the cell had not changed and write no rectangle.
+    // A reused slot inherits nothing from whoever held it. `frame` in particular has to be
+    // `kNoFrame`, or the first `play` decides the cell has not changed and writes no
+    // rectangle.
     r.animIndex = kNotAnimating;
     r.sheet = {};
     r.playback = {};
@@ -214,17 +200,15 @@ SpriteId SpriteTable::create(SpriteLayerId layer, const SpriteDesc& desc) {
 void SpriteTable::destroy(SpriteId id) {
     if (!valid(id)) return;
 
-    // Before the swap-remove below, and before the generation moves: `detach` reaches
-    // `records` through `animated`, and a sprite left in that walk after its slot was
-    // freed is a playback advancing a rectangle nobody owns.
+    // Before the swap-remove below, and before the generation moves: a sprite left in
+    // `animated` after its slot was freed is a playback advancing a rectangle nobody owns.
     detach(id.index);
 
     Record& r = records[id.index];
     const uint32_t index = r.index;
 
-    // Swap-remove, and the order it breaks is repaired by the sort this marks dirty.
-    // Erasing in place to preserve the order would be O(n) on an event a game does ten
-    // thousand times a level, to keep an ordering that is about to be recomputed anyway.
+    // Swap-remove; the order it breaks is repaired by the sort this marks dirty. Erasing
+    // in place instead is O(n) to preserve an ordering that is about to be recomputed.
     const auto last = static_cast<uint32_t>(gpu.size() - 1);
     if (index != last) {
         gpu[index] = gpu[last];
@@ -240,9 +224,8 @@ void SpriteTable::destroy(SpriteId id) {
     freeSprites.push_back(id.index);
     --liveSprites;
     sortDirty = true;
-    // The swap-remove above rewrote `gpu[index]` and shortened the array, both of which the
-    // renderer's copy has to see -- and it has to see them even on a frame where the sort
-    // that follows changes nothing, because the entry that moved is already different.
+    // The swap-remove rewrote `gpu[index]` and shortened the array, which the renderer's
+    // copy has to see even on a frame where the sort that follows changes nothing.
     ++rev;
 }
 
@@ -253,11 +236,9 @@ bool SpriteTable::valid(SpriteId id) const {
 
 GpuSprite* SpriteTable::at(SpriteId id) {
     if (!valid(id)) return nullptr;
-    // Before the caller writes, and unconditionally once the handle is good: every setter
-    // below reaches its entry through here and through nothing else, so no setter can
-    // forget the bump and no setter added later can either. A stale handle bumps nothing,
-    // which is the case that would otherwise re-upload the array for a call that changed
-    // no byte of it.
+    // Before the caller writes, and unconditionally once the handle is good, so no setter
+    // added later can forget it. A stale handle bumps nothing -- otherwise a call that
+    // changed no byte would re-upload the array.
     ++rev;
     return &gpu[records[id.index].index];
 }
@@ -311,13 +292,10 @@ void SpriteTable::setImage(SpriteId id, gfx::ImageId image) {
     }
 }
 
-// -------------------------------------------------------------- sheets and clips (P5)
-
 SpriteSheetId SpriteTable::createSheet(const SpriteSheetDesc& desc) {
-    // A zero cell or an empty sheet is refused rather than normalised. `SpriteDesc::uv`
-    // already gives a zero width the meaning *the whole image*, so a sheet that accepted
-    // one would draw every cell as the entire file -- which looks like a shader bug and
-    // is an authoring one.
+    // Refused rather than normalised: `SpriteDesc::uv` already gives a zero width the
+    // meaning *the whole image*, so a sheet that accepted one would draw every cell as the
+    // entire file, which looks like a shader bug and is an authoring one.
     if (desc.frame.x == 0 || desc.frame.y == 0 || desc.count == 0) return {};
 
     uint32_t slot = 0;
@@ -394,9 +372,9 @@ glm::vec4 SpriteTable::frameUv(SpriteSheetId sheet, uint32_t frame) const {
     if (!valid(sheet)) return {};
     const SpriteSheetDesc& d = sheets[sheet.index].desc;
 
-    // Past the end clamps to the last cell. A clip whose `first + count` runs off its
-    // sheet is an authoring mistake, and repeating the last cell says so on screen
-    // without reading a rectangle that is not in the file.
+    // Past the end clamps to the last cell: a clip whose `first + count` runs off its sheet
+    // is an authoring mistake, and repeating the last cell shows it without reading a
+    // rectangle that is not in the file.
     const uint32_t f = std::min(frame, d.count - 1);
     const uint32_t col = f % d.columns;
     const uint32_t row = f / d.columns;
@@ -409,8 +387,6 @@ glm::vec4 SpriteTable::frameUv(SpriteSheetId sheet, uint32_t frame) const {
 uint32_t SpriteTable::frameAt(SpriteSheetId sheet, uint32_t clipIndex, float time) const {
     return clipFrame(clip(sheet, clipIndex), time);
 }
-
-// --------------------------------------------------------------------- playback (P5)
 
 void SpriteTable::detach(uint32_t slot) {
     Record& r = records[slot];
@@ -431,10 +407,9 @@ void SpriteTable::applyFrame(uint32_t slot) {
     if (f == r.frame) return;
     r.frame = f;
     gpu[r.index].uvRect = frameUv(r.sheet, f);
-    // Inside the guard, not above it. A thousand sprites at 12 fps on a 60 Hz step change
-    // cell on one step in five, and bumping on every step would upload the whole array on
-    // the four where the rectangle is the one already in the buffer -- which is the same
-    // four fifths of no work P5 built this early return for.
+    // Inside the guard, not above it: a thousand sprites at 12 fps on a 60 Hz step change
+    // cell on one step in five, and bumping on every step uploads the whole array on the
+    // four where the rectangle is the one already in the buffer.
     ++rev;
 }
 
@@ -449,19 +424,17 @@ void SpriteTable::play(SpriteId id, SpriteSheetId sheet, uint32_t clipIndex, flo
     }
 
     r.sheet = sheet;
-    // C7's `ClipPlayback`, and the loop mode comes off the clip rather than off this call:
-    // for a flipbook, whether it repeats is a property of the animation an artist drew,
-    // not of the moment a game started it. `SceneAnimator::play` takes one because a
-    // transition clip and a locomotion clip share a skeleton and not a mode.
+    // The loop mode comes off the clip rather than off this call: for a flipbook, whether
+    // it repeats is a property of the animation an artist drew, not of the moment a game
+    // started it.
     r.playback = ClipPlayback{.clip = clipIndex,
                               .time = 0.0f,
                               .speed = speed,
                               .loop = sheets[sheet.index].clips[clipIndex].loop,
                               .playing = true};
 
-    // Immediately, not at the next step: a sprite told to play frame 0 shows frame 0 on
-    // the frame it was told, and a game that creates and plays inside `init` has no step
-    // between the call and the first draw.
+    // Immediately, not at the next step: a game that creates and plays inside `init` has
+    // no step between the call and the first draw.
     r.frame = kNoFrame;
     applyFrame(id.index);
 }
@@ -499,8 +472,8 @@ float SpriteTable::clipTime(SpriteId id) const {
 
 void SpriteTable::update(float dt) {
     auto s = core::Profiler::scope("SpriteTable::update");
-    // Cleared even on a step that advances nothing. A game reads this after the step, and
-    // handing it the previous step's list would fire every footstep twice.
+    // Cleared even on a step that advances nothing: a game reads this after the step, and
+    // handing it the previous step's list fires every footstep twice.
     fired.clear();
 
     for (const uint32_t slot : animated) {
@@ -509,9 +482,8 @@ void SpriteTable::update(float dt) {
         const float duration = clipDuration(c);
         const float from = r.playback.time;
 
-        // C7's two calls, in C7's order and for C7's reasons -- `advance` moves the
-        // playhead and wraps or clamps it, `crossedEvents` then asks what the interval
-        // it just travelled contains. Nothing here is a second implementation of either.
+        // `advance` first: it moves the playhead and wraps or clamps it, and
+        // `crossedEvents` below asks what the interval just travelled contains.
         (void)advance(r.playback, duration, dt);
 
         if (!c.events.empty()) {
@@ -526,21 +498,17 @@ void SpriteTable::update(float dt) {
     }
 }
 
-// ----------------------------------------------------------------------- the draw
-
 void SpriteTable::prepare() {
-    // A load or a destroy in the image table can change what slot a handle resolves to --
-    // and a handle whose image was destroyed has to stop naming the slot the next load
-    // will take. Rare, so it is a revision comparison rather than a lookup per sprite per
-    // frame, exactly as `Renderer::syncImages` reconciles residency.
+    // A load or a destroy in the image table changes what slot a handle resolves to, and a
+    // handle whose image was destroyed has to stop naming the slot the next load will take.
+    // Rare, so a revision comparison rather than a lookup per sprite per frame.
     if (images != nullptr && images->revision() != imageRevision) {
         imageRevision = images->revision();
         for (size_t i = 0; i < gpu.size(); ++i) {
             gpu[i].meta.x = images->slot(records[slotOf[i]].image);
         }
-        // One revision reconciled into another, which is the shape the third occurrence of
-        // this pattern already had: an image loaded or destroyed rewrites `meta.x` for
-        // every sprite, and a frame slot that skipped the copy would draw the old slot.
+        // `meta.x` moved for every sprite, and a frame slot that skipped the copy would
+        // draw the old slot.
         ++rev;
     }
 
@@ -550,11 +518,9 @@ void SpriteTable::prepare() {
 void SpriteTable::sort() {
     sortDirty = false;
     ++sorts;
-    // Unconditionally, and before the size test: a sort permutes `gpu`, and `setLayerOrder`
-    // is the one mutation that reaches the array through nothing but this. A sort of fewer
-    // than two entries permutes nothing, but the flag that asked for it was set by
-    // something -- `createLayer` reusing a slot, or a `destroyLayer` -- so the cheap bump is
-    // the one that cannot be reasoned wrong.
+    // Unconditionally, and before the size test: `setLayerOrder` is the one mutation that
+    // reaches `gpu` through nothing but a sort, and the flag was set by something even
+    // when there are too few entries to permute.
     ++rev;
     if (gpu.size() < 2) return;
 
@@ -562,14 +528,12 @@ void SpriteTable::sort() {
     order.resize(n);
     for (uint32_t i = 0; i < n; ++i) order[i] = i;
 
-    // A permutation, then one pass applying it, rather than sorting three arrays in
-    // lockstep: `std::sort` over an index is one comparison per swap instead of moving 64
-    // bytes of sprite per swap, and the key is a plain integer read out of the record.
+    // A permutation, then one pass applying it: sorting the arrays in lockstep moves 64
+    // bytes of sprite per swap instead of an index.
     //
-    // `std::sort` rather than `stable_sort` because the key is already a total order --
-    // the sequence number is unique per sprite -- so stability would be buying a guarantee
-    // that is a property of the key. That is also what makes the frame reproducible run to
-    // run, which the golden suite needs.
+    // `std::sort` and not `stable_sort`, because the sequence number is unique per sprite
+    // and so the key is already a total order -- which is also what makes the frame
+    // reproducible run to run, as the golden suite needs.
     std::sort(order.begin(), order.end(), [&](uint32_t a, uint32_t b) {
         const Record& ra = records[slotOf[a]];
         const Record& rb = records[slotOf[b]];

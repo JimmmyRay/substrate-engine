@@ -536,8 +536,8 @@ TEST(BrushGeometryTest, UnioningBrushesIsAConcatenationAndAnIndexRebase) {
 
     // What follows in a game is the one line the suite cannot reach:
     //     const auto blockout = e.createMesh(std::move(room));
-    // and `e.removeModel(blockout)` unloads it (G4, C10). Coarser levels come from
-    // `substrate-bake` (C17, D9), offline, which is where geometry production belongs.
+    // and `e.removeModel(blockout)` unloads it. Coarser levels come from
+    // `substrate-bake`, offline, which is where geometry production belongs.
     EXPECT_EQ(room.material, 0u);
     EXPECT_EQ(room.transform, glm::mat4(1.0f));
 }

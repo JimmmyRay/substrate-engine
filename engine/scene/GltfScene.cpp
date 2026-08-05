@@ -30,22 +30,17 @@ double msSince(std::chrono::steady_clock::time_point t) {
 }
 
 /**
- * @brief Where the compressed cache entry for one glTF image would live (4.6a).
+ * @brief Where the compressed cache entry for one glTF image would live.
  *
- * `<image>.png` -> `<image>.png.ktx2`, keeping the source extension so two images that
- * differ only by extension cannot collide, and so the cache file names the exact file
- * it was built from. An embedded image -- one that lives in a buffer view rather than
- * on disk -- gets `<scene>.image<N>.ktx2` beside the scene, because it has no filename
- * of its own to hang a cache off.
+ * `<image>.png` -> `<image>.png.ktx2`, source extension kept so two images differing only
+ * by extension cannot collide and the entry names the exact file it was built from. An
+ * empty URI is an embedded payload, which has no filename to hang a cache off and gets
+ * `<scene>.image<N>.ktx2` beside the scene -- the layout `scripts/ktx2.py` writes and the
+ * one `writeSceneCache` refuses to bake an embedded image without.
  *
- * Empty means "no cache is possible for this image", which today never happens: both
- * cases are covered. It is a return value rather than an assertion because a future
- * glTF source kind would otherwise be an abort.
+ * Takes a `SceneImageRef` rather than a `fastgltf::Image` because a cached load has no
+ * document and has to answer the same way.
  */
-/// Takes a `SceneImageRef` rather than a `fastgltf::Image` since C15: the cached path has
-/// no document, and this has to answer the same way whichever way the scene was loaded.
-/// An empty URI is an embedded payload, which is the case the `<stem>.image<N>.ktx2`
-/// fallback exists for -- and the case `writeSceneCache` refuses to bake without one.
 std::filesystem::path ktx2CachePath(const std::filesystem::path& scenePath, const SceneImageRef& image,
                                     size_t index) {
     if (!image.uri.empty()) return scenePath.parent_path() / (image.uri + ".ktx2");
@@ -57,25 +52,18 @@ struct StbiDeleter {
     void operator()(stbi_uc* p) const { stbi_image_free(p); }
 };
 
-/// Owning the pixels through a unique_ptr is what makes Decoded move-only. A
-/// copyable aggregate holding an owning pointer is one accidental copy away from a
-/// double free, and the decode fan-out below moves these between threads.
+/// Move-only through the `unique_ptr`: the decode fan-out below moves these between
+/// threads, and a copyable aggregate holding an owning pointer is one copy from a
+/// double free.
 struct Decoded {
     std::unique_ptr<stbi_uc, StbiDeleter> pixels;
     int w = 0;
     int h = 0;
 };
 
-/// Decode one glTF image to RGBA8. Thread-safe: touches only its own arguments.
-/// The encoded bytes of every embedded image, indexed like `SceneData::images` and empty
-/// at every entry whose `uri` is set. Filled only where the scene came from a document,
-/// and deliberately **not** part of `SceneData`: it is the one thing the parse produces
-/// that the sidecar must not hold, because holding it would make the sidecar a texture
-/// format. A cached load has none, and needs none -- `writeSceneCache` refuses a scene
-/// whose embedded images have no `.ktx2` for exactly this reason.
-
-/// Two sources, one decode. A URI names a file beside the document; an empty one means
-/// the payload was embedded, and `embedded` is where the parse left it.
+/// Decode one glTF image to RGBA8. Thread-safe: touches only its own arguments. A URI names
+/// a file beside the document; an empty one means the payload was embedded, and `embedded`
+/// is where the parse left it.
 Decoded decodeImage(const std::filesystem::path& baseDir, const SceneImageRef& image,
                     const std::vector<uint8_t>& embedded) {
     Decoded out;
@@ -92,14 +80,12 @@ Decoded decodeImage(const std::filesystem::path& baseDir, const SceneImageRef& i
     return out;
 }
 
-/// The usage flags each of the three shared buffers is made with. Named because they are
-/// now written in two places -- `upload` makes the buffers and `growBuffer` remakes them --
-/// and a grown buffer missing a flag the original had is a bug that surfaces as a device
-/// lost inside an unrelated pass.
+/// The usage flags each of the three shared buffers is made with. Written in two places --
+/// `upload` makes the buffers, `growBuffer` remakes them -- and a grown buffer missing a
+/// flag the original had surfaces as a device lost inside an unrelated pass.
 ///
-/// Geometry an acceleration-structure build reads has to say so, and the flags that say so
-/// are only legal when VK_KHR_acceleration_structure is enabled -- which is why these take
-/// the context rather than being constants.
+/// Functions rather than constants because the acceleration-structure flags are legal only
+/// when VK_KHR_acceleration_structure is enabled.
 VkBufferUsageFlags vertexBufferUsage(const gfx::VulkanContext& ctx) {
     VkBufferUsageFlags usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
                                VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT;
@@ -130,21 +116,15 @@ bool GltfScene::load(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, con
     SceneData data;
     EmbeddedImages embedded;
     if (!loadSceneCpu(path, data, embedded)) return false;
-    // Between the parse and the upload, which is the one point the document and the
-    // sidecar have both passed through -- see `scaleSceneData`. Remembered so a game
-    // deriving its own placements from `boundsMin`/`boundsMax` can tell how big a metre
-    // is in the scene it was handed, and so an appended model arrives at the same size.
+    // Between the parse and the upload -- the one point a document and a sidecar have both
+    // passed through. The factor is remembered because a game placing props off
+    // `boundsMin`/`boundsMax` needs it, and because an append has to arrive at the same size.
     scaleSceneData(data, scale);
     sceneScale = scale > 0.0f ? scale : 1.0f;
     return upload(ctx, uploader, path, data, embedded);
 }
 
 bool GltfScene::createEmpty(const gfx::VulkanContext& ctx, gfx::Uploader& uploader) {
-    // Default-constructed and handed straight to `upload`, rather than a second setup path
-    // that makes "the parts an empty scene needs". Every zero here is a case the loader
-    // already had to survive -- a document with no images, no materials and no primitives is
-    // legal glTF -- so the empty scene is the same scene, and there is nothing that works on
-    // one and not the other.
     SceneData empty;
     EmbeddedImages none;
     return upload(ctx, uploader, {}, empty, none);
@@ -154,9 +134,6 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
                        SceneData& data, EmbeddedImages& embedded) {
     const auto loadStart = std::chrono::steady_clock::now();
 
-    // Adopted rather than copied. `data` is dead after this line and the scene owns what
-    // it held -- several megabytes of vertices on a large file, which is worth one move
-    // rather than one copy however cheap the rest of the function is.
     prims = std::move(data.primitives);
     placedPrims = std::move(data.placements);
     sceneLights = std::move(data.lights);
@@ -169,20 +146,14 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
     materialEmissive = std::move(data.materialEmissive);
 
     /*
-     * Cloth, lifted out of the flat arrays and into one self-contained record each (C19).
+     * Cloth, lifted out of the flat arrays and into one self-contained record each.
      *
-     * **This loop is the only reader of `data.clothVertices` and of `Primitive::clothOffset`
-     * that ever runs**, and it runs before `data.vertices` is moved into the upload -- which
-     * is what makes the pair a file format rather than a live parallel array. See
-     * `clothSources()` for why that matters: the shape being avoided is `indexData()`'s,
-     * where a snapshot of one array was indexed by an offset in another and one of them
-     * grew.
-     *
-     * Indices are rebased to zero here rather than at use, because a record that needed
-     * `baseVertex` to be read would not be self-contained and this whole design is that it
-     * is.
+     * **The only reader of `data.clothVertices` and of `Primitive::clothOffset` that ever
+     * runs**, and it has to run before `data.vertices` is moved into the upload. Indices are
+     * rebased to zero here so no record needs `baseVertex` to be read -- see
+     * `clothSources()`.
      */
-    clothSourceList.clear(); // replaced rather than appended to, like every move above
+    clothSourceList.clear();
     for (uint32_t pi = 0; pi < prims.size(); ++pi) {
         const Primitive& prim = prims[pi];
         if (prim.clothOffset == 0xFFFFFFFFu || prim.vertexCount == 0) continue;
@@ -213,25 +184,19 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
     nextNodeBase = std::max(sceneStats.nodes, 1u);
 
 
-    // ---------------------------------------------------------------- textures
     auto texStart = std::chrono::steady_clock::now();
     {
         auto s = core::Profiler::scope("GltfScene::textures");
 
-        // Which slot an image is used in decides its format, and `parseSceneData` already
-        // worked it out -- it is `SceneImageRef::srgb`, and it travels in the sidecar for
-        // exactly the reason it is not recomputed here: nothing on this side of the split
-        // has a document to recompute it from.
+        // The slot an image is used in decides its format, and `SceneImageRef::srgb` carries
+        // that answer through the sidecar: nothing on this side of the split has a document
+        // to recompute it from.
         const size_t imageCount = data.images.size();
         textures.resize(imageCount);
 
-        // ------------------------------------------------------ texture cache (4.6a)
-        // A `.ktx2` sitting beside the source image, written by scripts/ktx2.py, is used
-        // in its place. A *sibling* rather than a rewritten glTF, and rather than the
-        // KHR_texture_basisu extension: that extension declares a Basis payload and
-        // these files hold plain BC7, so claiming it would be a lie about the contents.
-        // What this is is a cache -- the scene file is unmodified, the cache is
-        // optional, and a missing or unreadable entry falls back to the PNG silently.
+        // A `.ktx2` beside the source image, written by scripts/ktx2.py, is used in its
+        // place. Not declared as KHR_texture_basisu: that extension means a Basis payload
+        // and these hold plain BC7.
         std::vector<gfx::Ktx2Image> cached(imageCount);
         std::vector<std::filesystem::path> ktxPaths(imageCount);
         {
@@ -248,9 +213,6 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
             }
         }
 
-        // Decode is pure CPU work and dominated load time when serial, so it is fanned
-        // out across every core. Upload is then recorded as a single batch, turning
-        // one blocking submit per image into one for the whole scene.
         std::vector<Decoded> decoded(imageCount);
 
         const unsigned workerCount = std::max(
@@ -262,8 +224,6 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
             for (;;) {
                 const size_t i = nextImage.fetch_add(1, std::memory_order_relaxed);
                 if (i >= imageCount) break;
-                // Skipped entirely where the cache answered. This is where the load-time
-                // win lives: a PNG that is never decoded costs nothing to decode.
                 if (cached[i].valid()) continue;
                 decoded[i] = decodeImage(path.parent_path(), data.images[i], embedded[i]);
             }
@@ -273,19 +233,17 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
             auto ds = core::Profiler::scope("GltfScene::decodeAll");
             std::vector<std::thread> workers;
             workers.reserve(workerCount > 0 ? workerCount - 1 : 0);
-            // The name goes on the *spawned* workers and not inside `decodeWorker`, because
-            // the calling thread runs it too -- naming it there would relabel whichever
-            // track called `loadGltf` as "texture decode" for the rest of the run, and on
-            // a synchronous load that is the main thread.
+            // The name goes on the *spawned* workers, never inside `decodeWorker`: the
+            // calling thread runs it too, so naming it there relabels that track "texture
+            // decode" for the rest of the run -- the main thread, on a synchronous load.
             for (unsigned t = 1; t < workerCount; ++t) {
                 workers.emplace_back([&decodeWorker] {
                     core::Profiler::nameThread("texture decode");
                     decodeWorker();
                 });
             }
-            // This thread takes a share of the work too, rather than waiting on the others.
-            // Guarded because it allocates -- `decodeImage` and the profiler scope both do --
-            // and a `bad_alloc` escaping here would destroy a vector of still-joinable
+            // Guarded because this allocates -- `decodeImage` and the profiler scope both do
+            // -- and a `bad_alloc` escaping here would destroy a vector of still-joinable
             // threads, which is a `std::terminate` rather than the failure it started as.
             // The `reserve` above rules out the other way that vector can throw.
             try {
@@ -303,16 +261,11 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
         static const uint8_t kWhite[4] = {255, 255, 255, 255};
 
         for (size_t i = 0; i < imageCount; ++i) {
-            // A compressed cache entry wins over the decode (4.6a). It was checked for
-            // before the decode fan-out, so an image with one was never decoded at all
-            // -- which is where most of the load-time saving comes from; the memory
-            // saving is the resident BC7 chain being a quarter of RGBA8.
             if (cached[i].valid()) {
                 const gfx::Ktx2Image& k = cached[i];
                 if (gfx::formatIsSrgb(k.format) != data.images[i].srgb) {
-                    // Not fatal, and worth saying out loud: the cache decides the gamma
-                    // once it is used, so a stale one silently changes how a texture
-                    // looks rather than failing to load.
+                    // The cache decides the gamma once it is used, so a stale one changes
+                    // how a texture looks rather than failing to load.
                     core::Logger::warn(core::LogCategory::GLTF,
                                  "%s: cache is %s but the material slot wants %s; rebuild it with scripts/ktx2.py",
                                  ktxPaths[i].string().c_str(), gfx::formatIsSrgb(k.format) ? "sRGB" : "linear",
@@ -357,11 +310,10 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
             uploader.addImageWithMips(ctx, textures[i], decoded[i].pixels.get(), bytes);
             sceneStats.textureBytes += bytes;
 
-            // addImageWithMips has already copied into its staging buffer, so this
-            // decode is dead the moment it returns. Releasing here rather than after
-            // the loop keeps the decoded set shrinking as staging grows, instead of
-            // holding every decoded texture and every staging copy at full size
-            // simultaneously -- which on Sponza is a few hundred MB of peak.
+            // Released inside the loop, not after it: `addImageWithMips` has already copied
+            // into staging, and holding every decode until the loop ends means every decoded
+            // texture and every staging copy resident at once -- a few hundred MB of peak on
+            // Sponza.
             decoded[i].pixels.reset();
         }
 
@@ -370,10 +322,8 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
     sceneStats.textureMs = msSince(texStart);
 
 
-    // ------------------------------------------------------------------ upload
-    // Recorded before the table is uploaded and dropped. A light sitting inside the
-    // emissive mesh that represents it is the case this exists for, and it is decided by
-    // the material rather than by the node so that no scene has to author anything.
+    // Recorded before the material table is uploaded and dropped; `buildSceneAccelStruct`
+    // has no other copy to ask.
     materialEmissive.resize(data.materials.size());
     for (size_t i = 0; i < data.materials.size(); ++i) {
         const glm::vec4& e = data.materials[i].emissiveFactor;
@@ -383,10 +333,8 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
     {
         auto s = core::Profiler::scope("GltfScene::upload");
 
-        // Capacity, not size. The buffers are sub-allocated from here on (C10), so they
-        // are made with room for a second model to land in without a reallocation -- and
-        // `appendModel` grows them when that room runs out. A quarter over is the cheapest
-        // headroom that makes the common case (append one prop, append one character) free.
+        // Capacity, not size: the buffers are sub-allocated from here on, and a quarter over
+        // is what makes appending one prop or one character cost no reallocation.
         vertexCapacity = static_cast<uint32_t>(data.vertices.size() + data.vertices.size() / 4 + 1024);
         indexCapacity = static_cast<uint32_t>(data.indices.size() + data.indices.size() / 4 + 1024);
         materialCapacity = static_cast<uint32_t>(data.materials.size() + 64);
@@ -397,12 +345,6 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
         const VkDeviceSize ibSize = indexCapacity * sizeof(uint32_t);
         const VkDeviceSize mbSize = materialCapacity * sizeof(GpuMaterial);
 
-        // Geometry an acceleration structure build reads has to say so, and the flags
-        // that say so are only legal when VK_KHR_acceleration_structure is enabled --
-        // so this is conditional on the device rather than always on. A device without
-        // ray query gets exactly the buffers it got before 3.9.
-        // G4 added TRANSFER_SRC to all three: growing a buffer copies the old one into the
-        // new one, and the old one is the source.
         vertices = gfx::createBuffer(ctx, vbSize, vertexBufferUsage(ctx), VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0,
                                      "sceneVertices");
         indices = gfx::createBuffer(ctx, ibSize, indexBufferUsage(ctx), VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0,
@@ -410,14 +352,11 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
         materials = gfx::createBuffer(ctx, mbSize, kMaterialUsage, VMA_MEMORY_USAGE_AUTO_PREFER_DEVICE, 0,
                                       "sceneMaterials");
 
-        // The scene's own geometry is the first allocation out of each, which for a fresh
-        // allocator is offset zero -- so every existing offset in `prims` is still correct
-        // and this stays byte-for-byte what it was.
+        // The first allocation out of a fresh allocator, so both come back zero and the
+        // offsets already in `prims` still stand -- nothing here rebases them.
         const uint32_t firstVertex = vertexRanges.allocate(static_cast<uint32_t>(data.vertices.size()));
         const uint32_t firstIndex = indexRanges.allocate(static_cast<uint32_t>(data.indices.size()));
         materialCount = static_cast<uint32_t>(data.materials.size());
-        // Kept rather than dropped (G4): the table is mutable now, and the renderer
-        // re-uploads from this copy when `materialRevision` moves.
         materialCpu = data.materials;
 
         uploader.uploadBufferAt(ctx, vertices, static_cast<VkDeviceSize>(firstVertex) * sizeof(Vertex),
@@ -427,11 +366,10 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
         uploader.uploadBufferAt(ctx, materials, 0, data.materials.data(),
                                 data.materials.size() * sizeof(GpuMaterial));
 
-        // Kept only for a scene that deforms -- see indices() for what reads it. **Cloth
-        // is the third thing that deforms** and was the third condition this test needed:
-        // without it a `FABRIC_` instance reached `buildSceneAccelStruct` with no index
-        // array to rebase, fell back to the static tier, and traced its rest pose forever
-        // -- a curtain that drew correctly and reflected as a flat sheet in mid-air (C19).
+        // Kept only for a scene that deforms -- see `indexData()` for what reads it. All
+        // three deformers have to be tested: an instance missing from this copy reaches
+        // `buildSceneAccelStruct` with nothing to rebase, falls back to the static tier and
+        // traces its rest pose forever while drawing correctly.
         if (!skinData.empty() || !morphData.empty() || !clothSourceList.empty()) {
             indexCopy = std::move(data.indices);
         }
@@ -439,16 +377,9 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
 
     buildDescriptors(ctx, uploader);
 
-    // ------------------------------------------------- residency self-check (4.6b)
-    // The delegation's obligation is to *verify* each named property holds, not to
-    // assert it. Three of the four are structural and visible in the code; the free
-    // list is the one with behaviour, so it is exercised here: take two slots, give the
-    // first back, and check the next acquire returns exactly it. A free list that hands
-    // out a slot twice, or forgets one, fails this immediately -- and would otherwise
-    // fail the day a residency system started using it, months from now.
-    //
-    // Debug only. It costs three vector operations and a descriptor write, and its
-    // value is entirely in catching a regression on the build that introduces one.
+    // Take two slots, give the first back, and the next acquire must return exactly it. A
+    // free list that hands the same slot to two callers, or loses one, otherwise fails the
+    // day a residency system starts using it rather than the day it breaks.
 #ifdef SUBSTRATE_DEBUG
     {
         const uint32_t first = acquireTextureSlot();
@@ -477,9 +408,7 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
     sceneStats.audioSources = static_cast<uint32_t>(sceneAudio.size());
     sceneStats.totalMs = msSince(loadStart);
 
-    // No path means `createEmpty`, and the summary below is a report on a document. One line
-    // instead, naming the two numbers that are not zero -- what a mesh built in code has room
-    // to land in, which is the only question anyone asks of an empty scene.
+    // No path means `createEmpty`, and the summary below is a report on a document.
     if (path.empty()) {
         core::Logger::status(core::LogCategory::GLTF, "Empty scene ready: %u vertices and %u indices of room, %u texture slots",
                              vertexCapacity, indexCapacity, textureSlots);
@@ -518,10 +447,6 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
                    static_cast<unsigned long>(sceneStats.vertexCount),
                    static_cast<unsigned long>(sceneStats.indexCount),
                    static_cast<unsigned long>(sceneStats.indexCount / 3));
-    // Reported whichever way the load went, and reported as zero when there are none. A run
-    // with no chains is a run whose LOD selection has nothing to select between, and that is
-    // the difference between a golden case that checks the coverage test and one that only
-    // looks as though it does -- so it belongs in the log every case captures.
     core::Logger::status(core::LogCategory::GLTF, "  LOD chains: %u primitives, %lu of those indices (%s)",
                    sceneStats.lodPrimitives, static_cast<unsigned long>(sceneStats.lodIndices),
                    sceneStats.lodPrimitives > 0 ? "baked" : "none; bake with substrate-bake");
@@ -530,9 +455,6 @@ bool GltfScene::upload(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, c
     core::Logger::status(core::LogCategory::GLTF, "  timing: cache=%.1fms parse=%.1fms geometry=%.1fms textures=%.1fms total=%.1fms",
                    sceneStats.cacheMs, sceneStats.parseMs, sceneStats.geometryMs, sceneStats.textureMs,
                    sceneStats.totalMs);
-    // The split inside `parse` (C13). Reported always rather than behind a flag: the
-    // three numbers are what rank C14 against C15, and a number nobody prints is one
-    // nobody has.
     core::Logger::status(core::LogCategory::GLTF, "    parse: mmap=%.1fms extras=%.1fms fastgltf=%.1fms",
                    sceneStats.mmapMs, sceneStats.extrasMs, sceneStats.gltfMs);
 
@@ -552,42 +474,30 @@ void GltfScene::buildDescriptors(const gfx::VulkanContext& ctx, gfx::Uploader& u
     samplerInfo.maxLod = VK_LOD_CLAMP_NONE;
     gfx::vkCheck(vkCreateSampler(ctx.device, &samplerInfo, nullptr, &sampler), "vkCreateSampler");
 
-    // ------------------------------------------------------- texture slots (4.6b)
-    // The array is sized past what the scene loaded. The extra slots are what a
-    // residency system streams into: property (i) of the delegation says swapping a
-    // slot's contents must touch no pipeline, and that holds only if the slot exists in
-    // the descriptor array to begin with.
-    //
-    // A *stated* capacity, not a hidden one. `acquireTextureSlot()` reports when it is
-    // exhausted and returns an invalid slot rather than handing back one that is in
-    // use, which is the difference between a budget and the silent truncations 0.9 and
-    // 0.10 exist to fix.
+    // Sized past what the scene loaded: swapping a slot's contents touches no pipeline only
+    // if the slot is already in the descriptor array, so the headroom is what makes
+    // streaming possible without rebuilding the set.
     const uint32_t loaded = static_cast<uint32_t>(textures.size());
     fallbackSlot = loaded;
     textureSlots = std::max<uint32_t>(1, loaded + 1 + kTextureSlotHeadroom);
 
-    // The reserved fallback (property iv): 1x1 opaque white, which reads as "no texture"
-    // through every material slot -- a base colour multiplied by white is the factor
-    // alone, and an occlusion or roughness map of white is the neutral value. Every free
-    // slot's descriptor points here, so sampling an unresident texture returns something
-    // defined rather than whatever the slot last held.
+    // 1x1 opaque white reads as "no texture" through every material slot: a base colour
+    // multiplied by white is the factor alone, and an occlusion or roughness map of white is
+    // the neutral value. Every free slot's descriptor points here, so an unresident texture
+    // samples something defined rather than whatever the slot last held.
     textures.resize(textureSlots);
     textures[fallbackSlot] = gfx::createImage(ctx, {1, 1}, VK_FORMAT_R8G8B8A8_UNORM,
                                               VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_SAMPLED_BIT, 1,
                                               VK_SAMPLE_COUNT_1_BIT, VK_IMAGE_ASPECT_COLOR_BIT, 1,
                                               "fallbackTexture");
-    // **And its one texel is written, which for a long time it was not.** The image was
-    // created and never uploaded, so it sat in UNDEFINED with whatever the allocator
-    // handed over -- zero on this driver, which is transparent black rather than opaque
-    // white. Nothing noticed because the only readers are a material whose image failed to
-    // decode (no scene here has one) and `sampleOr`, which short-circuits on a negative
-    // index and never touches the image at all. A decal naming this slot discarded every
-    // fragment, since alpha zero is what the pass tests.
+    // The texel is written, not merely allocated: an image created and never uploaded sits
+    // in UNDEFINED, which on this driver reads as transparent black, and a decal naming this
+    // slot then discards every fragment on alpha.
     const uint32_t whiteTexel = 0xFFFFFFFFu;
     uploader.uploadImageWithMips(ctx, textures[fallbackSlot], &whiteTexel, sizeof(whiteTexel));
 
-    // Slots past the fallback are free, highest first so the first acquire returns the
-    // lowest index -- which makes a capture easier to read than a reversed one.
+    // Pushed highest first so the first acquire returns the lowest index, which makes a
+    // capture easier to read than a reversed one.
     freeTextureSlots.clear();
     for (uint32_t slot = textureSlots; slot > fallbackSlot + 1; --slot) freeTextureSlots.push_back(slot - 1);
 
@@ -597,13 +507,8 @@ void GltfScene::buildDescriptors(const gfx::VulkanContext& ctx, gfx::Uploader& u
 void GltfScene::createSceneDescriptors(const gfx::VulkanContext& ctx) {
     const uint32_t texCount = textureSlots;
 
-    // binding 0: material storage buffer, binding 1: every texture in the scene.
-    // One set for the whole scene means primitives differ only by push constants.
-    //
-    // Compute as well as fragment: the tracing passes shade the surface a ray hit, which
-    // means reading the same materials and the same bindless textures the G-buffer pass
-    // reads, from a compute shader. Exposing the stage costs nothing where nothing uses
-    // it -- the alternative is a second identical layout differing only in a stage flag.
+    // Compute as well as fragment: the tracing passes shade a ray hit from a compute shader
+    // and read the same materials and bindless textures the G-buffer pass does.
     const VkShaderStageFlags sceneStages = VK_SHADER_STAGE_FRAGMENT_BIT | VK_SHADER_STAGE_COMPUTE_BIT;
 
     VkDescriptorSetLayoutBinding bindings[2]{};
@@ -661,10 +566,9 @@ void GltfScene::createSceneDescriptors(const gfx::VulkanContext& ctx) {
     std::vector<VkDescriptorImageInfo> imageInfos;
     imageInfos.reserve(textures.size());
     for (const auto& tex : textures) {
-        // A slot with no image points at the fallback rather than being left unwritten.
-        // PARTIALLY_BOUND would permit the latter, and it would also mean that a shader
-        // reading a free slot reads undefined data -- which is exactly the state
-        // property (iv) exists to remove.
+        // A slot with no image points at the fallback rather than being left unwritten:
+        // PARTIALLY_BOUND permits the latter, and a shader reading such a slot reads
+        // undefined data.
         const VkImageView view = tex.view != VK_NULL_HANDLE ? tex.view : textures[fallbackSlot].view;
         imageInfos.push_back({sampler, view, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL});
     }
@@ -710,15 +614,12 @@ void GltfScene::destroy(const gfx::VulkanContext& ctx) {
     prims.clear();
     placedPrims.clear();
 
-    // The model registry goes with them. A `ModelId` is an index into `models`, so leaving
-    // the vector populated leaves every id a caller is holding *valid* against a scene that
-    // no longer exists -- and `unloadModel` would then hand ranges back to allocators that
-    // never issued them, which `RangeAllocator` documents it cannot detect. Cleared, the
-    // `id >= models.size()` guard at the top of `unloadModel` turns a stale id into the
-    // no-op it should be. `upload()` resets the range allocators and rebuilds the texture
-    // free list itself, so those are its business, not this function's -- except for the
-    // free list, which must not survive to be appended to by a `destroy()` with no `upload()`
-    // behind it.
+    // A `ModelId` is an index into `models`, so leaving the vector populated leaves every id
+    // a caller holds *valid* against a scene that no longer exists, and `unloadModel` would
+    // hand ranges back to allocators that never issued them -- which `RangeAllocator`
+    // documents it cannot detect. Cleared, its `id >= models.size()` guard makes a stale id
+    // the no-op it should be. The free list goes for the same reason: a `destroy()` with no
+    // `upload()` behind it would otherwise be appended to.
     models.clear();
     freeTextureSlots.clear();
 }
@@ -738,8 +639,8 @@ void GltfScene::writeTextureDescriptor(const gfx::VulkanContext& ctx, uint32_t s
 bool GltfScene::reserveTextureSlots(const gfx::VulkanContext& ctx, uint32_t atLeast) {
     if (atLeast <= freeTextureSlots.size()) return true;
 
-    // Doubling, not exactly-enough: a composed world imports in bursts, and rebuilding the
-    // descriptor set costs a pipeline rebuild at the call site.
+    // Doubling, not exactly-enough: each grow costs the call site a pipeline rebuild, and a
+    // composed world imports in bursts.
     const uint32_t need = textureSlots + (atLeast - static_cast<uint32_t>(freeTextureSlots.size()));
     uint32_t grown = std::max(textureSlots * 2u, need);
     if (grown > ctx.properties.limits.maxPerStageDescriptorSampledImages) {
@@ -811,33 +712,27 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
     EmbeddedImages embedded;
     if (!loadSceneCpu(path, data, embedded)) return kNoModel;
 
-    // The scale the scene was loaded at, so a model appended into it arrives in the same
-    // units. A file appended at 1x into a 4x world would be a doll's house. Since C41 that
-    // scale can be the *game's* -- `Engine::setWorldScale` -- rather than only what `load`
-    // resized a document by, because a composed world has no single document to take it from.
+    // At the scene's own scale -- `Engine::setWorldScale` where no document set one. A file
+    // appended at 1x into a 4x world is a doll's house.
     scaleSceneData(data, sceneScale);
-    // **Captured before the placement is baked in**, because after it the file's own node
-    // hierarchy is indistinguishable from where the caller put the import -- see
+    // **Captured before the placement is baked in**: after it the file's own node hierarchy
+    // is indistinguishable from where the caller put the import. See
     // `LoadedModel::placementLocals`.
     std::vector<glm::mat4> placementLocals;
     placementLocals.reserve(data.placements.size());
     for (const Placement& p : data.placements) placementLocals.push_back(p.transform);
 
-    // Then where the caller wants it. Scale first and place second, deliberately: the
-    // caller's transform is in world units, so a scale applied after it would multiply the
-    // placement as well and put the import at twice the distance it asked for.
+    // Scale first, place second: the caller's transform is in world units, so a scale applied
+    // after it multiplies the placement too and puts the import at twice the distance it
+    // asked for.
     placeSceneData(data, transform);
 
     const auto vertexCount = static_cast<uint32_t>(data.vertices.size());
     const auto indexCount = static_cast<uint32_t>(data.indices.size());
 
-    // Both ranges or neither. Taking the first and failing the second would leak it, and
-    // this is the one place a leak is invisible -- the buffer simply has less room next
-    // time and nothing says why.
-    // G4. The buffers grow rather than the append being refused -- C10 shipped with the
-    // refusal and said so, and this is the increment it named. Growth is a copy under the
-    // device wait `Engine::addModel` already takes, so it is an explicit load event's cost
-    // rather than a frame's.
+    // Both ranges or neither. Taking the first and failing the second leaks it, and this is
+    // the one place a leak is invisible -- the buffer simply has less room next time and
+    // nothing says why.
     if (!reserveGeometry(ctx, uploader, vertexCount, indexCount) ||
         !reserveMaterials(ctx, uploader, static_cast<uint32_t>(data.materials.size()))) {
         return kNoModel;
@@ -874,9 +769,8 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
     entry.firstMaterial = materialBase;
     entry.materialCount = static_cast<uint32_t>(data.materials.size());
 
-    // ------------------------------------------------------------------ textures
-    // An image that cannot have a slot falls back rather than failing the load: a model
-    // with the wrong texture is recoverable and a model that did not appear is not.
+    // An image that cannot have a slot falls back rather than failing the load: a model with
+    // the wrong texture is recoverable and a model that did not appear is not.
     (void)reserveTextureSlots(ctx, static_cast<uint32_t>(data.images.size()));
     const std::filesystem::path baseDir = path.parent_path();
     std::vector<int32_t> slotOf(data.images.size(), -1);
@@ -922,10 +816,9 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
         remap(m.occlusionTexture);
     }
 
-    // ------------------------------------------------------------------ geometry
-    // The index buffer holds absolute vertex indices, so an appended model's indices are
-    // rebased here rather than carried as a `vertexOffset` -- which the draw already uses
-    // for something else and which the skinning dispatch reads as a vertex range.
+    // The index buffer holds absolute vertex indices, so an appended model's are rebased
+    // here rather than carried as a `vertexOffset`: the draw already uses that for something
+    // else, and the skinning dispatch reads it as a vertex range.
     for (uint32_t& index : data.indices) index += firstVertex;
 
     uploader.uploadBufferAt(ctx, vertices, static_cast<VkDeviceSize>(firstVertex) * sizeof(Vertex),
@@ -947,18 +840,11 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
     for (size_t i = 0; i < data.materials.size(); ++i) materialCpu[materialBase + i] = data.materials[i];
     ++materialRev;
 
-    // -------------------------------------------------------- what deforms (C22)
-    //
-    // **The three arrays a deforming primitive indexes are scene-wide, and this is where
-    // they stop being fixed at load.** `appendModel` refused anything that deformed until
-    // now, and the refusal was correct: `skinOffset` and `morphOffset` are absolute offsets
-    // into `skinData` and `morphData`, so an import carrying its own offsets would take a
-    // character's influences from whatever the base scene had at that address -- silently,
-    // and only for the frames it is on screen.
-    //
-    // Appended rather than repacked, for the reason `createMesh` gives one array along: an
-    // instance already carries these offsets, so reclaiming a run out of the middle would
-    // renumber every later primitive under instances that still index them.
+    // `skinOffset` and `morphOffset` are absolute offsets into the scene-wide `skinData` and
+    // `morphData`, so an import left carrying its own takes a character's influences from
+    // whatever the base scene holds at that address -- silently, and only while it is on
+    // screen. Appended rather than repacked: an instance already carries these offsets, so
+    // reclaiming a run out of the middle renumbers every later primitive under it.
     const bool deforms = !data.skinVertices.empty() || !data.morphDeltas.empty() || !data.clothVertices.empty();
     const auto skinBase = static_cast<uint32_t>(skinData.size());
     const auto morphBase = static_cast<uint32_t>(morphData.size());
@@ -969,29 +855,20 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
     entry.firstMorphDelta = morphBase;
     entry.morphDeltaCount = static_cast<uint32_t>(data.morphDeltas.size());
 
-    // **And the CPU index copy, which is the array that has to move with them.**
-    // `buildSceneAccelStruct` rebases a deformed primitive's indices onto the deformed
-    // vertex buffer by reading `indexData()[firstIndex + k]` -- on the *host*, so the device
-    // buffer is no use to it. That copy is a snapshot `load` took, and a scene that
-    // deformed nothing did not take one at all, so an imported rig indexes past the end of
-    // a vector and the build is handed whatever follows it in memory.
-    //
-    // It does not fault. It hangs the GPU on a structure built over nonsense, five seconds
-    // later, as `VK_ERROR_DEVICE_LOST` on an unrelated upload fence -- which is precisely
-    // what it did on the first end-to-end run of this card, and precisely what `createMesh`
-    // records having done one array along. Two vectors laid out to match, one of them
-    // grown, for the third time.
+    // **The CPU index copy has to move with them.** `buildSceneAccelStruct` rebases a
+    // deformed primitive's indices by reading `indexData()[firstIndex + k]` on the *host*,
+    // and that copy is a snapshot `load` took -- a scene that deformed nothing took none at
+    // all, so an imported rig indexes past the end of a vector and the build reads whatever
+    // follows it in memory. It does not fault: it hangs the GPU on a structure built over
+    // nonsense, five seconds later, as `VK_ERROR_DEVICE_LOST` on an unrelated upload fence.
     if (deforms) {
         const size_t end = static_cast<size_t>(firstIndex) + indexCount;
         if (indexCopy.size() < end) indexCopy.resize(end, 0u);
         std::copy(data.indices.begin(), data.indices.end(), indexCopy.begin() + firstIndex);
     }
 
-    // Cloth is the one that needs no offset shift, and it is worth saying why rather than
-    // leaving it looking like an omission: `Primitive::clothOffset` is a *file format*, read
-    // once when the vertices are lifted into self-contained `ClothSource` records and never
-    // again. So the import's records are built here from the import's own arrays, exactly as
-    // `load` builds the base scene's, and pushed onto the same list.
+    // `Primitive::clothOffset` is read once, here, so the import's records are built from
+    // the import's own arrays and there is no offset left to shift afterwards.
     entry.firstCloth = static_cast<uint32_t>(clothSourceList.size());
     for (uint32_t pi = 0; pi < data.primitives.size(); ++pi) {
         const Primitive& prim = data.primitives[pi];
@@ -1000,8 +877,8 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
         if (static_cast<size_t>(prim.baseVertex) + prim.vertexCount > data.vertices.size()) continue;
 
         ClothSource src;
-        // The index this record reports is into the *scene's* primitive array, which the
-        // loop below is about to append to at `entry.firstPrimitive`.
+        // Into the *scene's* primitive array, which the loop below is about to append to at
+        // `entry.firstPrimitive`.
         src.primitive = static_cast<uint32_t>(prims.size()) + pi;
         src.vertices.assign(data.vertices.begin() + prim.baseVertex,
                             data.vertices.begin() + prim.baseVertex + prim.vertexCount);
@@ -1011,40 +888,32 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
         for (uint32_t k = 0; k < prim.indexCount; ++k) {
             const size_t at = static_cast<size_t>(prim.firstIndex) + k;
             if (at >= data.indices.size()) break;
-            // Zero-based, off the import's own pre-rebase indices. `data.indices` has
-            // already been shifted by `firstVertex` above, and `prim.baseVertex` has not
-            // yet -- so both terms are in the scene's space and the difference is the
-            // primitive-local index this record is defined to hold.
+            // `data.indices` was shifted by `firstVertex` above and `prim.baseVertex` has
+            // not been yet, so both terms have to be put in the scene's space before the
+            // difference is the primitive-local index this record is defined to hold.
             src.indices.push_back(data.indices[at] - (prim.baseVertex + firstVertex));
         }
         clothSourceList.push_back(std::move(src));
     }
     entry.clothCount = static_cast<uint32_t>(clothSourceList.size()) - entry.firstCloth;
 
-    // ------------------------------------------------------------------ records
     entry.firstPrimitive = static_cast<uint32_t>(prims.size());
     entry.primitiveCount = static_cast<uint32_t>(data.primitives.size());
     for (Primitive& p : data.primitives) {
         if (p.skinOffset != 0xFFFFFFFFu) p.skinOffset += skinBase;
         if (p.morphTargets > 0) p.morphOffset += morphBase;
-        // Cleared rather than shifted. It named an offset into a file-local array that no
-        // longer exists anywhere, and the `ClothSource` above is what carries the data now
-        // -- but `addPlacementInstances` reads it as the *flag* that makes an instance
-        // cloth, so it has to stay set where the primitive really is cloth.
+        // Cleared to zero, not to `0xFFFFFFFF`: it named an offset into a file-local array
+        // that no longer exists, but `addPlacementInstances` reads it as the *flag* that
+        // makes an instance cloth, so it must stay set where the primitive really is cloth.
         if (p.clothOffset != 0xFFFFFFFFu) p.clothOffset = 0u;
         p.firstIndex += firstIndex;
-        // The chain is rebased in the same loop as the range it extends, because it *is*
-        // ranges of the same buffer -- and because it lives on the primitive rather than in
-        // an array beside it, this is the only place that has to know. A per-level array
-        // indexed by primitive would need a second loop here, a second one in
-        // `writeSceneCache`, and would be wrong the first time either was forgotten.
         for (uint32_t l = 0; l < p.lodCount && l < kMaxLodLevels; ++l) p.lods[l].firstIndex += firstIndex;
         p.baseVertex += firstVertex;
         if (p.materialIndex >= 0) p.materialIndex += static_cast<int32_t>(materialBase);
         prims.push_back(p);
     }
 
-    // Node indices are file-local and three records match on them, so the whole import is
+    // Node indices are file-local and several records match on them, so the whole import is
     // shifted past everything already loaded. See `LoadedModel::nodeBase`.
     entry.nodeBase = nextNodeBase;
     const auto shiftNode = [base = entry.nodeBase](uint32_t& node) {
@@ -1058,22 +927,17 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
         pl.primitive += entry.firstPrimitive;
         shiftNode(pl.node);
         shiftNode(pl.colliderNode);
-        // `pl.skin` is left **file-local** on purpose. Where the import's skins land is the
-        // animator's answer and the animator is not reachable from here, so the shift is
-        // `rebaseAppendedSkins`, called after the merge.
+        // `pl.skin` stays **file-local**: where the import's skins land is the animator's
+        // answer, and the animator is not reachable from here. `rebaseAppendedSkins` is the
+        // shift, after the merge.
         placedPrims.push_back(pl);
     }
 
-    // C22. Kept rather than merged, because `sceneRig` was moved out into the animator at
-    // load and merging into what is left would produce a rig nothing reads.
+    // Kept rather than merged: `sceneRig` was moved out into the animator at load, so
+    // merging into what is left produces a rig nothing reads.
     entry.skinCount = static_cast<uint32_t>(data.rig.skins.size());
     entry.importedRig = std::move(data.rig);
 
-    // ------------------------------------------------- what a scene has besides geometry
-    // C21. Before this, an import brought its meshes and left its colliders, its lights,
-    // its emitters and its sounds in the file -- so a mirror could be imported and the
-    // thing it hung from could not, and `make_composite_scene.py` existed to graft what
-    // could not be composed at runtime.
     entry.firstCollider = static_cast<uint32_t>(sceneColliders.size());
     entry.colliderCount = static_cast<uint32_t>(data.colliders.size());
     for (ColliderDesc& c : data.colliders) {
@@ -1083,18 +947,17 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
 
     entry.firstLight = static_cast<uint32_t>(sceneLights.size());
     entry.lightCount = static_cast<uint32_t>(data.lights.size());
-    // Already world-space, and `placeSceneData` has put them where the caller asked. A
-    // light carries no node, which is why this one is a plain append.
+    // Already world-space and already placed by `placeSceneData`; a light carries no node to
+    // shift.
     sceneLights.insert(sceneLights.end(), data.lights.begin(), data.lights.end());
 
     entry.firstEmitter = static_cast<uint32_t>(sceneEmitters.size());
     entry.emitterCount = static_cast<uint32_t>(data.emitters.size());
     for (ParticleEmitter& e : data.emitters) {
         shiftNode(e.node);
-        // Through the same table the materials went through, and for the same reason: an
-        // emitter names an *image* index and the descriptor array is addressed by slot.
-        // Without this an imported model that brought both an emitter and its sheet drew
-        // whatever texture happened to occupy that slot, silently.
+        // Through the same table the materials went through: an emitter names an *image*
+        // index and the descriptor array is addressed by slot, so an import that brought
+        // both an emitter and its sheet otherwise draws whatever occupies that slot.
         if (e.texture != 0xFFFFFFFFu) {
             int32_t slot = static_cast<int32_t>(e.texture);
             remap(slot);
@@ -1116,15 +979,12 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
 
     entry.live = true;
 
-    // **The scene's bounds grow with what was put in it** (C41). `load` sets them and
-    // `appendModel` did not, which was invisible while every scene arrived through `load`
-    // and every import was a prop inside one. A game that composes its world out of imports
-    // has no `load` at all, so without this `Camera::frameBounds` frames an empty box and
-    // the shadow cascades are fitted to nothing.
+    // A world composed only of imports never passes through `load`, so without this
+    // `Camera::frameBounds` frames an empty box and the shadow cascades fit nothing.
     //
-    // The import's own bounds are in its local space, so the caller's transform has to be
-    // applied -- all eight corners, because a rotation turns a box into one whose axis-aligned
-    // extent is larger than any two transformed corners would say.
+    // All eight corners, because the import's bounds are in its local space and a rotation
+    // turns a box into one whose axis-aligned extent is larger than any two transformed
+    // corners would say.
     for (int corner = 0; corner < 8; ++corner) {
         const glm::vec3 local((corner & 1) != 0 ? data.boundsMax.x : data.boundsMin.x,
                               (corner & 2) != 0 ? data.boundsMax.y : data.boundsMin.y,
@@ -1140,9 +1000,8 @@ GltfScene::ModelId GltfScene::appendModel(const gfx::VulkanContext& ctx, gfx::Up
         }
     }
 
-    // Before the move, not after. Only the vector member is left empty by it and every
-    // field read here is a `uint32_t`, so reading through would work and would be exactly
-    // the line someone deletes a field into later.
+    // Before the move, not after. Every field read here is a `uint32_t`, so reading after it
+    // would work today and break the first time a vector member is named.
     core::Logger::status(core::LogCategory::GLTF,
                          "appended %s: %u verts, %u indices, %u placements, %u colliders, %u lights, "
                          "%u emitters, %u sounds (nodes from %u)",
@@ -1166,14 +1025,12 @@ void GltfScene::rebaseAppendedSkins(ModelId id, uint32_t skinBase) {
     const uint32_t end = entry.firstPlacement + entry.placementCount;
     for (uint32_t p = entry.firstPlacement; p < end && p < placedPrims.size(); ++p) {
         Placement& pl = placedPrims[p];
-        // `kNoNode` here is glTF's "this placement is not skinned", and adding a base to it
-        // would make an unskinned crate name skin 0 of the base scene's character.
+        // `kNoNode` here is glTF's "this placement is not skinned"; adding a base to it makes
+        // an unskinned crate name skin 0 of the base scene's character.
         if (pl.skin != kNoNode) pl.skin += skinBase;
     }
 }
 
-
-// ============================================================ growth (G4)
 
 void GltfScene::writeMaterialDescriptor(const gfx::VulkanContext& ctx) {
     if (set == VK_NULL_HANDLE) return;
@@ -1198,9 +1055,8 @@ bool GltfScene::growBuffer(const gfx::VulkanContext& ctx, gfx::Uploader& uploade
         return false;
     }
 
-    // Everything the old buffer held, not everything it could hold: the tail past
-    // `oldCapacity` was never written, and copying it would be reading uninitialised
-    // device memory to no purpose.
+    // `oldCapacity`, not the new size: the tail past it was never written, and copying it
+    // reads uninitialised device memory.
     if (oldCapacity > 0) {
         uploader.copyBuffer(ctx, grown, buffer, static_cast<VkDeviceSize>(oldCapacity) * stride);
     }
@@ -1213,9 +1069,8 @@ bool GltfScene::growBuffer(const gfx::VulkanContext& ctx, gfx::Uploader& uploade
 
 bool GltfScene::reserveGeometry(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, uint32_t needVertices,
                                 uint32_t needIndices) {
-    // Doubling, floored at what is needed *plus* what is already there. Growing to exactly
-    // the request is growth that happens again on the next append, and each one is a
-    // full-buffer copy under a device wait.
+    // Floored at what is needed *plus* what is already there: growing to exactly the request
+    // grows again on the next append, and each one is a full-buffer copy under a device wait.
     if (needVertices > vertexRanges.largestFree()) {
         const uint32_t target = std::max(vertexCapacity * 2, vertexCapacity + needVertices);
         if (!growBuffer(ctx, uploader, vertices, vertexBufferUsage(ctx), vertexCapacity, target, sizeof(Vertex),
@@ -1245,14 +1100,11 @@ bool GltfScene::reserveMaterials(const gfx::VulkanContext& ctx, gfx::Uploader& u
         return false;
     }
     materialCapacity = target;
-    // The buffer moved, so the one descriptor naming it has to be rewritten. Not
-    // `buildDescriptors`, which creates the sampler and the fallback image -- both of
-    // which already exist and would leak.
+    // The buffer moved, so the one descriptor naming it is rewritten. Not `buildDescriptors`
+    // -- it creates the sampler and the fallback image, which already exist and would leak.
     writeMaterialDescriptor(ctx);
     return true;
 }
-
-// ============================================================ materials (G4)
 
 uint32_t GltfScene::createMaterial(const GpuMaterial& m) {
     if (materialCount >= materialCapacity) {
@@ -1271,9 +1123,8 @@ uint32_t GltfScene::createMaterial(const GpuMaterial& m) {
 }
 
 const GpuMaterial& GltfScene::material(uint32_t index) const {
-    // The first row rather than past the end, for the reason `settings::row` gives about
-    // its own out-of-range case: a bounds bug should be a wrong answer in one place rather
-    // than a crash somewhere later.
+    // Material 0 rather than past the end: a bounds bug should be a wrong answer in one
+    // place rather than a crash somewhere later.
     static const GpuMaterial kNone{};
     if (materialCpu.empty()) return kNone;
     return materialCpu[index < materialCpu.size() ? index : 0];
@@ -1291,8 +1142,6 @@ void GltfScene::setMaterial(uint32_t index, const GpuMaterial& m) {
     ++materialRev;
 }
 
-// ============================================================== createMesh (G4)
-
 GltfScene::ModelId GltfScene::createMesh(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, MeshData data) {
     if (vertices.buffer == VK_NULL_HANDLE) {
         core::Logger::warn(core::LogCategory::GLTF, "createMesh before a scene was loaded");
@@ -1307,9 +1156,9 @@ GltfScene::ModelId GltfScene::createMesh(const gfx::VulkanContext& ctx, gfx::Upl
     const auto vertexCount = static_cast<uint32_t>(data.vertices.size());
     const auto indexCount = static_cast<uint32_t>(data.indices.size());
 
-    // Refused before anything is allocated, so a rejected mesh leaves no range, no
-    // primitive and no half-written run of deltas behind. See `MeshData::morphTargets`
-    // for why a short target cannot be padded into something harmless.
+    // Checked before anything is allocated, so a rejected mesh leaves no range, no primitive
+    // and no half-written run of deltas behind. See `MeshData::morphTargets` for why a short
+    // target cannot be padded into something harmless.
     for (size_t t = 0; t < data.morphTargets.size(); ++t) {
         if (data.morphTargets[t].size() == data.vertices.size()) continue;
         core::Logger::warn(core::LogCategory::GLTF,
@@ -1329,8 +1178,8 @@ GltfScene::ModelId GltfScene::createMesh(const gfx::VulkanContext& ctx, gfx::Upl
         return kNoModel;
     }
 
-    // Bounds from the vertices unless the caller stated them. A degenerate box is the
-    // signal, because a box that is not a box is the one value that cannot be meant.
+    // A degenerate box is the "not stated" signal, because a box that is not a box is the
+    // one value a caller cannot have meant.
     glm::vec3 localMin = data.localMin;
     glm::vec3 localMax = data.localMax;
     if (!(localMax.x > localMin.x || localMax.y > localMin.y || localMax.z > localMin.z)) {
@@ -1348,8 +1197,8 @@ GltfScene::ModelId GltfScene::createMesh(const gfx::VulkanContext& ctx, gfx::Upl
         data.material = 0;
     }
 
-    // The index buffer holds absolute vertex indices, exactly as it does for an appended
-    // file -- so a mesh built at zero is rebased here rather than carrying an offset.
+    // The index buffer holds absolute vertex indices, so a mesh built at zero is rebased
+    // here rather than carrying an offset -- exactly as an appended file's is.
     for (uint32_t& index : data.indices) index += firstVertex;
 
     uploader.uploadBufferAt(ctx, vertices, static_cast<VkDeviceSize>(firstVertex) * sizeof(Vertex),
@@ -1363,7 +1212,7 @@ GltfScene::ModelId GltfScene::createMesh(const gfx::VulkanContext& ctx, gfx::Upl
     entry.firstIndex = firstIndex;
     entry.indexCount = indexCount;
     entry.firstMaterial = data.material;
-    entry.materialCount = 0; ///< it owns no material: the caller's outlives it
+    entry.materialCount = 0;
 
     Primitive prim;
     prim.firstIndex = firstIndex;
@@ -1376,18 +1225,13 @@ GltfScene::ModelId GltfScene::createMesh(const gfx::VulkanContext& ctx, gfx::Upl
     prim.localMin = localMin;
     prim.localMax = localMax;
 
-    // ------------------------------------------------------------------ morph targets (G11)
+    // Target-major, into the very array the loader fills: `skinning.comp` has one addressing
+    // rule and cannot tell which producer a run came from.
     //
-    // Appended to the very array the loader fills, in the same target-major order, so a
-    // code-made target and a file-authored one are one buffer and one addressing rule --
-    // `Renderer::setAnimator` re-uploads the whole of it and `skinning.comp` cannot tell
-    // which producer a run came from.
-    //
-    // **Never freed and never repacked**, exactly like the material slots below: an
-    // instance already carries `morphOffset`, so reclaiming a run out of the middle would
-    // renumber every later primitive under instances that still index them. That is the
-    // same refusal `unloadModel` makes about placements, one array along, and it is why
-    // `morphData` grows monotonically over an append/unload cycle.
+    // **Never freed and never repacked.** An instance already carries `morphOffset`, so
+    // reclaiming a run out of the middle renumbers every later primitive under instances
+    // that still index it -- which is why `morphData` grows monotonically over an
+    // append/unload cycle.
     if (!data.morphTargets.empty()) {
         prim.morphOffset = static_cast<uint32_t>(morphData.size());
         prim.morphTargets = static_cast<uint32_t>(data.morphTargets.size());
@@ -1396,20 +1240,15 @@ GltfScene::ModelId GltfScene::createMesh(const gfx::VulkanContext& ctx, gfx::Upl
             morphData.insert(morphData.end(), target.begin(), target.end());
         }
 
-        // **And the CPU index copy, which is the array that has to move with it.**
-        // `buildSceneAccelStruct` rebases a deformed primitive's indices onto the deformed
-        // vertex buffer by reading `indexData()[firstIndex + k]` -- the device buffer is no
-        // use to it, because the rebase happens on the host. That copy is a snapshot the
-        // *loader* took, so a morphed mesh made afterwards indexes past the end of a vector
-        // and the build is handed whatever follows it in memory. It does not fault: it
-        // hangs the GPU on a structure built over nonsense, five seconds later, as
-        // `VK_ERROR_DEVICE_LOST` on an unrelated fence.
+        // **The CPU index copy has to move with it.** `buildSceneAccelStruct` rebases a
+        // deformed primitive's indices by reading `indexData()[firstIndex + k]` on the host,
+        // and that copy is a snapshot the *loader* took -- so a morphed mesh made afterwards
+        // indexes past the end of a vector and the build reads whatever follows it in
+        // memory. It does not fault: it hangs the GPU on a structure built over nonsense,
+        // five seconds later, as `VK_ERROR_DEVICE_LOST` on an unrelated fence.
         //
-        // This is precisely G12's defect one array along -- two vectors laid out to match,
-        // one of them grown -- and it is why the copy is written here rather than left to
-        // agree by construction. Only a mesh that deforms needs it: the static tier reads
-        // the device buffer by address and never touches this, so a copy of every prop a
-        // game makes would be memory nothing reads.
+        // Only inside this branch. The static tier reads the device buffer by address, so a
+        // copy for every prop a game makes would be memory nothing reads.
         const size_t end = static_cast<size_t>(firstIndex) + indexCount;
         if (indexCopy.size() < end) indexCopy.resize(end, 0u);
         std::copy(data.indices.begin(), data.indices.end(), indexCopy.begin() + firstIndex);
@@ -1441,13 +1280,11 @@ void GltfScene::unloadModel(const gfx::VulkanContext& ctx, ModelId id) {
     vertexRanges.free(entry.firstVertex, entry.vertexCount);
     indexRanges.free(entry.firstIndex, entry.indexCount);
 
-    // The slots go back on the free list and their descriptors are pointed at the fallback
-    // rather than left dangling. A descriptor naming a destroyed image is undefined
-    // behaviour on the next draw that samples it, and nothing here guarantees no material
-    // still does.
+    // Descriptors are pointed at the fallback rather than left dangling: one naming a
+    // destroyed image is undefined behaviour on the next draw that samples it, and nothing
+    // here guarantees no material still does.
     for (const uint32_t slot : entry.textureSlotsUsed) {
-        // Holes, for the images that never got one. The list is image-indexed so
-        // `modelTextureSlot` can answer -- see LoadedModel.
+        // Holes, for the images that never got a slot -- see `LoadedModel`.
         if (slot == kNoTextureSlot) continue;
         writeTextureDescriptor(ctx, slot, textures[fallbackSlot].view);
         gfx::destroyImage(ctx, textures[slot]);
@@ -1455,15 +1292,10 @@ void GltfScene::unloadModel(const gfx::VulkanContext& ctx, ModelId id) {
     }
     entry.textureSlotsUsed.clear();
 
-    // **The deform arrays are truncated when this model's runs are at the tail, and left
-    // alone otherwise** (C22). A run freed out of the middle would renumber every later
-    // primitive's `skinOffset` and `morphOffset` under instances that still hold them --
-    // the same refusal placements and materials make below. At the tail there is nothing
-    // later to renumber, so the space goes back.
-    //
-    // That covers the case that would otherwise grow without bound: import a rig, remove
-    // it, import it again. `character.gltf` is 0.9 MB of influences, so a thousand cycles
-    // is the difference between a flat high-water mark and 900 MB.
+    // **Truncated only when this model's runs are at the tail.** A run freed out of the
+    // middle renumbers every later primitive's `skinOffset` and `morphOffset` under
+    // instances that still hold them; at the tail there is nothing later to renumber. That
+    // is what keeps import-remove-import from growing without bound.
     if (entry.skinVertexCount > 0 &&
         static_cast<size_t>(entry.firstSkinVertex) + entry.skinVertexCount == skinData.size()) {
         skinData.resize(entry.firstSkinVertex);
@@ -1472,8 +1304,8 @@ void GltfScene::unloadModel(const gfx::VulkanContext& ctx, ModelId id) {
         static_cast<size_t>(entry.firstMorphDelta) + entry.morphDeltaCount == morphData.size()) {
         morphData.resize(entry.firstMorphDelta);
     }
-    // Cloth records the same way, and they are easier: a `ClothSource` is self-contained, so
-    // the only index into the list is the caller's own loop over it.
+    // Cloth records the same way, though a `ClothSource` is self-contained and the only
+    // index into the list is a caller's own loop over it.
     if (entry.clothCount > 0 &&
         static_cast<size_t>(entry.firstCloth) + entry.clothCount == clothSourceList.size()) {
         clothSourceList.resize(entry.firstCloth);
@@ -1482,20 +1314,15 @@ void GltfScene::unloadModel(const gfx::VulkanContext& ctx, ModelId id) {
     entry.morphDeltaCount = 0;
     entry.clothCount = 0;
 
-    // Placements are left as holes. Compacting them would renumber every survivor, and the
-    // instance table holds those numbers -- which is the same argument the allocator makes
-    // for a free list over compaction, one level up.
+    // Left as holes. Compacting them renumbers every survivor, and the instance table holds
+    // those numbers.
     for (uint32_t i = 0; i < entry.placementCount; ++i) {
         placedPrims[entry.firstPlacement + i].primitive = 0;
     }
-    // Material slots are not reclaimed: they are a dense array the shaders index directly,
-    // and a hole in it would need the same renumbering placements just refused.
-    //
-    // So `prims`, `placedPrims`, `models` and the material count all grow monotonically over
-    // an append/unload cycle, and only a `destroy()`/`upload()` gives any of it back. That is
-    // the price of stable indices and it is the right one at the scale this runs -- but it
-    // does mean a long-lived process cycling models is bounded by `materialCapacity`, which
-    // `upload()` sizes at the scene's own count plus 64.
+    // Material slots are not reclaimed either -- a dense array the shaders index directly
+    // needs the same renumbering placements just refused. So `prims`, `placedPrims`,
+    // `models` and the material count grow monotonically over an append/unload cycle, and a
+    // long-lived process cycling models is bounded by `materialCapacity`.
     entry.live = false;
     core::Logger::status(core::LogCategory::GLTF, "unloaded model %u: %u verts and %u indices returned", id,
                          entry.vertexCount, entry.indexCount);
@@ -1515,9 +1342,8 @@ void addPlacementInstances(const GltfScene& scene, InstanceTable& table, uint32_
         const Placement& p = scene.placements()[pi];
         const Primitive& prim = prims[p.primitive];
 
-        // A primitive with no indices draws nothing. Dropping it here rather than
-        // testing `indexCount == 0` in four record loops is the point of the table:
-        // an instance that exists is an instance that draws.
+        // An instance that exists is an instance that draws -- the invariant every record
+        // loop downstream relies on instead of testing `indexCount == 0` itself.
         if (prim.indexCount == 0) continue;
 
         InstanceDesc desc;
@@ -1528,20 +1354,17 @@ void addPlacementInstances(const GltfScene& scene, InstanceTable& table, uint32_
         desc.baseVertex = prim.baseVertex;
         desc.vertexCount = prim.vertexCount;
         desc.skinOffset = prim.skinOffset;
-        // A skin is only a skin if the primitive actually carries influences. A node
-        // with a `skin` whose mesh has no JOINTS_0 is malformed, and taking its word
-        // for it would dispatch skinning over an array that was never filled.
+        // A node with a `skin` whose mesh has no JOINTS_0 is malformed glTF; taking its word
+        // for it dispatches skinning over an array that was never filled.
         desc.skin = prim.skinOffset != 0xFFFFFFFFu ? p.skin : 0xFFFFFFFFu;
         desc.morphOffset = prim.morphOffset;
         desc.morphTargets = prim.morphTargets;
         desc.morphWeightOffset =
             p.node < scene.rig().bind.nodes.size() ? scene.rig().bind.nodes[p.node].firstWeight : 0u;
 
-        // Which character deforms it. A skinned mesh takes the one the animator creates
-        // for its skin; a morph-only mesh takes character 0, which is the single
-        // character a rig with no skin gets and the first of however many it has. Both
-        // are defaults a game overrides with `setCharacter` the moment it places a
-        // second copy -- see property (ii) in 4.1b, which is the same argument.
+        // Which character deforms it: the animator's character for that skin, or character 0
+        // for a morph-only mesh. Both are defaults a game overrides with `setCharacter` the
+        // moment it places a second copy.
         if (desc.skin != 0xFFFFFFFFu) {
             desc.character = desc.skin;
         } else if (desc.morphTargets > 0) {
@@ -1550,11 +1373,9 @@ void addPlacementInstances(const GltfScene& scene, InstanceTable& table, uint32_
         desc.localMin = prim.localMin;
         desc.localMax = prim.localMax;
         desc.transform = p.transform;
-        // Cloth is placed once, into its vertices, and its instance transform stays
-        // identity from then on (C19). A soft body has no rigid transform to push down a
-        // node hierarchy, so applying the placement here as well would move the fabric
-        // twice -- and the *stated* consequence is that a `FABRIC_` mesh cannot be moved by
-        // animating its parent, which limitations.md records.
+        // Cloth is placed once, into its vertices, so its instance transform stays identity:
+        // applying the placement here as well moves the fabric twice. The cost is that a
+        // `FABRIC_` mesh cannot be moved by animating its parent -- see limitations.md.
         desc.cloth = prim.clothOffset != 0xFFFFFFFFu;
         if (desc.cloth) desc.transform = glm::mat4(1.0f);
         desc.blended = prim.blended;

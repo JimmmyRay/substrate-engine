@@ -9,7 +9,7 @@ using namespace core;
 
 /**
  * @file tests/DebugViewTests.cpp
- * @brief The debug view list, and the step that walks it (G8).
+ * @brief The debug view list, and the step that walks it.
  *
  * `Renderer::cycleDebugView` is the door G8 opened, and the arithmetic behind it is what
  * every caller used to write out by hand: a cast to `uint32_t`, a modulo over

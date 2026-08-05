@@ -13,7 +13,7 @@ using namespace scene;
 
 /**
  * @file tests/SpatialIndexTests.cpp
- * @brief The BVH: that it answers what a linear scan would, and faster (C9).
+ * @brief The BVH: that it answers what a linear scan would, and faster.
  *
  * An acceleration structure has exactly one correctness property and it is easy to state:
  * **it must return what the O(n) answer would**. Everything else -- depth, node count,

@@ -13,21 +13,12 @@
 
 /**
  * @file engine/scene/SceneData.cpp
- * @brief What can be done to a loaded `SceneData` without a device: the sidecar **reader**
- *        (D9) and the scale pass.
+ * @brief What can be done to a loaded `SceneData` without a device: the sidecar **reader**,
+ * the scale pass and the place pass.
  *
- * "And nothing else" used to be literal here, and the exclusion it was making was of the
- * *writer* rather than of every other verb. The scale pass belongs beside the reader for
- * the same reason the reader is here at all: it operates on the CPU-side scene, it names
- * no Vulkan type, and being hosted is what puts it in reach of the unit suite.
- *
- * The writer is `SceneCacheWrite.cpp`, and the split is the whole of D9's engine-side
- * change: a static library links by object file, so while the two shared one translation
- * unit, every binary that could read a sidecar also carried the code to write one. Now
- * only `substrate-bake` and the unit suite link the writer, and a shipped game holds no
- * path that can produce a `.scene`.
- *
- * The format itself is `SceneCacheFormat.h`, where each `get` still sits beside its `put`.
+ * The writer stays in `SceneCacheWrite.cpp`: a static library links by object file, so
+ * anything added here is code every binary that reads a sidecar also carries. The format
+ * itself is `SceneCacheFormat.h`, where each `get` sits beside its `put`.
  */
 namespace scene {
 
@@ -37,8 +28,8 @@ std::filesystem::path sceneCachePath(const std::filesystem::path& source) {
 
 namespace {
 
-/// Move a transform's translation without touching its basis: what a thing that keeps its
-/// authored size gets, so it ends up where the scaled world put its surroundings.
+/// Move a transform's translation without touching its basis, so a thing that keeps its
+/// authored size still lands where the scaled world put its surroundings.
 void carryTranslation(glm::mat4& transform, float scale) {
     transform[3] = glm::vec4(glm::vec3(transform[3]) * scale, transform[3].w);
 }
@@ -46,16 +37,14 @@ void carryTranslation(glm::mat4& transform, float scale) {
 } // namespace
 
 void scaleSceneData(SceneData& data, float scale) {
-    // 1 is the no-op every caller passes by default. A non-positive or NaN factor is
-    // refused rather than clamped: there is no scale a caller meant by it, and a scene
-    // silently collapsed to the origin is harder to recognise than one that did not move.
+    // A non-positive or NaN factor is refused rather than clamped: a scene silently
+    // collapsed to the origin is harder to recognise than one that did not move. The
+    // `!(x > 0)` spelling is what catches the NaN.
     if (!(scale > 0.0f) || scale == 1.0f) return;
 
     const glm::mat4 whole = glm::scale(glm::mat4(1.0f), glm::vec3(scale));
 
-    // Collider nodes a solver drives. Gathered first because a placement asks about its
-    // ancestor rather than about itself, and the colliders are a handful next to the
-    // placements -- Sponza's showcase authors two.
+    // Gathered before the placement loop, which asks about its ancestor rather than itself.
     std::vector<uint32_t> drivenNodes;
     for (const ColliderDesc& c : data.colliders) {
         if (c.motion != ColliderMotion::Static && c.node != kNoNode) drivenNodes.push_back(c.node);
@@ -64,22 +53,12 @@ void scaleSceneData(SceneData& data, float scale) {
         return node != kNoNode && std::find(drivenNodes.begin(), drivenNodes.end(), node) != drivenNodes.end();
     };
 
-    /**
-     * **An assembly moves rigidly, and getting this wrong is what a stretched character
-     * looks like.** A rig's mesh and the capsule that drives it are two records describing
-     * one object -- in `showcase.gltf` the `Armature` is a *child* of the collider node --
-     * and translating each by its own scaled position moves them to two different places,
-     * multiplying the distance between them by the factor.
-     *
-     * Nothing looks wrong standing still. `initPhysics` binds the mesh to the body through
-     * `inverse(rest) * meshTransform`, so a gap that was 0 becomes whatever the stretch
-     * introduced, and the mesh then **swings around the body on that radius every time it
-     * turns** -- a character that orbits a point instead of rotating on the spot.
-     *
-     * So the anchor is the collider, and every placement it drives takes *its* delta rather
-     * than computing one of its own. A placement with no driven ancestor is alone and is
-     * its own anchor, which is the same arithmetic with nothing else to stay level with.
-     */
+    // **An assembly has to move rigidly.** A rig's mesh and the capsule that drives it are
+    // two records of one object, so translating each by its own scaled position multiplies
+    // the gap between them by the factor. Nothing looks wrong standing still -- but
+    // `initPhysics` binds the mesh through `inverse(rest) * meshTransform`, and the mesh
+    // then swings around the body on that radius every time it turns. So the collider is
+    // the anchor and every placement it drives takes *its* delta.
     std::vector<std::pair<uint32_t, glm::vec3>> anchorDelta;
     anchorDelta.reserve(drivenNodes.size());
     for (const ColliderDesc& c : data.colliders) {
@@ -115,24 +94,23 @@ void scaleSceneData(SceneData& data, float scale) {
     }
 
     for (gfx::GpuLight& l : data.lights) {
-        // A directional light has neither a position nor a range that means anything, and
-        // its irradiance does not fall off, so all three of these would be noise on it.
+        // A directional light has no position, no meaningful range and no falloff, so all
+        // three writes below would be noise on it.
         if (static_cast<uint32_t>(l.params.z) == static_cast<uint32_t>(gfx::LightType::Directional)) continue;
         l.position = glm::vec4(glm::vec3(l.position) * scale, l.position.w * scale);
         l.color.w *= scale * scale; // inverse square; see the header
     }
 
     for (ParticleEmitter& e : data.emitters) {
-        // Where it is and how wide it spawns are lengths. Particle *sizes* and speeds are
-        // not scaled: an ember is an ember in a cathedral of any size, and a scene that
-        // wanted bigger ones would author bigger ones.
+        // Lengths only. Particle sizes and speeds keep their authored values -- an ember is
+        // an ember in a cathedral of any size.
         e.transform = whole * e.transform;
         e.boxExtent *= scale;
     }
 
     for (AudioSourceDesc& a : data.audioSources) {
-        // Translation only -- `AudioSourceDesc` says its basis is read for aim and nothing
-        // else -- and the two distances that decide the falloff curve.
+        // Translation only: `AudioSourceDesc`'s basis is read for aim, and scaling it
+        // would change nothing but the numbers.
         carryTranslation(a.transform, scale);
         a.minDistance *= scale;
         a.maxDistance *= scale;
@@ -153,18 +131,16 @@ void placeSceneData(SceneData& data, const glm::mat4& transform) {
     for (AudioSourceDesc& a : data.audioSources) a.transform = transform * a.transform;
 
     for (gfx::GpuLight& l : data.lights) {
-        // A direction takes the rotation alone. Running it through the full matrix drags it
-        // to wherever the import was placed, which points every spot in the file at the same
-        // spot in the world.
+        // The rotation alone: the full matrix drags a direction to wherever the import was
+        // placed, pointing every spot in the file at one spot in the world.
         const glm::vec3 aimed = rotation * glm::vec3(l.direction);
         l.direction = glm::vec4(aimed, l.direction.w);
         if (static_cast<uint32_t>(l.params.z) == static_cast<uint32_t>(gfx::LightType::Directional)) continue;
         l.position = glm::vec4(glm::vec3(transform * glm::vec4(glm::vec3(l.position), 1.0f)), l.position.w);
     }
 
-    // Eight corners, refitted. A rotated axis-aligned box is not an axis-aligned box, so
-    // transforming `min` and `max` alone gives one that does not contain the scene for any
-    // rotation that is not a multiple of a quarter turn.
+    // Eight corners, refitted: transforming `min` and `max` alone gives a box that does not
+    // contain the scene for any rotation off a multiple of a quarter turn.
     const glm::vec3 lo = data.boundsMin;
     const glm::vec3 hi = data.boundsMax;
     glm::vec3 newMin(std::numeric_limits<float>::max());
@@ -195,10 +171,9 @@ bool readSceneCache(const std::filesystem::path& source, SceneData& out) {
     std::ifstream in(cachePath, std::ios::binary);
     if (!in) return false;
 
-    // Sized, then one `read`. The obvious spelling -- `istreambuf_iterator` into a vector
-    // -- goes through the stream one character at a time and reallocates as it grows; on
-    // Sponza's 12 MB sidecar it cost 34 ms against 4 ms for this, which is the difference
-    // between a cache that loses to the parser and one that beats it.
+    // Sized, then one `read`. `istreambuf_iterator` into a vector goes through the stream a
+    // character at a time and reallocates as it grows: 34 ms against 4 ms on Sponza's 12 MB
+    // sidecar, which is a cache that loses to the parser it replaces.
     std::vector<uint8_t> bytes(static_cast<size_t>(cacheBytes));
     if (bytes.size() < kHeaderSize) return false;
     in.read(reinterpret_cast<char*>(bytes.data()), static_cast<std::streamsize>(bytes.size()));
@@ -237,7 +212,7 @@ bool readSceneCache(const std::filesystem::path& source, SceneData& out) {
     data.boundsMax = r.pod<glm::vec3>();
     data.stats = r.pod<SceneStats>();
 
-    // Every byte, or none. A reader that stopped early consumed a file it did not
+    // Every byte, or none: a reader that stopped early consumed a file it did not
     // understand, whatever the header claimed.
     if (!r.ok || r.p != r.end) return false;
 

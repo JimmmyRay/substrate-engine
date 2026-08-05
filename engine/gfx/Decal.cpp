@@ -10,10 +10,6 @@ Decal decalAt(const glm::vec3& position, const glm::vec3& normal, float size, ui
     d.textureIndex = textureIndex;
     d.tint = tint;
 
-    // Local +Y along the normal, the same basis `ParticleSystem::spawnEffect` builds for
-    // the same reason. Two occurrences, deliberately left as two: the Rule of Threes is
-    // the rule, and the narrowest scope reaching both would be `core/`, which is a
-    // promotion this does not yet earn.
     glm::vec3 up{0.0f, 1.0f, 0.0f};
     const float length = glm::length(normal);
     if (length > 1e-6f) up = normal / length;

@@ -339,14 +339,17 @@ auto-placed lights have no falloff window. **A non-zero default is per-scene tun
 unbounded failure mode**, which is a reason to build the culling structure rather than a
 substitute for it.
 
-### There is no octree, and no CPU spatial index
+### ~~There is no octree, and no CPU spatial index~~ — `scene::SpatialIndex` since C9
 
-A tree accelerates a CPU testing objects one at a time; the GPU tests all of them at once
-in 0.010 ms. Building one for the renderer would have been a structure with no caller.
+The renderer still has none and still wants none: a tree accelerates a CPU testing objects one
+at a time, the GPU tests all of them at once in 0.010 ms, and building one for the renderer
+would have been a structure with no caller.
 
-It is worth having for **picking, physics broadphase and audio occlusion** — all
-subsystems — so it is delegated there. The practical consequence today is that the
-inspector selects from a list rather than by clicking in the viewport.
+What the delegation said — that it is worth having for **picking, physics broadphase and audio
+occlusion**, all subsystems — is what C9 built, on the subsystem side. See
+[systems.md](systems.md#the-spatial-index). It is a broadphase over instance *boxes*, so a
+caller that needs a surface still owns its narrow phase, and the inspector still selects from a
+list rather than by clicking in the viewport.
 
 ### Multi-threaded command recording is delegated
 
@@ -1087,7 +1090,8 @@ forgotten.
 | **A shader variant cache** | Comparing a feature key each frame and rebuilding is stricter than a map — one live variant per pipeline. Enumerating a cross-product of nine constants is 512 pipelines |
 | **A render-target manager** | Named members. Revisit past ~15 targets |
 | **entt** | It cannot own the instance table — paged storage is not flat, swap-and-pop is not slot-stable. It can sit beside it whenever gameplay needs it |
-| **An octree** | See above |
+| **An octree** | See above — the renderer still has none, and `scene::SpatialIndex` is the subsystem-side answer the delegation named |
+| **`gfx::ImageTable` growing into an image cache** | It is a `std::vector` of entries, a free list and a generation counter, and it is close enough to the `ResourceManager` [principles.md](principles.md) refuses by name that the four things it must not acquire are worth stating: **reference counting**, which replaces an explicit `destroy` with an implicit one; **a path-keyed cache**, so loading the same file twice loads it twice — deduplication is a cache, a cache needs invalidation, and invalidation is the system this is not; **a virtual `IImageLoader`**, where there is one `stbi_load` in the device half; and **eviction, residency policy or an async queue**, which is streaming and is C10. A change that adds any of the four has made it the refused thing and owes a new argument |
 | **A blend tree** | Interrupting a fade drops the outgoing clip; the alternative is an unbounded stack of playbacks |
 | **A particle manager, effect graph or emitter hierarchy** | An emitter is authoring data placed by a node walk. A second blend pipeline would also have cost the single global sort |
 | **A physics component, body registry or collision-event bus** | A collider drives an instance through a flat list built once at startup |

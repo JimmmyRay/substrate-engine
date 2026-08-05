@@ -10,7 +10,7 @@ using namespace core;
 
 /**
  * @file tests/RangeAllocatorTests.cpp
- * @brief Sub-allocation, coalescing and growth (C10).
+ * @brief Sub-allocation, coalescing and growth.
  *
  * The allocator is the part of streaming that is easy to get wrong and impossible to
  * observe: a free list that fails to coalesce still *works*, and only stops working after

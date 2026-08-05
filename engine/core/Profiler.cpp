@@ -30,10 +30,9 @@ namespace core {
 
 namespace {
 
-// ---------------------------------------------------------------- hashing
-// Scope paths are folded into a 64-bit FNV-1a hash rather than concatenated into
-// a string. That keeps the recording path free of allocation; the readable path
-// string is materialised once per unique path, on the cold side.
+// Scope paths fold into a 64-bit FNV-1a hash rather than concatenating into a string, which
+// is what keeps the recording path allocation-free. The readable path string is
+// materialised once per unique path, on the cold side.
 constexpr uint64_t FNV_OFFSET = 1469598103934665603ull;
 constexpr uint64_t FNV_PRIME = 1099511628211ull;
 
@@ -53,13 +52,12 @@ uint64_t childPathHash(uint64_t parent, const char* name) {
     return hashString(name, h);
 }
 
-// ------------------------------------------------------------ path strings
 std::mutex g_pathMutex;
 std::unordered_map<uint64_t, std::string> g_pathStrings;
 thread_local std::unordered_set<uint64_t> t_knownPaths;
 
 void registerPath(uint64_t hash, uint64_t parentHash, const char* name) {
-    // Thread-local set means the steady-state case takes no lock at all.
+    // The thread-local set is what keeps the steady state off `g_pathMutex` entirely.
     if (t_knownPaths.find(hash) != t_knownPaths.end()) return;
     t_knownPaths.insert(hash);
 
@@ -84,16 +82,12 @@ std::string pathString(uint64_t hash) {
     return it != g_pathStrings.end() ? it->second : std::string("?");
 }
 
-// -------------------------------------------------------- dynamic name pool
-// scopef() names must outlive the frame they were recorded in, so they are
-// interned. A deque never invalidates references to existing elements, which is
-// what makes the returned c_str() stable for the process lifetime.
+// `scopef()` names must outlive the frame they were recorded in, so they are interned. The
+// pool must stay a `std::deque`: the `c_str()` handed out has to stay valid for the process
+// lifetime, and a `vector` invalidates it on the next push.
 //
-// Interning is permanent, so an unbounded pool is a slow leak the moment a caller
-// formats something that varies every frame -- scopef("Upload %llu", frameNumber)
-// is the obvious mistake. The pool is capped instead: past the cap, names collapse
-// onto one bucket and a warning names the offender. Bounded and diagnosable beats
-// correct-until-someone-holds-it-wrong.
+// Interning is permanent, so the cap is what keeps `scopef("Upload %llu", frameNumber)` from
+// leaking forever; past it, names collapse onto one bucket and a warning names the offender.
 constexpr size_t kMaxInternedNames = 4096;
 
 std::mutex g_namePoolMutex;
@@ -123,8 +117,7 @@ const char* internName(const std::string& s) {
     return stable;
 }
 
-// ------------------------------------------------------------- thread state
-/// Trace row for GPU zones. Well above any plausible thread slot id.
+/// Trace row for GPU zones. Must stay above any thread slot id, or the two share a track.
 constexpr uint32_t kGpuTrackId = 1000;
 
 struct ScopeTiming {
@@ -137,7 +130,7 @@ struct ScopeTiming {
     bool gpu = false;
 };
 
-/// One quantity, by name. `name` is a literal held by pointer, exactly as a scope's is.
+/// One quantity, by name. `name` is held by pointer and must have static lifetime.
 struct CounterSample {
     const char* name = nullptr;
     double value = 0.0;
@@ -146,33 +139,31 @@ struct CounterSample {
 /**
  * @brief Per-thread recording buffer, recycled when a thread exits.
  *
- * Slots are reused rather than accumulated, for two reasons: an engine that spawns
- * short-lived jobs would otherwise grow the registry without bound, and Chrome
- * Tracing would render one near-empty row per thread ever created.
+ * Slots are reused rather than accumulated: an engine spawning short-lived jobs would
+ * otherwise grow the registry without bound and render one near-empty Chrome Tracing row
+ * per thread ever created.
  *
- * `guard` is a spinlock, not a mutex. Exactly one thread ever pushes to a slot and
- * only the collector drains it, so contention is near-zero — but the access still
- * has to be synchronised, or a worker recording mid-frame races the collector.
+ * `guard` is a spinlock rather than a mutex because exactly one thread pushes to a slot and
+ * only the collector drains it. It cannot be dropped -- a worker recording mid-frame races
+ * the collector.
  */
 struct ThreadSlot {
     std::vector<ScopeTiming> scopes;
 
-    /// Names this slot has been given since the last collect, in the order they were
-    /// given. Drained into the frame beside `scopes`, under the same spinlock and by the
-    /// same caller, which is what keeps this off the recording path's fast route.
+    /// Names this slot has been given since the last collect, in order. Drained beside
+    /// `scopes`, under the same spinlock and by the same caller.
     ///
-    /// `nullptr` is a real entry and means *unnamed*: it is pushed by `acquireSlot` on
-    /// every acquisition, so a thread that never names itself cannot inherit the label of
+    /// `nullptr` is a real entry meaning *unnamed*, pushed by `acquireSlot` on every
+    /// acquisition; without it a thread that never names itself inherits the label of
     /// whichever thread held the slot before it.
     std::vector<const char*> pendingNames;
 
     /// The name this acquisition has already emitted, so naming is idempotent.
     const char* name = nullptr;
 
-    /// This frame's counters, one entry per distinct name. A second write of a name
-    /// overwrites rather than appends -- which is the last-value-per-frame contract and
-    /// is also what bounds this vector, so the recording path never allocates after the
-    /// first frame that used a given name.
+    /// This frame's counters, one entry per distinct name. A second write of a name must
+    /// overwrite rather than append: that is what bounds this vector, and what keeps the
+    /// recording path from allocating after the first frame that used a given name.
     std::vector<CounterSample> counters;
 
     std::atomic_flag guard = ATOMIC_FLAG_INIT;
@@ -196,7 +187,7 @@ struct ThreadSlotGuard {
     ~ThreadSlotGuard() {
         if (t_slot == nullptr) return;
         std::lock_guard<std::mutex> lock(g_registryMutex);
-        // Any scopes still buffered stay put; the next collectFrame() drains them.
+        // Buffered scopes stay put; the next collectFrame() drains them.
         t_slot->inUse = false;
         t_slot = nullptr;
     }
@@ -208,10 +199,8 @@ ThreadSlot& acquireSlot() {
 
     (void)&t_slotGuard; // odr-use so the thread-exit destructor is registered
 
-    // Every acquisition pushes a name, and it is `nullptr` until somebody says otherwise.
-    // That is the whole of the recycling fix: the slot the scene-load worker used carries
-    // its label until the recorder takes it, and this resets it to "thread N" on the spot
-    // rather than leaving the recorder's work under the loader's name.
+    // Every acquisition pushes a `nullptr` name. Without it, a recycled slot leaves the new
+    // thread's work under the previous thread's label.
     const auto claim = [](ThreadSlot& slot) {
         slot.inUse = true;
         slot.name = nullptr;
@@ -253,10 +242,9 @@ struct ThreadName {
 
 struct FrameData {
     uint64_t frameNumber = 0;
-    /// steady_clock nanoseconds at which this frame opened. Kept so a GPU zone carrying
-    /// a calibrated host timestamp can be turned into an offset within the frame long
-    /// after the frame closed (5.4) -- the results arrive several frames late, by which
-    /// point `frameStartNs` has moved on three times.
+    /// steady_clock nanoseconds at which this frame opened. Held per frame rather than read
+    /// from `frameStartNs`, which has moved on several frames by the time a calibrated GPU
+    /// zone arrives to be resolved against it.
     int64_t startNs = 0;
     double durationUs = 0.0;
     std::vector<ScopeTiming> scopes;
@@ -282,7 +270,6 @@ std::string escapeJson(const std::string& s) {
     return out;
 }
 
-// --------------------------------------------------------- signal handling
 std::atomic<bool> g_fileClosed{false};
 std::atomic<bool> g_signalFlushRequested{false};
 std::atomic<bool> g_signalFlushDone{false};
@@ -291,8 +278,6 @@ std::string g_outputFilePath;
 
 } // namespace
 
-// ============================================================== Profiler::Impl
-
 struct Profiler::Impl {
     ProfilerConfig config;
 
@@ -300,10 +285,9 @@ struct Profiler::Impl {
 
     uint64_t frameCounter = 0;
 
-    // Frame state is read by every closing scope on every thread while the main
-    // thread flips it at frame boundaries, so it has to be atomic. Ordering matters:
-    // frameStartNs is published before frameStarted, and read after it, so anyone who
-    // observes an open frame also observes a valid start time.
+    // Read by every closing scope on every thread while the main thread flips it at frame
+    // boundaries. `frameStartNs` must be published before `frameStarted` and read after it,
+    // or a thread observing an open frame can read a start time from the previous one.
     std::atomic<bool> frameStarted{false};
     std::atomic<int64_t> frameStartNs{0};
 
@@ -349,9 +333,8 @@ struct Profiler::Impl {
             }
             for (const char* name : slot->pendingNames) frame.threadNames.push_back({slot->threadId, name});
             slot->pendingNames.clear();
-            // Counters are cleared rather than carried: a counter is a statement about
-            // *this* frame, and a caller that stops writing one should see the track stop
-            // rather than see the last value repeated forever.
+            // Cleared rather than carried, so a caller that stops writing a counter sees
+            // the track stop instead of the last value repeating forever.
             frame.counters.insert(frame.counters.end(), slot->counters.begin(), slot->counters.end());
             slot->counters.clear();
             slot->unlock();
@@ -373,10 +356,9 @@ struct Profiler::Impl {
         {
             std::lock_guard<std::mutex> lock(mutex);
             pendingFrames.push_back(std::move(frame));
-            // Frame 0 is the startup frame: window creation, device init and asset
-            // load all happen inside it and never happen again. Ageing it out of a
-            // rolling window leaves the trace with no record of the most expensive
-            // work the process ever does, so it is pinned and frame 1 evicts instead.
+            // Frame 0 is pinned and frame 1 evicted in its place: window creation, device
+            // init and asset load all happen in frame 0 and never again, so ageing it out
+            // leaves the trace with no record of the most expensive work the process does.
             if (config.maxFrames > 0) {
                 while (pendingFrames.size() > config.maxFrames) {
                     if (pendingFrames.front().frameNumber == 0 && pendingFrames.size() > 1) {
@@ -412,9 +394,9 @@ struct Profiler::Impl {
                 pendingFrames.clear();
             }
 
-            // Frame 0 is pinned here too. pendingFrames is drained into writeQueue on
-            // the first flush, so without this the startup frame survives its own
-            // window only to be trimmed out of the one that actually gets written.
+            // Pinned here too: `pendingFrames` drains into `writeQueue` on the first flush,
+            // so without this frame 0 survives its own window and is trimmed out of the one
+            // that actually gets written.
             if (config.maxFrames > 0) {
                 while (writeQueue.size() > config.maxFrames) {
                     if (writeQueue.front().frameNumber == 0 && writeQueue.size() > 1) {
@@ -486,8 +468,8 @@ struct Profiler::Impl {
     }
 
     void writeFramesToFile(const std::deque<FrameData>& frames) {
-        // Rewrite the whole file each time so it always holds exactly the current
-        // window and is always a complete, valid JSON array.
+        // Rewritten whole each time, so the file is always a complete, valid JSON array
+        // holding exactly the current window. Appending would leave it unparseable.
         std::ofstream file(writerOutputPath, std::ios::trunc);
         if (!file.is_open()) return;
         writeTrace(file, frames);
@@ -499,9 +481,8 @@ struct Profiler::Impl {
         double cumulativeUs = 0.0;
         bool needsComma = false;
 
-        // The GPU track is not a thread and never acquires a slot, so nothing else would
-        // ever name it -- and an unlabelled `1000` beside labelled CPU tracks is the exact
-        // complaint this fixes, one row further down the list.
+        // The GPU track never acquires a slot, so nothing else names it and Perfetto would
+        // render an unlabelled `1000` beside the labelled CPU tracks.
         out << "{\"name\":\"thread_name\",\"ph\":\"M\",\"pid\":1,\"tid\":" << kGpuTrackId
             << ",\"args\":{\"name\":\"GPU\"}}";
         needsComma = true;
@@ -510,11 +491,9 @@ struct Profiler::Impl {
             const double frameBaseUs = cumulativeUs;
             cumulativeUs += frame.durationUs;
 
-            // Metadata first within the frame, so a track is named before the events that
-            // land on it. Chrome's `M` phase carries no duration and Perfetto ignores its
-            // `ts` -- a second event for the same `tid` replaces the first, which is
-            // exactly what a recycled slot needs and is why this emits per acquisition
-            // rather than once per slot at the end.
+            // Metadata before the events that land on the track. Perfetto ignores an `M`
+            // event's `ts` and lets a second event for the same `tid` replace the first,
+            // which is why this emits per acquisition rather than once per slot at the end.
             for (const ThreadName& t : frame.threadNames) {
                 if (needsComma) out << ",\n";
                 needsComma = true;
@@ -528,11 +507,10 @@ struct Profiler::Impl {
                 out << "\"}}";
             }
 
-            // **On the same synthetic cumulative timeline the scopes use.** `writeTrace`
-            // emits no wall-clock time -- it concatenates frames by `cumulativeUs` -- so a
-            // counter stamped from `steady_clock` at the call site would draw a graph that
-            // does not sit above the zones it explains. That is the whole reason the emit
-            // is here and not beside the caller.
+            // Stamped with `frameBaseUs`, the same synthetic cumulative timeline the scopes
+            // use. This file emits no wall-clock time, so a counter stamped from
+            // `steady_clock` at the call site draws a graph that does not sit above the
+            // zones it explains.
             for (const CounterSample& c : frame.counters) {
                 if (needsComma) out << ",\n";
                 needsComma = true;
@@ -564,21 +542,12 @@ struct Profiler::Impl {
     }
 };
 
-// ============================================================ signal handling
-
 namespace {
 
 extern "C" void profilerSignalHandler(int sig) {
-    // Async-signal-safe only: atomics and a sleep. No mutexes, no allocation, no
-    // stdio. The writer thread does the actual work; we just wait briefly for it.
-    //
-    // Sleep() is the Windows equivalent and is safe here for the same reason nanosleep is:
-    // it is a bare kernel call that takes no CRT lock. Worth knowing that this handler
-    // barely runs on Windows at all -- SIGTERM is never raised by the OS and SIGINT only
-    // arrives for Ctrl-C in a console process, delivered on a separate thread. The trace
-    // still lands, through the atexit handler and the writer thread's 100 ms flush; what
-    // is lost is only the flush on a kill, and `timeout -s TERM` has no Windows analogue
-    // to lose it from.
+    // Async-signal-safe only: atomics and a sleep, no mutexes, no allocation, no stdio.
+    // The writer thread does the work; this only waits for it. `Sleep` and `nanosleep` are
+    // both bare kernel calls that take no CRT lock.
     if (!g_fileClosed.load(std::memory_order_relaxed) && !g_signalFlushRequested.exchange(true)) {
         for (int i = 0; i < 500 && !g_signalFlushDone.load(std::memory_order_acquire); ++i) {
 #ifdef _WIN32
@@ -596,8 +565,6 @@ extern "C" void profilerSignalHandler(int sig) {
 
 } // namespace
 
-// =================================================================== Profiler
-
 Profiler& Profiler::instance() {
     static Profiler inst;
     return inst;
@@ -608,17 +575,13 @@ void Profiler::init(const ProfilerConfig& config) {
     inst.impl = std::make_unique<Impl>();
     inst.impl->config = config;
 
-    // **`enabled` is tested here and not only on the recording path.** A disabled profiler
-    // that still truncated the trace, still registered the signal handlers and still
-    // started a writer thread was `--no-profiler --trace <path>` leaving a zero-byte file
-    // and a thread behind -- the same flag saying "no trace" and producing one, one layer
-    // down from the GPU query pool it also used to leave running.
+    // `enabled` is tested here and not only on the recording path: without it,
+    // `--no-profiler --trace <path>` truncates the file, registers the signal handlers and
+    // starts a writer thread, leaving a zero-byte trace and a thread behind.
     if (config.enabled && !config.outputFile.empty()) {
-        // Created here for the same reason Logger::init creates the log's, and it is this
-        // one that matters: the default trace goes to debug_frames/, which existed only
-        // because run.sh happened to mkdir it. A packaged build has no run.sh, so without
-        // this the truncate below fails silently and the trace never appears -- with no
-        // message, because an ofstream that cannot open is not an error until someone asks.
+        // The directory is created here because a packaged build has no run.sh to mkdir
+        // `debug_frames/`. Without it the truncate below fails silently -- an ofstream that
+        // cannot open is not an error until someone asks -- and the trace never appears.
         std::error_code ec;
         if (const std::filesystem::path out(config.outputFile); out.has_parent_path()) {
             std::filesystem::create_directories(out.parent_path(), ec);
@@ -644,12 +607,9 @@ void Profiler::init(const ProfilerConfig& config) {
         }
     }
 
-    // **A new profiler is a new trace, and the metadata already emitted went into the old
-    // one.** The registry deliberately outlives `shutdown()` -- see `closeOutputFile` --
-    // so a second `init` in one process inherits slots that are already named and whose
-    // names `nameThread` would therefore decline to re-emit, leaving every track in the
-    // new trace unlabelled. Re-announcing every live acquisition here is what makes the
-    // second trace look like the first.
+    // Re-announce every live acquisition: the registry outlives `shutdown()`, so a second
+    // `init` in one process inherits already-named slots that `nameThread` declines to
+    // re-emit, and every track in the new trace comes out unlabelled.
     {
         std::lock_guard<std::mutex> lock(g_registryMutex);
         for (auto& slot : g_registry) {
@@ -660,11 +620,8 @@ void Profiler::init(const ProfilerConfig& config) {
         }
     }
 
-    // The thread that brings the profiler up is the one that will run the frames, so it
-    // names itself here rather than leaving every caller to remember. A test or a tool
-    // that inits from a worker gets a track labelled `main` that is not the process's main
-    // thread, which is the honest reading: it is the thread this profiler's frames belong
-    // to.
+    // `main` names the thread this profiler's frames belong to, not the process's main
+    // thread -- a tool that inits from a worker gets that worker labelled `main`.
     nameThread("main");
 
     Logger::status(LogCategory::Profile, "Profiler initialised (window=%u, maxFrames=%u, out=%s)",
@@ -691,16 +648,12 @@ void Profiler::shutdown() {
     closeOutputFile();
     inst.impl.reset();
 
-    // Emptied, not freed, and `inUse` is left exactly as it is. `t_slot` is a thread_local
-    // raw pointer into this registry, and this function can only reach the *calling* thread's
-    // copy of it -- every other live thread would be left pointing into deleted storage, and
-    // would write through it on its next `Profiler::scope()` or from `ThreadSlotGuard` at
-    // thread exit. Clearing `inUse` would be its own bug: a slot handed to a second thread
-    // while the first still holds the pointer is two writers on one buffer.
-    //
-    // So the registry deliberately outlives `shutdown()`. It is a pool bounded by the number
-    // of threads that have ever profiled -- which is what the recycling at `acquireSlot` is
-    // for -- and a following `init()` picks it up as it stands.
+    // Emptied, never freed, and `inUse` left as it is. `t_slot` is a thread_local raw
+    // pointer into this registry that only the *calling* thread's copy is reachable from
+    // here, so freeing leaves every other live thread writing into deleted storage on its
+    // next `Profiler::scope()` or at thread exit. Clearing `inUse` is its own bug: a slot
+    // handed to a second thread while the first still holds the pointer is two writers on
+    // one buffer.
     std::lock_guard<std::mutex> lock(g_registryMutex);
     for (auto& slot : g_registry) {
         slot->lock();
@@ -741,10 +694,8 @@ ProfileScope Profiler::scopef(const char* fmt, ...) {
     auto& inst = instance();
     if (!inst.impl || !inst.impl->config.enabled) return ProfileScope{};
 
-    // Logger::vformat rather than a buffer of this function's own. A zone name is built
-    // from whatever the call site interpolates -- a scene path, a pass name, an index --
-    // and a truncated one interns as a *different* name, so the cost of the old 256-byte
-    // buffer was a silently split zone rather than a shortened label.
+    // `Logger::vformat` rather than a fixed buffer: a truncated name interns as a
+    // *different* name, so a length cap here silently splits one zone into two.
     va_list args;
     va_start(args, fmt);
     const std::string name = Logger::vformat(fmt, args);
@@ -830,15 +781,14 @@ void Profiler::counter(const char* literalName, double value) {
 
     auto& inst = instance();
     if (!inst.impl || !inst.impl->config.enabled) return;
-    // Dropped rather than buffered when no frame is open. A counter's whole meaning is
-    // "this was true during frame N", and there is no N here.
+    // Dropped rather than buffered when no frame is open: a counter means "this was true
+    // during frame N", and there is no N here.
     if (!inst.impl->frameStarted.load(std::memory_order_acquire)) return;
 
     ThreadSlot& slot = acquireSlot();
     slot.lock();
-    // Linear, because the list is the handful of quantities one thread writes per frame
-    // and a map would allocate. Pointer comparison for the same reason `scope` hashes
-    // pointers: these are literals.
+    // Linear over a handful of entries; a map here would allocate on the recording path.
+    // Pointer comparison, because these names are literals.
     for (CounterSample& c : slot.counters) {
         if (c.name == literalName) {
             c.value = value;
@@ -854,10 +804,9 @@ void Profiler::nameThread(const char* literalName) {
     if (literalName == nullptr) return;
 
     ThreadSlot& slot = acquireSlot();
-    // Pointer comparison, not `strcmp`: names are literals, so the same name is the same
-    // pointer, and this is called from a device callback that runs hundreds of times a
-    // second. A caller passing two equal strings at different addresses gets two identical
-    // metadata events, which costs a line in the trace and renders the same.
+    // Pointer comparison, not `strcmp`: this is called from a device callback hundreds of
+    // times a second. Two equal strings at different addresses cost one extra metadata
+    // event, which renders identically.
     if (slot.name == literalName) return;
 
     slot.lock();
@@ -883,9 +832,7 @@ uint64_t Profiler::frameNumber() {
 
 namespace {
 
-/// Append a GPU zone to a buffered frame. `offsetUs` is resolved against the frame by
-/// the caller's lambda, which is the only thing the two entry points disagree about.
-/// Must be called with the profiler's mutex held.
+/// Append a GPU zone to a buffered frame. Must be called with the profiler's mutex held.
 template <typename OffsetFn>
 void appendGpuZone(std::deque<FrameData>& frames, uint64_t frame, const char* literalName, double durationMs,
                    OffsetFn&& offsetUs) {
@@ -927,16 +874,13 @@ void Profiler::recordCalibratedGpuZone(uint64_t frame, const char* literalName, 
 
     std::lock_guard<std::mutex> lock(inst.impl->mutex);
     appendGpuZone(inst.impl->pendingFrames, frame, literalName, durationMs, [hostStartNs](const FrameData& f) {
-        // Clamped rather than allowed negative. The calibration is a linear fit around
-        // one sample pair, so a zone very near the frame boundary can map a few hundred
-        // nanoseconds before it -- and a negative `ts` makes the whole trace unreadable
-        // rather than one event slightly early.
+        // Clamped, never negative. The calibration is a linear fit around one sample pair,
+        // so a zone near the frame boundary can map a few hundred nanoseconds before it,
+        // and a negative `ts` makes the whole trace unreadable rather than one event early.
         const int64_t delta = hostStartNs - f.startNs;
         return static_cast<double>(delta > 0 ? delta : 0) / 1000.0;
     });
 }
-
-// =============================================================== ProfileScope
 
 ProfileScope::ProfileScope(const char* scopeName, uint64_t scopePathHash, uint32_t scopeDepth, uint32_t scopeThreadId)
     : name(scopeName)
@@ -960,8 +904,8 @@ ProfileScope::~ProfileScope() {
         timing.pathHash = pathHash;
         timing.depth = depth;
         timing.threadId = threadId;
-        // A scope on a worker thread can straddle a frame boundary: it is attributed
-        // to the frame it *closes* in, and clamped so the trace stays well-formed.
+        // A worker-thread scope can straddle a frame boundary. Attributed to the frame it
+        // *closes* in, and clamped, or the trace gets a negative offset.
         timing.startTimeUs = static_cast<double>(startNs > frameStart ? startNs - frameStart : 0) / 1000.0;
         timing.cpuTimeMs = static_cast<double>(endNs - startNs) / 1000000.0;
         inst.impl->record(timing);

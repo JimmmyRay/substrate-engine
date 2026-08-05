@@ -196,7 +196,7 @@ TEST_F(ConfigTest, WrittenDefaultsRoundTripToTheBuiltInDefaults) {
 }
 
 TEST_F(ConfigTest, TheWrittenDefaultConfigNamesEachModuleExactlyOnce) {
-    // D16, and it was failing before that card. The emitter opened a section whenever the
+    // It was failing before that card. The emitter opened a section whenever the
     // module changed while walking the rows in list order, and the list interleaves, so
     // `"render"` was written twice. The round trip above passed anyway -- rapidjson
     // tolerates a duplicate member and the loader walks all of them -- while every other
@@ -220,7 +220,7 @@ TEST_F(ConfigTest, TheWrittenDefaultConfigNamesEachModuleExactlyOnce) {
     }
 }
 
-// ================================================ a game's own rows (D17)
+// ================================================ a game's own rows
 
 /**
  * @brief A row a game declared is an ordinary row at every door `Config` owns.
@@ -288,7 +288,7 @@ TEST_F(ConfigTest, TheWrittenDefaultConfigCarriesAGamesOwnSection) {
 
 // =========================================================== derived values
 
-// ==================================================== one name list per enum (D12)
+// ==================================================== one name list per enum
 
 /**
  * @brief Every enumerator is reachable by some name, and the round trip is total.
@@ -612,7 +612,7 @@ TEST_F(ConfigTest, FlagsOverrideTheLoadedFile) {
 
 /**
  * The startup sequence, through the doors `Engine::init` actually opens and in the order
- * it opens them: the file, then `Game::configure`, then the flags (D15).
+ * it opens them: the file, then `Game::configure`, then the flags.
  *
  * `Engine.cpp` is not hosted, so what this pins is the half that is: given that order, a
  * game's default loses to the file, a game's override beats it, and the command line beats
@@ -652,7 +652,7 @@ TEST_F(ConfigTest, TheStartupSequenceIsTheFileThenTheGameThenTheFlags) {
     EXPECT_EQ(cfg.settings.origin(settings::Id::window_vsync), "--set");
 }
 
-// ------------------------------------------------------------------------ --set (D13)
+// ------------------------------------------------------------------------ --set
 //
 // One door onto every row the table holds. What is checked here is coverage -- each of
 // the six row types, reached by key -- and that the refusals are the ones the table and
@@ -741,7 +741,7 @@ TEST_F(ConfigTest, TheSameKeyTwiceIsLastWins) {
 TEST_F(ConfigTest, ANameThatIsNotOneIsRefusedAtTheOneDoorLeft) {
     // This used to drive `--tonemap x` and `--set render.tonemap=x` against each other,
     // because they were one setting reached through two doors and a rule that differed by
-    // door would be a rule nobody would remember (D12). D14 removed the row, so `--set`
+    // door would be a rule nobody would remember. D14 removed the row, so `--set`
     // has no name-valued key to reach and there is exactly one door: the flag. What the
     // case pins now is the half that survives -- the refusal leaves the previous value
     // standing, and `--set` reports the departed key rather than assigning anything.
@@ -851,7 +851,7 @@ TEST_F(ConfigTest, ABarePathIsTheScene) {
 }
 
 TEST_F(ConfigTest, TheSceneIsEmptyUntilSomethingNamesOne) {
-    // It has no key and no default: the scene is the game's (S1), and this field carries
+    // It has no key and no default: the scene is the game's, and this field carries
     // only the per-invocation override. Empty is what tells `Engine::init` to keep the
     // game's choice.
     const Config cfg;
@@ -1015,7 +1015,7 @@ TEST_F(ConfigTest, AFlagAtTheEndWithNoValueKeepsItsPreviousValue) {
 }
 
 TEST_F(ConfigTest, AnInputScriptIsParsedWhereEveryOtherFlagIsRefused) {
-    // C16. Parsed by the flag rather than carried as a string, so a typo is refused while
+    // Parsed by the flag rather than carried as a string, so a typo is refused while
     // the person who typed it is still looking -- and a refusal empties the script rather
     // than loading the part that parsed, because a run that pressed half a scenario
     // reports against half a scenario.

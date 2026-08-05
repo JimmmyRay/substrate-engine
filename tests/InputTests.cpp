@@ -18,7 +18,7 @@ using namespace input;
 
 /**
  * @file tests/InputTests.cpp
- * @brief The action layer, binding names, capture and the text field (S1).
+ * @brief The action layer, binding names, capture and the text field.
  *
  * What is worth defending here is not "does W move forward" -- it is the handful of
  * places where the obvious implementation is quietly wrong:
@@ -467,7 +467,7 @@ TEST(InputMapTest, DefaultsAreRememberedSoAResetIsPossible) {
     EXPECT_EQ(map.bindingList(ssao), "F8");
 }
 
-// --------------------------------------------------------- a game's defaults (G8)
+// --------------------------------------------------------- a game's defaults
 
 TEST(InputMapTest, AGamesDefaultMovesBothListsAndSoStillReadsAsADefault) {
     // The case that exists: the engine's camera declares W, and a game whose character
@@ -1099,7 +1099,7 @@ TEST(InputMapTest, TheExemptionCoversOnlyTheMouse) {
     EXPECT_EQ(bindingName(found[0].binding), "F2");
 }
 
-// ============================================================= scripted input (C16)
+// ============================================================= scripted input
 
 /**
  * A scripted press has to be a *press*, not a shortcut around one. Every test below is
@@ -1310,7 +1310,7 @@ TEST(ScriptTest, UnknownActionsAreReportedOnceAndFireNothing) {
     EXPECT_EQ(missing[0], "Game.Lode");
 }
 
-// ============================================ a device keeps its identity (C26)
+// ============================================ a device keeps its identity
 
 namespace {
 

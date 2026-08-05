@@ -202,7 +202,7 @@ TEST_F(ViewTableTest, AnOutOfRangeSlotYieldsADeadEntry) {
     EXPECT_EQ(views.mutableAt(9999), nullptr);
 }
 
-// --------------------------------------------------------------- per-view extent (C38)
+// --------------------------------------------------------------- per-view extent
 
 TEST_F(ViewTableTest, AViewKeepsTheExtentItAskedForAndZeroMeansFollow) {
     const ViewId sized = views.create(images, {480, 270});

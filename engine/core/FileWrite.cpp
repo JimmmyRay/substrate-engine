@@ -16,9 +16,8 @@ bool writeFileAtomically(const std::filesystem::path& path, const void* bytes, s
         out.write(static_cast<const char*>(bytes), static_cast<std::streamsize>(count));
         if (!out) {
             Logger::warn(category, "%s: writing %s failed", what, temp.string().c_str());
-            // Taken away rather than left: a half-written temp beside the file is one a
-            // later run has no way to tell from a good one, and the rename path below
-            // cleans up after itself for the same reason.
+            // Removed, never left: a later run has no way to tell a half-written temp from
+            // a good one.
             out.close();
             std::error_code rm;
             std::filesystem::remove(temp, rm);

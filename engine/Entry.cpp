@@ -10,19 +10,16 @@
  * @file engine/Entry.cpp
  * @brief `main()`, compiled only when SUBSTRATE_ENTRY_POINT is ON.
  *
- * Eight lines, and that is the point: everything it used to hold is now either in
- * `Engine` or in a game. `init` tears down whatever it built before returning false, so
- * there is no shutdown to pair with a failed start.
+ * A false from `init` has already torn down everything it built; pairing it with a
+ * `shutdown()` tears the same things down twice.
  */
 int main(int argc, char** argv) {
-    // First, and before Engine::init: executableDir() caches its answer on first use, so
-    // the fallback has to be in place before anything can ask. Only used where the
-    // platform lookup fails, which on Linux means /proc is not mounted.
+    // Before anything can call `executableDir()`, which caches its answer on first use --
+    // seeding it later leaves the cached fallback wrong for the rest of the process.
     core::seedExecutablePath(argc > 0 ? argv[0] : nullptr);
 
-    // The game is created before the engine is initialised, not after: `Engine::init`
-    // calls `Game::configure` to learn the scene, gravity and the mix graph, and it needs
-    // all three before it builds the things they configure (S1).
+    // Constructed before `Engine::init`, which calls `Game::configure` for the scene,
+    // gravity and the mix graph before it builds the subsystems they configure.
     std::unique_ptr<Game> game = substrateCreateGame();
 
     Engine engine;

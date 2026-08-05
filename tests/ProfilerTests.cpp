@@ -819,7 +819,7 @@ TEST_F(ProfilerTest, DumpIsSafeWithAndWithoutData) {
     EXPECT_NE(out.find("Dumped"), std::string::npos);
 }
 
-// D14. `ProfilerConfig` is the only spelling of the profiler's configuration now: the six
+// `ProfilerConfig` is the only spelling of the profiler's configuration now: the six
 // `profiler.*` rows are gone, and `Config::profiler` *is* one of these, so there are no
 // longer two tables to agree. What replaced D6's agreement test is the assertion that the
 // divergence D6 documented has an owner -- the struct's own `outputFile` is empty, because

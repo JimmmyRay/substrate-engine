@@ -16,16 +16,13 @@ namespace nav {
 namespace {
 
 /// Twice the signed area of a triangle projected onto XZ. Positive when `c` is left of the
-/// line `a`->`b`, which is the whole of the funnel's geometry: every decision it makes is a
-/// question about which side of the current sight line a portal endpoint fell on.
+/// line `a`->`b` -- the sign convention every side test in this file inherits.
 float triArea2(const glm::vec3& a, const glm::vec3& b, const glm::vec3& c) {
     return (c.x - a.x) * (b.z - a.z) - (b.x - a.x) * (c.z - a.z);
 }
 
-/// The part of `v` perpendicular to `up`, which is what "horizontal" means once a follower
-/// is walking a plane that is not XZ (D18). `up` must be unit length. For +Y this is
-/// exactly `(v.x, 0, v.z)` -- the subtraction cancels rather than approximately cancels --
-/// so the 3D numbers are unchanged.
+/// The part of `v` perpendicular to `up`. `up` must be unit length. For +Y the subtraction
+/// cancels exactly rather than approximately, so a 3D scene's numbers are unchanged.
 glm::vec3 flatten(const glm::vec3& v, const glm::vec3& up) { return v - up * glm::dot(v, up); }
 
 float distanceXZ(const glm::vec3& a, const glm::vec3& b) {
@@ -34,8 +31,7 @@ float distanceXZ(const glm::vec3& a, const glm::vec3& b) {
     return std::sqrt(dx * dx + dz * dz);
 }
 
-/// Squared distance from a point to an axis-aligned box, zero inside it. The BVH's only
-/// pruning test.
+/// Squared distance from a point to an axis-aligned box, zero inside it.
 float distance2ToBox(const glm::vec3& p, const glm::vec3& lo, const glm::vec3& hi) {
     const glm::vec3 d = glm::max(glm::max(lo - p, p - hi), glm::vec3(0.0f));
     return glm::dot(d, d);
@@ -52,15 +48,13 @@ size_t cellHash(int64_t x, int64_t y, int64_t z) {
     return h;
 }
 
-// ------------------------------------------------------------------ standing geometry
-
-/// XZ. Every triangle the slope filter keeps has a normal within 89 degrees of up, so its
-/// footprint has area and nothing below projects onto a line.
+/// XZ. The slope filter keeps nothing steeper than 89 degrees, so a kept triangle's footprint
+/// always has area rather than collapsing to a line.
 glm::vec2 footprint(const glm::vec3& p) { return {p.x, p.z}; }
 
-/// Twice the signed area of a footprint triangle, on `triArea2`'s convention: **positive is
-/// the winding a walkable triangle already has**, because `n.y` and this are the same
-/// expression. Every side test below inherits that, so "inside" is "positive" throughout.
+/// Twice the signed area of a footprint triangle, on `triArea2`'s convention: positive is the
+/// winding a walkable triangle already has, because `n.y` and this are the same expression.
+/// Every side test below inherits that, so "inside" is "positive" throughout.
 float area2(const glm::vec2& a, const glm::vec2& b, const glm::vec2& c) {
     return (c.x - a.x) * (b.y - a.y) - (b.x - a.x) * (c.y - a.y);
 }
@@ -79,16 +73,9 @@ struct StandingCut {
 /**
  * @brief Where a triangle meets the plane `dot(n, x) == d`, in XZ, if it *stands on* it.
  *
- * Standing on is the whole rule, and it is what lets this need no agent height. Geometry
- * that reaches above the surface and touches or crosses it is standing on it; geometry
- * entirely above -- a ceiling, a balcony, a bridge -- is not, and neither is geometry
- * entirely below, which is what the underside of the floor itself always is. **A ceiling is
- * therefore not an obstacle**, which is this file's clearance limitation restated rather
- * than a new one.
- *
- * A column's side triangles have two vertices on the floor and one ten metres up, so each
- * contributes the base edge it stands on and the ring comes out once, whole. The ones with
- * a single vertex down meet the plane in a point and are refused here.
+ * Reaching above the surface and touching or crossing it is standing on it; wholly above or
+ * wholly below is not. Two points of contact and never fewer -- a triangle meeting the plane at
+ * a single vertex traces a point, and admitting it cuts the floor along an arbitrary line.
  */
 bool standingCut(const glm::vec3& p0, const glm::vec3& p1, const glm::vec3& p2, const glm::vec3& n, float d,
                  float eps, StandingCut& out) {
@@ -155,10 +142,10 @@ void splitConvex(const std::vector<glm::vec2>& poly, const glm::vec2& a, const g
 /**
  * @brief Does the segment `a`..`b` pass through the interior of convex `poly`?
  *
- * **The segment and not the line it lies on**, and that is what keeps the output bounded: a
- * cut may only split a piece it actually reaches. Splitting every piece by every cut's line
- * would build the arrangement of all of them against each other, which for a floor with
- * twenty-eight rings on it is hundreds of thousands of cells rather than hundreds.
+ * The segment, not the line it lies on: a cut may only split a piece it actually reaches. Test
+ * the line instead and the splitting builds the arrangement of every cut against every other,
+ * which on a floor with twenty-eight rings on it is hundreds of thousands of cells, not
+ * hundreds.
  */
 bool segmentEnters(const std::vector<glm::vec2>& poly, const glm::vec2& a, const glm::vec2& b, float eps) {
     const glm::vec2 travel = b - a;
@@ -189,14 +176,7 @@ bool segmentEnters(const std::vector<glm::vec2>& poly, const glm::vec2& a, const
     return last - first > 1e-6f;
 }
 
-/**
- * @brief A bucket grid over triangle footprints, in XZ.
- *
- * Not the BVH further down this file. That one indexes the *baked* triangles and is built
- * from what this decides; this one indexes the soup that arrived, and both of the carve's
- * questions -- what stands near this floor, what is above this point -- are footprint
- * queries. Two occurrences are a coincidence.
- */
+/// @brief A bucket grid over the incoming soup's triangle footprints, in XZ.
 struct Footprints {
     glm::vec2 origin{0.0f};
     float cell = 1.0f;
@@ -266,14 +246,9 @@ struct Footprints {
 /**
  * @brief Is `p` inside solid geometry -- the nearest surface above it faces up?
  *
- * **The nearest one and not the parity of all of them**, because a point that lands exactly
- * on the edge two triangles share is counted twice or not at all by a parity test, and the
- * centroid of a piece cut along a footprint's own edges lands there often. The nearest hit
- * is the same surface from either triangle, and their normals agree.
- *
- * Going up out of a solid you leave through a face pointing up -- a column's cap. Going up
- * from open floor you either meet nothing or you enter something through a face pointing
- * down, which is what the underside of a bridge is.
+ * The nearest surface and never the parity of all of them: a point landing exactly on the edge
+ * two triangles share is counted twice or not at all by a parity test, and the centroid of a
+ * piece cut along a footprint's own edges lands there often.
  */
 bool insideSolid(const glm::vec3& p, const std::vector<glm::vec3>& verts, const std::vector<uint32_t>& soup,
                  const std::vector<uint32_t>& candidates) {
@@ -308,21 +283,16 @@ bool insideSolid(const glm::vec3& p, const std::vector<glm::vec3>& verts, const 
 /**
  * @brief Give every polygon the corners its neighbours put on its edges.
  *
- * Splitting each piece on its own leaves T-junctions: a cut that ends on an edge two pieces
- * share is a corner one of them has and the other does not, and the two then agree on a line
- * in space and disagree about which vertices are on it. The weld cannot close that -- the
- * positions are distinct and correct -- so the adjacency pass sees two edges rather than one
- * and the surface comes apart into a region per piece.
- *
- * One pass is enough because inserting a corner introduces no new corner: the point set is
- * whatever the splitting already produced.
+ * Skip this and the cut leaves T-junctions -- a corner one piece has and its neighbour does
+ * not. The weld cannot close them, since both positions are distinct and correct, so adjacency
+ * sees two edges where there is one and the surface comes apart into a region per piece. One
+ * pass suffices; inserting a corner introduces no new corner.
  */
 void closeTJunctions(std::vector<std::vector<glm::vec3>>& loops, float weld) {
     std::vector<glm::vec3> corners;
     for (const std::vector<glm::vec3>& loop : loops) corners.insert(corners.end(), loop.begin(), loop.end());
     if (corners.empty()) return;
 
-    // The same bucket idea as the footprints, over points rather than triangles.
     glm::vec2 lo(std::numeric_limits<float>::max());
     glm::vec2 hi(-std::numeric_limits<float>::max());
     for (const glm::vec3& p : corners) {
@@ -400,17 +370,10 @@ void closeTJunctions(std::vector<std::vector<glm::vec3>>& loops, float weld) {
 /**
  * @brief Cut the walkable surface where solid geometry stands on it, rewriting the soup.
  *
- * The bake filters by slope and keeps what an agent could stand on. That silently answers a
- * question nobody asked: a floor authored as one large quad with props resting on it stays
- * one large quad, so every route across it is a straight line through every prop. The
- * geometry that proves the prop is there -- its sides, too steep to walk and thrown away by
- * the very next test -- is in this soup, and this is what reads it.
- *
- * Each walkable triangle is split by the traces of whatever stands on its plane, and the
- * pieces that end up inside something are dropped. The pieces are convex throughout, which
- * is what makes the splitting four lines of arithmetic rather than a triangulator, and no
- * length is quantised anywhere: this adds no cell size to tune and no rasterisation error,
- * which is the property the whole triangle approach is here for.
+ * Runs on the soup the slope filter has not seen yet, since the sides that prove a prop is
+ * standing there are exactly what that filter throws away. Every piece stays convex, which is
+ * what lets `splitConvex` and `segmentEnters` be arithmetic rather than a triangulator; admit
+ * a concave piece and both are wrong.
  */
 void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& soup, const NavBuildParams& params) {
     auto zone = core::Profiler::scope("NavMesh::cutStandingGeometry");
@@ -440,7 +403,6 @@ void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& s
             ++standing;
         }
     }
-    // Nothing stands on anything, or there is nothing for it to stand on.
     if (standing == 0 || floors == 0) return;
 
     Footprints grid;
@@ -456,18 +418,16 @@ void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& s
     std::vector<uint32_t> out;
     out.reserve(soup.size());
 
-    // **Every walkable triangle becomes a polygon here, cut or not.** A triangle nothing
-    // stands on still has a neighbour that was cut, and the point that cut landed on their
-    // shared edge is a vertex one of them has and the other does not -- which is a T-junction,
-    // and a T-junction is two triangles that visibly touch and are not adjacent. The repair
-    // below needs every boundary in one place to close them.
+    // Every walkable triangle enters this list, cut or not: one nothing stands on still
+    // neighbours one that was cut, and `closeTJunctions` needs both boundaries in one place to
+    // close the T-junction between them.
     std::vector<std::vector<glm::vec3>> kept;
 
     for (uint32_t t = 0; t < count; ++t) {
         const uint32_t base = 3 * t;
         if (walkable[t] == 0u) {
-            // Passed through rather than dropped: the slope filter is still the one that
-            // decides what a surface is, and it runs over what this hands back.
+            // Re-emitted, not dropped: the slope filter downstream runs over what this hands
+            // back, and it is still the one deciding what a walkable surface is.
             out.insert(out.end(), {soup[base], soup[base + 1], soup[base + 2]});
             continue;
         }
@@ -496,9 +456,8 @@ void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& s
             cuts.push_back(cut);
         }
 
-        // The triangle's own winding is already the one every side test below assumes: `n.y`
-        // and `area2` are the same expression, so a walkable triangle is a positively wound
-        // footprint by construction.
+        // Seeded on the triangle's own winding, which every side test below assumes: `n.y` and
+        // `area2` are the same expression, so a walkable triangle is positively wound already.
         pieces.clear();
         pieces.push_back({fa, fb, fc});
         for (const StandingCut& cut : cuts) {
@@ -536,10 +495,9 @@ void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& s
                 plo = glm::min(plo, p);
                 phi = glm::max(phi, p);
             }
-            // **Asked of every piece and not only of the ones something cut.** A floor
-            // tessellated finer than the prop standing on it has triangles entirely within the
-            // footprint, and no trace crosses those -- they are simply inside, and a cut that
-            // only looked at what it had split would leave them walkable.
+            // Asked of every piece, not only the ones something cut. A floor tessellated finer
+            // than the prop standing on it has triangles no trace crosses at all -- they are
+            // simply inside it, and testing only what was split leaves them walkable.
             grid.gather(plo, phi, seen, nearby);
             if (insideSolid(stand, verts, soup, nearby)) continue;
 
@@ -555,22 +513,19 @@ void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& s
     for (const std::vector<glm::vec3>& loop : kept) {
         const auto first = static_cast<uint32_t>(verts.size());
         if (loop.size() == 3) {
-            // A triangle nothing cut, emitted as itself. The weld puts these back on the
-            // vertices they arrived as, so a surface with nothing standing on it is the
-            // surface it was.
+            // Emitted as itself, so the weld puts it back on the vertices it arrived as and a
+            // surface with nothing standing on it comes through unchanged.
             verts.insert(verts.end(), loop.begin(), loop.end());
             out.insert(out.end(), {first, first + 1, first + 2});
             continue;
         }
-        // **A fan from a corner, and not from the middle.** A fan rooted inside the piece is a
-        // pinwheel: the two ways round it are the same length to a corridor search comparing
-        // centroids, so it takes whichever, and the funnel then has to pull the path through
-        // the portals of the wrong half. A fan from a vertex is a strip -- one way through --
-        // and because the piece is convex the straight line crosses its portals in order.
+        // A fan from a corner, never from the middle. Rooted inside the piece it is a pinwheel:
+        // both ways round cost the same to a corridor search comparing centroids, so it takes
+        // whichever and the funnel then pulls the path through the wrong half's portals.
         //
-        // The root has to be a corner whose own two edges carry no split point, or the first
-        // or last triangle of the fan is three collinear points: no area, so no edge for the
-        // piece on the other side to be adjacent across.
+        // The root must be a corner whose own two edges carry no split point, or the fan's
+        // first or last triangle is three collinear points -- no area, so no edge for the piece
+        // on the other side to be adjacent across.
         const uint32_t n = static_cast<uint32_t>(loop.size());
         uint32_t root = n;
         for (uint32_t i = 0; i < n && root == n; ++i) {
@@ -584,8 +539,8 @@ void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& s
             }
         }
         if (root == n) {
-            // Every corner has a split point beside it. A centre vertex always works and
-            // never degenerates; it only costs the path quality argued for above.
+            // Every corner has a split point beside it. A centre vertex never degenerates and
+            // costs only the pinwheel above.
             glm::vec3 centre(0.0f);
             for (const glm::vec3& p : loop) centre += p;
             verts.push_back(centre / static_cast<float>(n));
@@ -604,11 +559,8 @@ void cutStandingGeometry(std::vector<glm::vec3>& verts, std::vector<uint32_t>& s
 
 } // namespace
 
-// ==================================================================== bake
-
 void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<uint32_t>& indices,
                    const NavBuildParams& params) {
-    // Voxelize, region-label, BVH.
     auto zone = core::Profiler::scope("NavMesh::bake");
     verts.clear();
     tris.clear();
@@ -617,14 +569,9 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
     regions = 0;
     build = params;
 
-    // **The solver's frame, decided once here** (D18). Everything below this line -- the
-    // slope filter, the barycentric tests, the funnel's left and right -- is written for
-    // Y up, and none of it changes: what changes is the frame the vertices arrive in. A
-    // rotation rather than an axis swap, because a permutation flips handedness and the
-    // funnel reads a portal's sides off a winding that only holds in a right-handed basis.
-    //
-    // The +Y case takes no arithmetic at all rather than multiplying by an identity
-    // quaternion, which is what makes a 3D scene bit-for-bit the scene it was.
+    // A rotation and not an axis swap: a permutation flips handedness, and the funnel reads a
+    // portal's sides off a winding that only holds in a right-handed basis. The +Y case skips
+    // the arithmetic rather than multiplying by an identity quaternion.
     const float reach = glm::length(build.up);
     const glm::vec3 axis = reach > 1e-6f ? build.up / reach : glm::vec3(0.0f, 1.0f, 0.0f);
     const glm::vec3 y(0.0f, 1.0f, 0.0f);
@@ -642,31 +589,23 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
 
     if (indices.size() < 3) return;
 
-    // ---------------------------------------------------------------- standing geometry
-    //
-    // **Before the weld and in the solver's frame**, because everything the carve decides is
-    // a question about up: what is standing on what, and which way a surface faces. It hands
-    // back a soup, so every stage below is unchanged and still the one deciding what a
-    // walkable surface is -- this only makes sure the surface has the props cut out of it.
+    // Before the weld and in the solver's frame: everything the carve decides is a question
+    // about up.
     std::vector<glm::vec3> nav(positions.size());
     for (size_t i = 0; i < positions.size(); ++i) nav[i] = toNav(positions[i]);
     std::vector<uint32_t> soup = indices;
     cutStandingGeometry(nav, soup, params);
 
-    // ---------------------------------------------------------------- weld
-    //
-    // A triangle soup has no adjacency: two floor tiles that visibly share an edge have
-    // four distinct corners at two positions, and every one of them came from a different
-    // vertex in the source buffer because they carried different normals or UVs. Welding
-    // on position alone is what turns that back into a surface.
+    // Position alone, ignoring the normals and UVs that split them: two floor tiles which
+    // visibly share an edge arrive as four distinct corners at two positions, and nothing else
+    // recovers the adjacency.
     const float weld = std::max(params.weldEpsilon, 1e-6f);
     const float weld2 = weld * weld;
     std::unordered_map<size_t, std::vector<uint32_t>> grid;
     std::vector<uint32_t> remap(nav.size(), 0);
 
     for (uint32_t i = 0; i < nav.size(); ++i) {
-        // Already in the solver's frame: the carve above is where the world entered, and
-        // everything welded, filtered, indexed and stored below stays in that frame.
+        // Already in the solver's frame, and everything stored below stays in it.
         const glm::vec3 p = nav[i];
         const auto cx = static_cast<int64_t>(std::floor(p.x / weld));
         const auto cy = static_cast<int64_t>(std::floor(p.y / weld));
@@ -699,28 +638,22 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
         remap[i] = found;
     }
 
-    // ---------------------------------------------------------------- slope filter
     const float cosLimit = std::cos(glm::radians(std::clamp(params.walkableSlopeDegrees, 0.0f, 89.0f)));
     for (size_t i = 0; i + 2 < soup.size(); i += 3) {
         uint32_t a = remap[soup[i]];
         uint32_t b = remap[soup[i + 1]];
         uint32_t c = remap[soup[i + 2]];
-        // Welding collapses degenerate slivers onto themselves, which is a feature: they
-        // carry no area and would only add adjacency noise.
+        // Slivers the weld collapsed onto themselves. They carry no area and keeping them only
+        // adds adjacency noise.
         if (a == b || b == c || a == c) continue;
 
         const glm::vec3 n = glm::cross(verts[b] - verts[a], verts[c] - verts[a]);
         const float len = glm::length(n);
         if (len < 1e-12f) continue;
-        // Signed, not absolute. A ceiling is a surface whose normal points *down*, and a
-        // mesh that accepted it would bake the underside of every floor as walkable and
-        // then route agents across it. The cost is that a floor authored with reversed
-        // winding is silently not walkable -- which is the same trade Recast makes, and
-        // the same one every renderer here already makes by backface-culling it.
-        //
-        // It also means every surviving triangle already winds with its normal up, so the
-        // funnel can read a shared edge's two vertices as left and right without asking
-        // which triangle it came from. That property is load-bearing and it is free.
+        // Signed, not absolute. Take `abs` here and the underside of every floor bakes as
+        // walkable and agents route across it. The price is that a floor authored with reversed
+        // winding is silently unwalkable; the return is that every surviving triangle winds
+        // normal-up, which the funnel's left and right depend on.
         if (n.y / len < cosLimit) continue;
 
         NavTriangle t;
@@ -736,10 +669,8 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
         return;
     }
 
-    // ---------------------------------------------------------------- adjacency
-    //
-    // Keyed on the unordered vertex pair, so the two triangles either side of an edge
-    // arrive at the same key from opposite windings.
+    // Keyed on the unordered vertex pair, so the two triangles either side of an edge arrive at
+    // the same key from opposite windings.
     std::unordered_map<uint64_t, std::pair<uint32_t, uint32_t>> edges;
     edges.reserve(tris.size() * 3);
     for (uint32_t t = 0; t < tris.size(); ++t) {
@@ -752,10 +683,9 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
                 edges.emplace(key, std::make_pair(t, e));
                 continue;
             }
-            // A third triangle on one edge is non-manifold geometry -- a wall meeting a
-            // floor along a line that also carries a ramp. The first pairing wins and the
-            // rest go unlinked, because a corridor through a non-manifold edge has no
-            // well-defined left and right and the funnel would produce nonsense.
+            // A third triangle on one edge is non-manifold: the first pairing wins and the rest
+            // go unlinked. Link them anyway and a corridor crosses an edge with no well-defined
+            // left and right, which the funnel turns into nonsense.
             if (tris[it->second.first].neighbour[it->second.second] != kNoTriangle) continue;
             tris[t].neighbour[e] = it->second.first;
             tris[it->second.first].neighbour[it->second.second] = t;
@@ -769,8 +699,6 @@ void NavMesh::bake(const std::vector<glm::vec3>& positions, const std::vector<ui
     }
     buildBvh();
 }
-
-// ==================================================================== regions
 
 void NavMesh::labelRegions(float minRegionArea) {
     constexpr uint32_t kUnlabelled = 0xFFFFFFFFu;
@@ -799,9 +727,6 @@ void NavMesh::labelRegions(float minRegionArea) {
         ++next;
     }
 
-    // Compact. A scene bakes dozens of scraps an agent can never reach -- a windowsill,
-    // the top of a crate -- and each one is a region `nearest` can snap to and `findPath`
-    // can then only fail from.
     std::vector<uint32_t> oldToNew(tris.size(), kNoTriangle);
     std::vector<NavTriangle> kept;
     std::vector<uint32_t> regionRemap(area.size(), kUnlabelled);
@@ -822,8 +747,6 @@ void NavMesh::labelRegions(float minRegionArea) {
     tris = std::move(kept);
     regions = liveRegions;
 }
-
-// ==================================================================== bvh
 
 glm::vec3 NavMesh::centroid(uint32_t tri) const {
     const NavTriangle& t = tris[tri];
@@ -854,8 +777,9 @@ uint32_t NavMesh::buildBvhRange(uint32_t first, uint32_t count, uint32_t depth) 
     nodes[self].boundsMin = lo;
     nodes[self].boundsMax = hi;
 
-    // Leaf. The depth cap is a backstop for geometry that defeats the median split --
-    // thousands of coincident triangles, which a merged scene really does contain.
+    // The depth cap is a backstop for geometry that defeats the median split -- thousands of
+    // coincident triangles, which a merged scene really does contain. Raising it past 48
+    // overflows `nearestNav`'s 64-entry traversal stack.
     constexpr uint32_t kLeafSize = 4;
     if (count <= kLeafSize || depth > 48) {
         nodes[self].firstTri = first;
@@ -871,19 +795,16 @@ uint32_t NavMesh::buildBvhRange(uint32_t first, uint32_t count, uint32_t depth) 
 
     nodes[self].triCount = 0;
     (void)buildBvhRange(first, mid, depth + 1);
-    // The right child's index is not stored: a node's left child always follows it, and
-    // the right one is found by walking past the left subtree. That is one uint32 saved
-    // per node and one indirection saved per descent, and it is why `firstTri` is only
-    // meaningful on a leaf.
+    // `firstTri` holds the right child on an interior node and the triangle range on a leaf --
+    // a node's left child always follows it, so only one index is stored. Read `firstTri`
+    // without first checking `triCount` and it means the other thing.
     nodes[self].firstTri = buildBvhRange(first + mid, count - mid, depth + 1);
     return self;
 }
 
-// ==================================================================== queries
-
 glm::vec3 NavMesh::closestOnTriangle(uint32_t tri, const glm::vec3& p) const {
-    // Ericson's region test, unrolled. The barycentric shortcut would be shorter and is
-    // wrong on obtuse triangles, which a merged floor is full of.
+    // Ericson's region test, unrolled. The barycentric shortcut is shorter and is wrong on
+    // obtuse triangles, which a merged floor is full of.
     const NavTriangle& t = tris[tri];
     const glm::vec3& a = verts[t.v[0]];
     const glm::vec3& b = verts[t.v[1]];
@@ -926,9 +847,8 @@ NavPoint NavMesh::nearestNav(const glm::vec3& p, float maxDistance) const {
     if (nodes.empty()) return out;
 
     float best2 = maxDistance * maxDistance;
-    // An explicit stack rather than recursion: a 48-deep tree is fine on the stack, but
-    // this runs per agent per frame in the worst case and the call overhead is the
-    // measurable part.
+    // 64 against `buildBvhRange`'s depth cap of 48. The guard before each push drops nodes
+    // rather than overflowing should that stop holding.
     uint32_t stack[64];
     uint32_t depth = 0;
     stack[depth++] = 0;
@@ -962,9 +882,8 @@ NavPoint NavMesh::dropToFloorNav(const glm::vec3& p, float maxDrop) const {
     NavPoint out;
     if (nodes.empty()) return out;
 
-    // The highest surface at or below `p`, which is not the same as the nearest one: an
-    // agent standing on a balcony is nearer to the balcony than to the ground below, and
-    // an agent one millimetre above the ground is nearer to the ground than to nothing.
+    // The highest surface at or below `p`, which is not the nearest one: an agent standing on a
+    // balcony is nearer the balcony than the ground `nearest` would give it.
     float bestY = -std::numeric_limits<float>::max();
     const float floor = p.y - maxDrop;
 
@@ -989,7 +908,6 @@ NavPoint NavMesh::dropToFloorNav(const glm::vec3& p, float maxDrop) const {
                 const glm::vec3& b = verts[t.v[1]];
                 const glm::vec3& c = verts[t.v[2]];
 
-                // Barycentric containment in XZ.
                 const float d = (b.z - c.z) * (a.x - c.x) + (c.x - b.x) * (a.z - c.z);
                 if (std::abs(d) < 1e-12f) continue;
                 const float u = ((b.z - c.z) * (p.x - c.x) + (c.x - b.x) * (p.z - c.z)) / d;
@@ -1022,18 +940,13 @@ bool NavMesh::raycastNav(const NavPoint& from, const glm::vec3& to) const {
     uint32_t t = from.triangle;
     const glm::vec3& p = from.position;
 
-    // Which side of the ray a vertex sitting exactly *on* it counts as. Picking an exit edge
-    // needs a strict left and a strict right, and a vertex on the line is neither -- so the
-    // walk below is the walk of the ray nudged infinitesimally off its own line. **Decided
-    // once and held for every step**: a nudge that changed direction part way is a ray that
-    // crosses an edge and then decides it never did.
+    // Which side a vertex sitting exactly *on* the ray counts as. Decided once and held for
+    // every step: flip it part way and the ray crosses an edge and then decides it never did.
     //
-    // Nudged *into* the starting triangle, which is the whole of the fix. A triangle the ray
-    // merely grazes -- one lying wholly to one side of it, which both triangles either side
-    // of a tile boundary are, and a grid path runs along one the whole way -- has no pair of
-    // vertices the ray separates, so the search below finds no exit edge at all and calls a
-    // line lying entirely on the mesh an obstruction. Nudging its way instead puts the ray
-    // through its interior, and every step after that is an ordinary crossing.
+    // It must nudge *into* the starting triangle. A triangle the ray merely grazes -- both of
+    // the pair either side of a tile boundary, which a grid path runs along the whole way --
+    // has no pair of vertices the ray separates, so the loop below finds no exit edge and calls
+    // a line lying entirely on the mesh an obstruction.
     bool anyLeft = false;
     bool anyRight = false;
     for (const uint32_t v : tris[t].v) {
@@ -1050,8 +963,8 @@ bool NavMesh::raycastNav(const NavPoint& from, const glm::vec3& to) const {
         return area != 0.0f ? area > 0.0f : tieLeft;
     };
 
-    // Bounded by the triangle count: a walk that has crossed every triangle is a walk that
-    // is looping on a degenerate edge, and returning "blocked" is the safe answer.
+    // Bounded by the triangle count: a walk that has crossed every triangle is looping on a
+    // degenerate edge, and "blocked" is the safe answer.
     for (uint32_t step = 0; step <= tris.size(); ++step) {
         const NavTriangle& tri = tris[t];
         const glm::vec3& v0 = verts[tri.v[0]];
@@ -1065,14 +978,9 @@ bool NavMesh::raycastNav(const NavPoint& from, const glm::vec3& to) const {
         for (uint32_t e = 0; e < 3; ++e) {
             const glm::vec3& a = verts[tri.v[e]];
             const glm::vec3& b = verts[tri.v[(e + 1) % 3]];
-            // `to` must be beyond this edge, and the ray must separate its endpoints. Both
-            // halves are needed: the first alone picks an edge the ray misses, the second
-            // alone picks the edge behind the start point.
-            //
-            // The first stays an exact comparison against zero. A tie there means `to` lies
-            // on this edge's line, which is either an edge collinear with the ray -- whose
-            // endpoints are then both on it, so the second rejects it anyway -- or `to` on
-            // the edge itself, which the containment test above already answered.
+            // Both halves are needed: the first alone picks an edge the ray misses, the second
+            // alone picks the edge behind the start point. The first must stay an exact
+            // comparison against zero -- an epsilon there admits an edge collinear with the ray.
             if (triArea2(a, b, to) >= 0.0f) continue;
             if (leftOfRay(a) == leftOfRay(b)) continue;
             exit = e;
@@ -1081,7 +989,7 @@ bool NavMesh::raycastNav(const NavPoint& from, const glm::vec3& to) const {
         if (exit == 3) return false;
 
         const uint32_t next = tri.neighbour[exit];
-        if (next == kNoTriangle) return false; // Walked off the edge of the world.
+        if (next == kNoTriangle) return false;
         t = next;
     }
     return false;
@@ -1097,9 +1005,8 @@ bool NavMesh::corridorClearNav(const glm::vec3& from, const glm::vec3& to, float
     const float len = std::sqrt(d.x * d.x + d.z * d.z);
     if (len < 1e-5f) return true;
 
-    // Both edges of the band an agent of this width sweeps. Testing only the centre line
-    // is what lets a smoothing pass shave a corner the funnel had already inset away from,
-    // which would undo the one thing `agentRadius` does.
+    // Both edges of the band, not the centre line alone: on the centre line the smoothing pass
+    // shaves a corner the funnel had already inset away from, undoing `agentRadius` entirely.
     const glm::vec3 side(-d.z / len * radius, 0.0f, d.x / len * radius);
     for (const float s : {1.0f, -1.0f}) {
         const glm::vec3 offset = from + side * s;
@@ -1113,15 +1020,8 @@ bool NavMesh::corridorClearNav(const glm::vec3& from, const glm::vec3& to, float
     return true;
 }
 
-// ============================================== the world's frame and the solver's (D18)
-//
-// Every public query is one of these, and the private `*Nav` half below is what every
-// internal caller reaches for. Splitting them is what stops a rotation being applied
-// twice: `corridorClear` asks `nearest` and `raycast`, `findPath` asks `findCorridor` and
-// `corridorClear`, and a wrapper calling a wrapper would rotate the same point again.
-//
-// A falsy `NavPoint` carries a zero position, which any rotation leaves zero, so a miss
-// needs no special case on the way back out.
+// A falsy `NavPoint` carries a zero position, which any rotation leaves zero, so a miss needs
+// no special case on the way back out.
 
 NavPoint NavMesh::nearest(const glm::vec3& p, float maxDistance) const {
     NavPoint out = nearestNav(toNav(p), maxDistance);
@@ -1157,8 +1057,6 @@ bool NavMesh::reachable(const NavPoint& from, const NavPoint& to) const {
     if (!from || !to) return false;
     return tris[from.triangle].region == tris[to.triangle].region;
 }
-
-// ==================================================================== search
 
 bool NavMesh::findCorridorNav(const NavPoint& from, const NavPoint& to, std::vector<uint32_t>& out) const {
     out.clear();
@@ -1218,11 +1116,9 @@ bool NavMesh::findPathNav(const NavPoint& from, const NavPoint& to, std::vector<
         return true;
     }
 
-    // ---------------------------------------------------------------- portals
-    //
-    // One per shared edge, plus a degenerate one at the goal so the funnel has something
-    // to close against. Left and right are taken from the *outgoing* triangle's winding,
-    // which is well defined because the bake made every normal point up.
+    // One per shared edge, plus a degenerate one at the goal so the funnel has something to
+    // close against. Left and right come from the *outgoing* triangle's winding, which is well
+    // defined only because the bake made every normal point up.
     std::vector<glm::vec3> left;
     std::vector<glm::vec3> right;
     left.reserve(corridor.size() + 1);
@@ -1239,19 +1135,16 @@ bool NavMesh::findPathNav(const NavPoint& from, const NavPoint& to, std::vector<
         }
         if (edge == 3) return false; // A* returned a corridor that is not connected.
 
-        // `v[edge]` is the left endpoint and `v[edge+1]` the right one, travelling out of
-        // this triangle into the next. The opposite assignment is the intuitive one -- with
-        // normals up and a consistent winding, `v[edge+1]` is geometrically on the left --
-        // and it is wrong here, because `triArea2`'s positive half-plane is the funnel's
-        // *right*. Getting it backwards does not fail loudly: the funnel simply restarts at
-        // every portal and returns the corridor's own vertices, which still walks.
+        // `v[edge]` is left and `v[edge+1]` right. The opposite assignment is the intuitive one
+        // -- geometrically `v[edge+1]` *is* on the left -- and it is wrong here, because
+        // `triArea2`'s positive half-plane is the funnel's right. Swapping them fails silently:
+        // the funnel restarts at every portal and returns the corridor's own vertices, which
+        // still walks, just never straightens.
         glm::vec3 l = verts[t.v[edge]];
         glm::vec3 r = verts[t.v[(edge + 1) % 3]];
 
-        // The agent radius, applied here rather than in the bake. Both endpoints move
-        // toward the middle; a portal narrower than twice the radius collapses to its
-        // midpoint rather than inverting, because a tight squeeze is still a way through
-        // and a crossed portal is a path that leaves the mesh.
+        // Clamped so a portal narrower than twice the radius collapses to its midpoint rather
+        // than inverting: a crossed portal is a path that leaves the mesh.
         const glm::vec3 along = r - l;
         const float width = glm::length(glm::vec3(along.x, 0.0f, along.z));
         if (width > 1e-6f) {
@@ -1266,11 +1159,7 @@ bool NavMesh::findPathNav(const NavPoint& from, const NavPoint& to, std::vector<
     left.push_back(to.position);
     right.push_back(to.position);
 
-    // ---------------------------------------------------------------- funnel
-    //
-    // Mononen's simple stupid funnel. The apex is where the path currently is; the two
-    // sight lines narrow until one crosses the other, and the crossing is a corner the
-    // path must actually turn.
+    // Mononen's simple stupid funnel.
     out.push_back(from.position);
     glm::vec3 apex = from.position;
     glm::vec3 portalLeft = from.position;
@@ -1283,8 +1172,6 @@ bool NavMesh::findPathNav(const NavPoint& from, const NavPoint& to, std::vector<
         const glm::vec3& l = left[i];
         const glm::vec3& r = right[i];
 
-        // Right side tightens, unless it would cross the left -- in which case the left is
-        // a corner and the funnel restarts from it.
         if (triArea2(apex, portalRight, r) <= 0.0f) {
             if (apex == portalRight || triArea2(apex, portalLeft, r) > 0.0f) {
                 portalRight = r;
@@ -1322,17 +1209,10 @@ bool NavMesh::findPathNav(const NavPoint& from, const NavPoint& to, std::vector<
 
     if (out.empty() || out.back() != to.position) out.push_back(to.position);
 
-    // ---------------------------------------------------------------- smoothing
-    //
-    // The funnel returns the shortest path *through the corridor A\* chose*, and that is
-    // not always the shortest path through the mesh: on an open floor a dozen corridors
-    // tie on cost, and the one that wins need not be the one containing the straight line.
-    // Detour has the same property and answers it the same way -- walk the mesh directly
-    // and drop every waypoint the agent can see past.
-    //
-    // Quadratic in waypoints, over a list that is single digits after the funnel has done
-    // its work. The alternative is a smoothing pass that only looks one waypoint ahead,
-    // which cannot remove a run of three.
+    // The funnel returns the shortest path through the corridor A* chose, which on an open
+    // floor -- where a dozen corridors tie on cost -- need not be the corridor containing the
+    // straight line. Quadratic in waypoints, over a list that is single digits by now; a pass
+    // looking one waypoint ahead is linear and cannot remove a run of three.
     if (out.size() > 2) {
         std::vector<glm::vec3> straight;
         straight.reserve(out.size());
@@ -1349,22 +1229,14 @@ bool NavMesh::findPathNav(const NavPoint& from, const NavPoint& to, std::vector<
         out = std::move(straight);
     }
 
-    // ---------------------------------------------------------------- corners only
+    // The funnel emits a collinear waypoint wherever the path runs exactly through a portal
+    // endpoint, because a zero signed area reads as the sight lines having crossed. Leave them
+    // and the shape of a path across an open floor is a property of the rounding rather than of
+    // the floor; the smoothing above cannot remove them, since `raycastNav` finds no exit edge
+    // for a ray leaving through a vertex.
     //
-    // A waypoint on the straight line between its neighbours is not a turn. The funnel
-    // emits one wherever the path runs exactly *through* a portal endpoint rather than
-    // between the two -- a diagonal across a grid of square cells does it at every corner
-    // it crosses -- because a zero signed area reads as the sight lines having crossed.
-    // The walk above cannot take it back out: the same segment runs along the shared edges
-    // it is asking about, and `raycastNav` finds no exit edge for a ray that leaves through
-    // a vertex, so it answers "blocked" for a line that is entirely on the mesh.
-    //
-    // Which of the two survives is decided by whether the area came out as exactly zero,
-    // so leaving it makes the shape of a path across an open floor a property of the
-    // rounding rather than of the floor. Deviation is measured in 3D, so a ramp's crest --
-    // collinear seen from above, a corner seen from the side -- is a corner and stays.
-    // Dropping moves the polyline by at most `kStraight`, well under any clearance
-    // `agentRadius` bought.
+    // Deviation is measured in 3D, so a ramp's crest -- collinear from above, a corner from the
+    // side -- survives. 1e-4 m is well under any clearance `agentRadius` bought.
     constexpr float kStraight = 1e-4f;
     if (out.size() > 2) {
         std::vector<glm::vec3> corners;
@@ -1385,21 +1257,13 @@ bool NavMesh::findPathNav(const NavPoint& from, const NavPoint& to, std::vector<
     return true;
 }
 
-// ==================================================================== steering
-
 glm::vec3 steer(PathFollower& follower, const glm::vec3& position, float maxSpeed) {
-    // Advance past everything already reached, not just one waypoint. Two tests, and the
-    // second is the one that matters: an agent is done with a waypoint either because it
-    // is standing on it *or* because it is already past it along the outgoing segment. A
-    // radius test alone leaves an agent that overshot in one long frame walking backwards
-    // to a corner it cleared -- which does not need a teleport to happen, only 5 m/s and a
-    // frame that took 400 ms.
-    // Whatever the mesh called up, not +Y (D18). A follower walking a flat world's XY plane
-    // has to drop Z, and a follower that dropped the wrong axis measures its progress along
-    // the one axis it is not travelling on -- so it never reaches a waypoint and never
-    // leaves the first one.
+    // Whatever the mesh called up, never +Y: a follower that drops the wrong axis measures its
+    // progress along the one axis it is not travelling on, and never leaves the first waypoint.
     const glm::vec3 up = glm::length(follower.up) > 1e-6f ? glm::normalize(follower.up) : glm::vec3(0.0f, 1.0f, 0.0f);
 
+    // `passed` is the test that matters: on the radius alone, an agent that overshot in one long
+    // frame walks backwards to a corner it already cleared. 5 m/s and a 400 ms frame is enough.
     while (follower.waypoint + 1 < follower.path.size()) {
         const glm::vec3& here = follower.path[follower.waypoint];
         const glm::vec3& next = follower.path[follower.waypoint + 1];
@@ -1421,11 +1285,9 @@ glm::vec3 steer(PathFollower& follower, const glm::vec3& position, float maxSpee
     }
     if (distance < 1e-5f) return glm::vec3(0.0f);
 
-    // Horizontal only. A ramp's rise is the floor's business, not the follower's, and
-    // including it would slow an agent down for climbing.
     const glm::vec3 dir = toTarget / distance;
-    // Arrival, on the final waypoint alone. Easing into an intermediate corner would make
-    // an agent crawl through every turn.
+    // Easing on the final waypoint alone; ease into an intermediate corner and the agent crawls
+    // through every turn.
     const float speed = last ? maxSpeed * std::min(1.0f, distance / std::max(follower.arriveRadius, 1e-4f)) : maxSpeed;
     return dir * speed;
 }

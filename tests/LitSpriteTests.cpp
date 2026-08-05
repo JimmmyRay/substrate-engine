@@ -6,7 +6,7 @@
 
 /**
  * @file tests/LitSpriteTests.cpp
- * @brief The lit sprite's arithmetic, which is the half of it a device cannot check (P6).
+ * @brief The lit sprite's arithmetic, which is the half of it a device cannot check.
  *
  * The row's image-level check is a *silhouette*: a lit sprite's value is shaded and cannot
  * be held against its source file, so `scripts/readback.sh`'s tenth case asserts coverage

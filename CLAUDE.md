@@ -159,29 +159,22 @@ alignment calculation is.
 
 ## Comments carry traps, not history
 
-A comment earns its place by saving a reader from a mistake they would otherwise
-make. Rationale that is merely *interesting* belongs in `docs/architecture/`,
-which exists and is 7,000 lines long.
+**The `writing-a-comment` skill is the rule.** Invoke it before adding, editing or
+removing any comment. What follows is the part specific to this tree.
 
-**Write a comment for:**
+**Never describe what the code does — or what it does not do.** A comment saying
+"there is no `Engine::setExposure` because `renderer()` is right there" describes
+behaviour written nowhere, so a mismatch cannot be attributed to the comment or to
+the code. The test is: does the sentence describe the code, or the *consequence of
+changing* it? Only the second survives.
 
-- A trap — something a later edit would reintroduce. "Gram-Schmidt from the
-  *rest* tangent; starting from `v.tangent` makes this a fold over its own output."
-- A non-obvious constant, formula, or cast. Why `1e-12f` and not `1e-6f`.
-- An ordering dependency, or a call whose side effect is not visible at the call site.
-- On a public symbol: one `@brief` line saying what it is, plus units or range.
+Rationale that is merely *interesting* belongs in `docs/architecture/`, which exists
+and is 7,000 lines long. Link it in one line instead:
+`/// Integer scale, letterboxed — see rendering.md, "Presentation".`
 
-**Do not write:**
+**Card archaeology never goes in a comment.** "What D14 changed", "the drift D11
+spent a card removing", "why C19 chose Jolt's solver", or a bare `(G14)` tag. Git
+and `docs/kanban/done/` hold that.
 
-- A decision already argued in `docs/architecture/`. Link to it in one line instead:
-  `/// Integer scale, letterboxed — see rendering.md, "Presentation".`
-- Card archaeology. "What D14 changed", "the drift D11 spent a card removing",
-  "why C19 chose Jolt's solver". Git and `docs/kanban/done/` hold that.
-- Comparisons to other projects, or rebuttals of designs not taken —
-  `limitations.md` is the place for a refusal.
-- A restatement of what the line below it says.
-
-**Size rule.** A doc block on a public symbol is `@brief` plus at most one short
-paragraph. Longer than that means the argument belongs in `docs/architecture/`
-and the code gets a link. A file-level `@file` block says what is in the file and
-what is deliberately not — it is not a design review.
+A file-level `@file` block says what is in the file and what is deliberately not —
+it is not a design review.

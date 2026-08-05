@@ -20,15 +20,9 @@ using core::json::readFloat;
 using core::json::readString;
 using core::json::readVec;
 
-// `gltfJsonSpan` was written here in full when S4.2 landed, with a comment saying the
-// duplication against ParticleSystem.cpp was deliberate because two occurrences are a
-// coincidence. S5.2's AudioSource.cpp is the third occurrence, so it moved to
-// core/Json.h -- which is the rule working as intended rather than a correction.
-
-/// An unrecognised spelling keeps the default *and says so*, which is the one place this
-/// schema does not follow `Config`'s "absent keeps the default" rule silently: a typo in
-/// a shape name is a collider that is quietly the wrong shape, and the file it came from
-/// looks correct.
+/// An unrecognised spelling keeps the default *and says so*: an absent key is an author
+/// taking the default, but a typo'd one is a collider quietly built as the wrong shape out
+/// of a file that looks correct.
 template <typename Enum, size_t N>
 void readEnum(const Value& parent, const char* key, const char* const (&names)[N], Enum& out, const char* what,
               const std::string& owner) {
@@ -56,9 +50,8 @@ const char* colliderMotionName(ColliderMotion motion) { return kMotionNames[stat
 const char* colliderFreedomName(ColliderFreedom freedom) { return kFreedomNames[static_cast<size_t>(freedom)]; }
 
 bool parseSceneColliders(const rapidjson::Value& nodesArray, std::vector<ColliderDesc>& out) {
-    // The document is parsed once, by the caller, and handed to all three readers
-    // (C14). It used to be parsed here, and in the other two, and that was about
-    // three quarters of a large scene's load -- see core/Json.h.
+    // The document is parsed once, by the caller, and handed to all three readers -- see
+    // core/Json.h. Parsing one here is most of a large scene's load.
     const Value* nodes = &nodesArray;
 
     for (rapidjson::SizeType n = 0; n < nodes->Size(); ++n) {
@@ -96,16 +89,14 @@ bool parseSceneColliders(const rapidjson::Value& nodesArray, std::vector<Collide
         readFloat(*def, "acceleration", c.acceleration);
         readFloat(*def, "deceleration", c.deceleration);
         readFloat(*def, "airControl", c.airControl);
-        // Steps, and the key says so. Authored as an integer count rather than as seconds
-        // because seconds would have to be divided by the fixed step to be used, and a
-        // window that rounds is a window whose size depends on the clock it was rounded
-        // against -- which is the whole thing these two rows exist to remove.
+        // Steps, and the key says so: seconds would have to be divided by the fixed step,
+        // and a window that rounds is a window whose size depends on the clock.
         core::json::readUint(*def, "jumpBufferSteps", c.jumpBufferSteps);
         core::json::readUint(*def, "coyoteSteps", c.coyoteSteps);
 
-        // A concave triangle mesh has no inertia tensor, so Jolt refuses it a dynamic
-        // body outright. Caught here rather than at body creation because this is where
-        // the file said it, and the message can name the node.
+        // A concave triangle mesh has no inertia tensor, so Jolt refuses it a dynamic body
+        // outright. Caught here rather than at body creation, where the message could no
+        // longer name the node the file said it on.
         if (c.resolvedShape() == ColliderShape::Mesh &&
             (c.motion == ColliderMotion::Dynamic || c.motion == ColliderMotion::Character)) {
             core::Logger::warn(core::LogCategory::Scene,

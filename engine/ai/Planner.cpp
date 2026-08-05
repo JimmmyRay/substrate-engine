@@ -12,11 +12,8 @@ namespace {
 
 const std::string kNoName;
 
-/// Unsatisfied goal bits. **Admissible**, which is what makes A* return the *cheapest* plan
-/// rather than merely a plan: no action can satisfy more than one property for less than the
-/// cheapest action's cost, and costs are at least... nothing. So this is scaled by nothing
-/// and is a count. It orders the frontier well and never overestimates, which is the only
-/// property the proof needs.
+/// Unsatisfied goal bits, unscaled. Scale it by anything and the heuristic can overestimate,
+/// at which point A* returns a plan rather than the cheapest one.
 uint32_t unmet(const WorldState& state, const WorldState& goal) {
     const uint64_t missing = (~state.known & goal.known) | ((state.value ^ goal.value) & goal.known & state.known);
     return static_cast<uint32_t>(std::popcount(missing));
@@ -31,8 +28,8 @@ struct Node {
 
 struct StateHash {
     size_t operator()(const WorldState& s) const {
-        // Two 64-bit words folded the way `Profiler`'s path hash folds: multiply-xor, no
-        // allocation, and collisions cost a comparison rather than a wrong answer.
+        // Multiply-xor over two 64-bit words: a collision costs a comparison, not a wrong
+        // answer.
         uint64_t h = s.known * 0x9E3779B97F4A7C15ull;
         h ^= s.value + 0x9E3779B97F4A7C15ull + (h << 6) + (h >> 2);
         return static_cast<size_t>(h);
@@ -46,8 +43,8 @@ uint32_t Planner::declare(const std::string& name) {
         if (properties[i] == name) return i;
     }
     if (properties.size() >= kMaxProperties) {
-        // Refused and named, rather than silently folded onto an existing bit. A property
-        // that quietly aliases another is a plan that is wrong in a way nobody can read.
+        // Refused and named, never folded onto an existing bit: a property that quietly
+        // aliases another is a plan that is wrong in a way nobody can read.
         core::Logger::warn(core::LogCategory::Scene,
                            "Planner: '%s' is the %u'th property and the state is %u bits wide -- refused",
                            name.c_str(), static_cast<uint32_t>(properties.size()) + 1, kMaxProperties);
@@ -69,8 +66,8 @@ const std::string& Planner::propertyName(uint32_t property) const {
 }
 
 uint32_t Planner::add(Action action) {
-    // Clamped rather than refused: a zero-cost action makes every plan through it free and
-    // the search's ordering meaningless, and a negative one makes A* wrong outright.
+    // A zero-cost action makes every plan through it free and the frontier's ordering
+    // meaningless; a negative one makes A* wrong outright.
     action.cost = std::max(action.cost, 1e-4f);
     actions.push_back(std::move(action));
     return static_cast<uint32_t>(actions.size()) - 1;
@@ -88,15 +85,13 @@ bool Planner::plan(const WorldState& from, const WorldState& goal, std::vector<u
     std::vector<Node> nodes;
     nodes.push_back({from, 0.0f, 0xFFFFFFFFu, 0xFFFFFFFFu});
 
-    // The cheapest way to each state seen so far. A state reached twice by different routes
-    // is one state, and that is the whole reason a planner beats a walk over sequences: the
-    // number of *states* is bounded by the properties, and the number of sequences is not.
+    // The cheapest way to each state seen so far. Keyed on the state, not the route: the
+    // number of states is bounded by the properties and the number of routes is not.
     std::unordered_map<WorldState, float, StateHash> best;
     best.emplace(from, 0.0f);
 
-    // An open list as a vector with a linear minimum, not a heap. The frontier here is
-    // bounded by the branching factor times the plan length -- tens, not thousands -- and a
-    // heap over a vector of indices costs more in cache than the scan saves.
+    // A vector with a linear minimum, not a heap: the frontier is branching factor times plan
+    // length, which is tens. A heap starts paying only well past that.
     std::vector<uint32_t> open{0};
 
     for (uint32_t expansions = 0; !open.empty() && expansions < kMaxPlanNodes; ++expansions) {
@@ -127,8 +122,8 @@ bool Planner::plan(const WorldState& from, const WorldState& goal, std::vector<u
             if (!nodes[index].state.satisfies(candidate.prerequisites)) continue;
 
             const WorldState next = nodes[index].state.after(candidate.effects);
-            // An action whose effects change nothing about this state is a loop of length
-            // one, and admitting it makes the frontier grow without the plan doing so.
+            // An action changing nothing about this state is a loop of length one; admit it
+            // and the frontier grows while the plan does not.
             if (next == nodes[index].state) continue;
 
             const float cost = nodes[index].cost + candidate.cost;
@@ -143,8 +138,6 @@ bool Planner::plan(const WorldState& from, const WorldState& goal, std::vector<u
     // Nothing partial. `out` was cleared at the top and only a completed walk writes to it.
     return false;
 }
-
-// ==================================================================== Agent
 
 void Agent::setGoal(WorldState goal) {
     wanted = goal;
@@ -161,20 +154,15 @@ uint32_t Agent::advance(const Planner& planner, const WorldState& world) {
         return kNoAction;
     }
 
-    // **The cursor moves past what is done before the plan is judged, and the order is the
-    // whole of this function.** A step whose effects the world already has is finished,
-    // however it came to be finished -- by this character doing it or by somebody else
-    // arriving there first -- and its prerequisites are routinely *false* afterwards,
-    // because that is what an effect is. Judging validity first therefore re-plans on
-    // every step of every successful plan: `draw` requires `unarmed`, drawing makes the
-    // character armed, and the cursor still points at `draw`.
+    // The cursor must move past what is done *before* the plan is judged. A finished step's
+    // prerequisites are routinely false afterwards -- that is what an effect is -- so judging
+    // validity first re-plans on every step of every successful plan: `draw` requires
+    // `unarmed`, drawing makes the character armed, and the cursor still points at `draw`.
     const auto skipFinished = [&] {
         while (at < steps.size() && world.satisfies(planner.action(steps[at]).effects)) ++at;
     };
     skipFinished();
 
-    // Two ways a held plan stops being one: it ran out, or the world moved the current
-    // step's prerequisites out from under it.
     if (at >= steps.size() || !world.satisfies(planner.action(steps[at]).prerequisites)) {
         replannedLast = true;
         at = 0;
@@ -182,8 +170,8 @@ uint32_t Agent::advance(const Planner& planner, const WorldState& world) {
             steps.clear();
             return kNoAction;
         }
-        // A fresh plan can still open on a step the world has already satisfied, so the
-        // same walk runs again rather than being assumed unnecessary.
+        // A fresh plan can still open on a step the world already satisfies, so the same walk
+        // runs again rather than being assumed unnecessary.
         skipFinished();
         if (at >= steps.size()) return kNoAction;
     }

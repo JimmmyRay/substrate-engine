@@ -11,7 +11,7 @@
 
 /**
  * @file tools/bake.cpp
- * @brief `substrate-bake` -- the offline writer of the C15 scene sidecar (D9).
+ * @brief `substrate-bake` -- the offline writer of the C15 scene sidecar.
  *
  * ## Why this is a program and not a flag
  *

@@ -21,10 +21,9 @@ namespace core {
 namespace settings {
 namespace {
 
-/// The metadata, one row per entry in the list, in id order. `Id` indexes it directly, and
-/// nothing a game declares can reach it: a declared row lives in the table's own deque with
-/// an id at or above `Id::Count`, which is what makes *"a game adds rows, it does not edit
-/// the engine's"* a fact about storage rather than a rule to remember.
+/// The metadata, one row per entry in the list, in id order -- `Id` indexes it directly.
+/// Nothing a game declares can reach it: a declared row lives in the table's own deque with
+/// an id at or above `Id::Count`.
 constexpr Row kRows[] = {
 #define SUBSTRATE_SETTING_ROW(mod, name, tag, ctype, def, lo, hi, flags, label)                                         \
     {#mod "." #name, label,          Type::tag,           static_cast<uint8_t>(flags),                                  \
@@ -41,22 +40,11 @@ bool keyInModule(std::string_view key, std::string_view module) {
     return key.size() > module.size() && key.compare(0, module.size(), module) == 0 && key[module.size()] == '.';
 }
 
-/**
- * @brief Whether the engine's own list names this module (D17).
- *
- * **The unit a game owns is the module, not the key.** A game may declare in any module the
- * engine does not name, and in none that it does -- so `demo.difficulty` is a game's and
- * `render.msaaSamples` is refused, along with every other `render.` key whether or not a row
- * claims it today.
- *
- * Module granularity rather than key granularity, for three reasons that all come from the
- * key being the JSON path. A `render.myThing` a game added would be indistinguishable from
- * an engine row in the config file, in the generated panel and in `--write-default-config`,
- * all three of which group by module. An engine release adding that key later would silently
- * take over a value the user wrote for the game, with nothing to say so. And the refusal has
- * to be answerable at the moment of declaration, which a key-by-key rule cannot be: the
- * engine's list is not finished, and "not a row today" is not "not the engine's".
- */
+/// @brief Whether the engine's own list names this module.
+///
+/// The refusal is by module, not by key, and has to stay that way: "not a row today" is not
+/// "not the engine's", so a key-by-key rule would let a game claim a key a later engine
+/// release adds, and take over the value silently.
 bool engineOwnsModule(std::string_view module) {
     for (const Row& r : kRows) {
         if (keyInModule(r.key, module)) return true;
@@ -71,9 +59,8 @@ std::string lowered(std::string_view s) {
     return out;
 }
 
-/// `true|false|on|off|1|0|yes|no`, because a config file and a console are written by
-/// people rather than by a serialiser. Anything else is a refusal, not a false: a typo
-/// that quietly read as "off" is the failure this whole table exists to stop.
+/// `true|false|on|off|1|0|yes|no`. Anything else is a refusal, never a false -- a typo that
+/// quietly read as "off" is the failure this whole table exists to stop.
 bool parseBool(std::string_view text, bool& out) {
     const std::string v = lowered(text);
     if (v == "true" || v == "on" || v == "1" || v == "yes") { out = true; return true; }
@@ -90,8 +77,8 @@ bool parseDouble(std::string_view text, double& out) {
     return true;
 }
 
-/// Clamp to the row's stated bounds and say so. Equal bounds mean unbounded, which is how
-/// a byte budget avoids inventing a ceiling it does not have.
+/// Clamp to the row's stated bounds and say so. Equal bounds mean unbounded, so a byte
+/// budget does not get a ceiling invented for it.
 double clamped(const Row& r, double value) {
     if (r.minimum == r.maximum) return value;
     const double result = std::min(std::max(value, r.minimum), r.maximum);
@@ -118,9 +105,9 @@ std::string defaultString(const Row& r) {
             std::snprintf(buffer, sizeof(buffer), "%" PRIu64, static_cast<uint64_t>(r.builtIn.integer));
             return buffer;
         case Type::Float:
-            // Through the `float` the row actually holds, and then `%g`, which is what
-            // `valueString` does -- the two spellings have to agree to the character or
-            // "differs from its default" is a comparison that answers wrongly.
+            // Narrowed to `float` and then `%g`, matching `valueString` exactly. The two
+            // spellings must agree to the character, or "differs from its default" -- a
+            // string comparison of the two -- answers wrongly.
             std::snprintf(buffer, sizeof(buffer), "%g", static_cast<double>(static_cast<float>(r.builtIn.real)));
             return buffer;
         case Type::String: return r.builtIn.text != nullptr ? r.builtIn.text : "";
@@ -133,9 +120,8 @@ const Row& Settings::row(Id id) const {
     if (index < count()) return kRows[index];
     if (const size_t offset = index - count(); offset < declared.size()) return declared[offset].row;
 
-    // The first row rather than past the end, and once rather than every frame: a handle
-    // that names no row is a bug in the caller, and a wrong answer in one place is easier
-    // to find than a read past the table -- but a message per frame is one nobody reads.
+    // Warned once, not per call: this can be reached from a per-frame read, and a message
+    // every frame is one nobody reads.
     if (!warnedUnknownId) {
         warnedUnknownId = true;
         Logger::warn(LogCategory::Core, "a settings handle names no row (%u); reading `%s` instead", index,
@@ -189,10 +175,8 @@ const char* typeName(Type t) {
 }
 
 const std::vector<RemovedKey>& removedKeys() {
-    // S1 moved these into game code, and S4 requires that each one *says so* for at least
-    // one release. A key that parses and does nothing is the exact failure the dump exists
-    // to surface; a key that silently stopped being read is the same failure with the
-    // evidence removed.
+    // Every entry's message has to name the flag that replaced the key or the field that
+    // holds it now. "It moved" leaves the reader exactly where a silent removal would.
     static const std::vector<RemovedKey> kRemoved = {
         {"scene.path", "moved into game code -- a scene is authored, not configured; pass a path on the command line "
                        "for a one-off, and see `engine.current_scene_path` in --dump-settings"},
@@ -218,14 +202,7 @@ const std::vector<RemovedKey>& removedKeys() {
         {"benchmark.rdocCapturePath", "a tool's output path, not a preference; --rdoc-capture-path still works"},
         {"decals", "moved into game code -- content placement"},
 
-        // ------------------------------------------------------------------------- D14
-        // Thirty-nine keys, and the obligation is the sentence rather than the entry: each
-        // one has to name *the flag that replaced it* or *the field that holds it now*, so
-        // somebody whose config file still carries it is one line away from the run they
-        // were trying to have. "It moved" is the failure this list exists to prevent,
-        // committed by the fix for it.
-        //
-        // A developer control, which is a value with no JSON key and a named flag:
+        // Developer controls: no JSON key, a named flag.
         {"render.validation", "is now --validation auto|on|off; validation layers are a developer control, so it has "
                               "no config key"},
         {"render.syncValidation", "is now --sync-validation, which implies --validation on; it is a developer "
@@ -278,8 +255,7 @@ const std::vector<RemovedKey>& removedKeys() {
         {"benchmark.exitAfterFrames", "is now --frames N, and it always was; every sibling of it was already a flag "
                                       "with no config key"},
 
-        // Authored by the game, which is a value with one correct answer that its author
-        // chose -- so it is a `GameSetup` field and there is nothing to type anywhere:
+        // Authored by the game: a `GameSetup` field, with nothing to type anywhere.
         {"render.tonemap", "moved into game code as GameSetup::look.tonemap -- a look decision authored with the lighting "
                            "it balances, beside GameSetup::look.exposure. --tonemap <name> still overrides it for one run"},
         {"render.shadowDepthBias", "moved into game code as GameSetup::look.shadowDepthBias -- tuned against a scene's "
@@ -291,8 +267,7 @@ const std::vector<RemovedKey>& removedKeys() {
         {"physics.bodyBudget", "gone: the physics world sizes itself and grows (C40)"},
         {"audio.voiceBudget", "gone: the voice list sizes itself and grows (C40)"},
 
-        // Declared by the game, which is a value that passes the preference test and
-        // belongs to nobody but the game that draws it:
+        // Declared by the game: a preference belonging to the game that draws it.
         {"ui.panelX", "belongs to the game that draws the panel; the demo declares demo.panelX, and --set "
                       "demo.panelX=<n> still reaches it"},
         {"ui.panelY", "belongs to the game that draws the panel; the demo declares demo.panelY"},
@@ -305,40 +280,28 @@ const std::vector<RemovedKey>& removedKeys() {
 namespace {
 
 /**
- * @brief Keys the file may legitimately carry that are not rows, and who reads each.
+ * @brief Keys the file may legitimately carry that are not rows, and who reads each. An
+ *        aggregate parsed elsewhere must be listed here or `loadJson` reports it as a typo.
  *
- * A list rather than a shrug, because the alternative is `loadJson` warning about a key
- * the engine deliberately parses elsewhere -- and a warning that is always wrong is one
- * nobody reads. It is an aggregate the table cannot hold: a map of action name to binding
- * list.
- *
- * **There is exactly one, and D14 is why.** `logging.categories` was the second, and it
- * left with the three `logging` rows beside it. An aggregate parsed here while no row
- * claims its module is worse than it looks: `claimsModule` would answer false, so a game
- * could declare into `logging` while `Config` was still reading a key out of it, which is
- * two owners of one JSON section. `input` keeps three rows of its own, so `input.bindings`
- * has no such hazard and stays.
+ * An entry whose module no row claims is a hazard: `claimsModule` answers false, so a game
+ * may declare into that module while the engine is still parsing a key out of it -- two
+ * owners of one JSON section. `input` keeps three rows of its own, so `input.bindings` is
+ * safe.
  */
 constexpr const char* kParsedElsewhere[] = {
     "input.bindings", // input::applyBindings, via Config::input.bindings
 };
 
 /**
- * @brief Say what became of a key nothing claims: where it went if it moved, that nothing
- *        declares its module if that is the truth, that it is a typo otherwise, and nothing
- *        at all for the two the engine parses elsewhere.
+ * @brief Say what became of a key nothing claims.
  *
- * @param moduleClaimed whether any row of this table lives in the key's module. It is what
- *        separates a typo from an **orphan** -- a key belonging to a game row that was not
- *        declared this run, because the game removed the setting or because a different game
- *        is running.
+ * @param moduleClaimed whether any row of this table lives in the key's module -- what
+ *        separates a typo from an orphan.
  *
  * @return true if the key is an orphan, which the caller counts and reports once per module.
- *         **An orphan is not a warning**, and used to be one: two games sharing a
- *         `substrate.json` is the state D17 designed for, so every run of the game that is
- *         not the demo opened with six warnings about `demo.` rows nobody could act on. A
- *         warning that is expected teaches the reader to skim warnings, which is the whole
- *         cost. A typo still warns, because that one *is* a mistake to correct.
+ *         An orphan must not warn: two games sharing a `substrate.json` is a designed-for
+ *         state, and every run of the other game would open with warnings nobody can act on.
+ *         A typo does warn, because that one is a mistake to correct.
  */
 [[nodiscard]] bool reportUnclaimed(const std::string& key, bool moduleClaimed) {
     for (const char* known : kParsedElsewhere) {
@@ -346,15 +309,13 @@ constexpr const char* kParsedElsewhere[] = {
     }
     for (const RemovedKey& removed : removedKeys()) {
         if (key == removed.key) {
-            // The row is gone and the value in the file does nothing, so the fix is an edit.
             Logger::error(LogCategory::Core, "`%s` %s", removed.key, removed.message);
             return false;
         }
     }
     if (!moduleClaimed) return true;
-    // `error`, not `warn`: this is a typo in a file somebody wrote, the value it was meant to
-    // set is not being set, and the fix is an edit. A warning is advisory -- something a
-    // reader may act on -- and a key that silently does nothing is not advisory.
+    // `error`, not `warn`: a warning is advisory, and a key that silently does nothing is
+    // not advisory -- the value somebody wrote is not being set.
     Logger::error(LogCategory::Core, "unknown setting `%s` -- see --dump-settings for every key there is", key.c_str());
     return false;
 }
@@ -365,24 +326,20 @@ void Settings::loadJson(const void* doc, std::string_view origin) {
     const auto& root = *static_cast<const rapidjson::Value*>(doc);
     if (!root.IsObject()) return;
 
-    // The *file* is walked, not the table. Walking the table would apply the config;
-    // walking the file is what turns a key nobody reads into a message, which is the whole
-    // failure this arc exists to remove.
+    // The *file* is walked, not the table: walking the table applies the config just as
+    // well and turns a key nobody reads into silence.
     for (auto section = root.MemberBegin(); section != root.MemberEnd(); ++section) {
         if (!section->name.IsString()) continue;
         const std::string module = section->name.GetString();
 
-        // A top-level key that is not an object names no `module.key` at all -- `decals`
-        // was one, and a typo at the top level is another. `true` because there is no
-        // module to have been claimed: this is a bare word, and the orphan sentence would
-        // be answering a question nobody asked.
+        // A bare top-level key names no `module.key` at all, so `true`: there is no module
+        // to have been claimed, and the orphan sentence would answer a question nobody
+        // asked.
         if (!section->value.IsObject()) {
             (void)reportUnclaimed(module, true);
             continue;
         }
 
-        // Asked once per section rather than once per key, and it is what tells an orphaned
-        // game section apart from a misspelled engine key.
         const bool moduleClaimed = claimsModule(module);
         uint32_t orphans = 0;
 
@@ -392,22 +349,18 @@ void Settings::loadJson(const void* doc, std::string_view origin) {
 
             const Id id = find(key);
             if (id == Id::None) {
-                // Including a key whose row has not been declared *yet*, which is the
-                // defined answer rather than an accident: the file is walked once, so a
-                // row that arrives afterwards was not here to claim it. That is precisely
-                // why D17 declares before the file is read rather than after.
+                // A row declared *after* this runs is unclaimed here too -- the file is
+                // walked once. `Engine::init` declares before reading the file for that
+                // reason.
                 if (reportUnclaimed(key, moduleClaimed)) ++orphans;
                 continue;
             }
             applyJson(id, &member->value, origin);
         }
 
-        // D17's reassurance, once per section rather than once per key. The values are
-        // refused and the run continues -- D12's convention -- but they are *kept*:
-        // `saveJson` merges into the file it read rather than rewriting it from the table,
-        // so a setting a game drops in one version and restores in the next does not cost
-        // the user their answer, and two games sharing one `substrate.json` do not erase
-        // each other's sections.
+        // Once per section, not per key. The values are refused but kept: `saveJson` merges
+        // into the file it read, so a setting a game drops and later restores does not cost
+        // the user their answer, and two games sharing one file do not erase each other.
         if (orphans > 0) {
             Logger::debug(LogCategory::Core,
                           "`%s.` is not a module in this build: %u key%s left in the file untouched -- a section "
@@ -421,9 +374,9 @@ void Settings::applyJson(Id id, const void* value, std::string_view origin) {
     const auto& v = *static_cast<const rapidjson::Value*>(value);
     const Row& r = row(id);
 
-    // The wrong type keeps the default rather than failing the load, which is the contract
-    // that lets an old config file load against a new build -- but it says so, because the
-    // silent version of this is indistinguishable from the key not being read at all.
+    // The wrong type keeps the default rather than failing the load, so an old config file
+    // still loads against a new build. It must still say so: silent, this is
+    // indistinguishable from the key not being read at all.
     const auto refuse = [&r]() {
         Logger::error(LogCategory::Core, "%s wants a %s; the value in the file is not one, so the default stands",
                       r.key, typeName(r.type));
@@ -447,9 +400,8 @@ void Settings::applyJson(Id id, const void* value, std::string_view origin) {
             (void)setValue(id, v.GetUint64(), Source::Config, origin);
             return;
         case Type::Float:
-            // IsNumber rather than IsDouble: rapidjson types `1.0` as a double and `1` as
-            // an int, and a config that says `"exposure": 1` means the same thing as one
-            // that says `1.0`.
+            // IsNumber, not IsDouble: rapidjson types `1` as an int, so `"exposure": 1`
+            // would be refused as the wrong type.
             if (!v.IsNumber()) return refuse();
             (void)setValue(id, static_cast<float>(v.GetDouble()), Source::Config, origin);
             return;
@@ -469,9 +421,8 @@ bool Settings::saveJson(const std::string& path) const {
         rapidjson::Document existing;
         existing.ParseStream(stream);
         if (existing.HasParseError()) {
-            // Refuse rather than overwrite, exactly as `saveBindings` does: a config that
-            // fails to parse still holds settings, and replacing it with what this table
-            // happens to know loses every one the parser could not reach.
+            // Refuse rather than overwrite: a config that fails to parse still holds
+            // settings, and replacing it loses every one the parser could not reach.
             Logger::error(LogCategory::Core, "Cannot save settings: %s is not valid JSON (%s at %zu)", path.c_str(),
                           rapidjson::GetParseError_En(existing.GetParseError()), existing.GetErrorOffset());
             return false;
@@ -495,8 +446,6 @@ bool Settings::saveJson(const std::string& path) const {
         rapidjson::Value::MemberIterator section = doc.FindMember(module.c_str());
         const bool haveSection = section != doc.MemberEnd() && section->value.IsObject();
         const bool present = haveSection && section->value.HasMember(name.c_str());
-        // D16. Against the row's own built-in rather than against a whole throwaway
-        // `Settings` built to hold ninety-odd of them, on the save path, once per call.
         if (!present && valueString(id) == defaultString(r)) continue;
 
         if (!haveSection) {
@@ -530,9 +479,9 @@ bool Settings::saveJson(const std::string& path) const {
     rapidjson::StringBuffer text;
     rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(text);
     writer.SetIndent(' ', 2);
-    // A float widened to a double is 0.10000000149011612 written out in full, which is the
-    // same number the file said and unreadable as a diff against it. Six places is more
-    // than a float carries and short enough to recognise.
+    // Without the cap, a float widened to a double writes 0.1 as 0.10000000149011612 --
+    // the same number the file said, and unreadable as a diff against it. Six places is
+    // more than a float carries.
     writer.SetMaxDecimalPlaces(6);
     doc.Accept(writer);
 
@@ -542,12 +491,7 @@ bool Settings::saveJson(const std::string& path) const {
     return true;
 }
 
-// ================================================================== construction
-
 Settings::Settings() {
-    // One loop over the row table rather than ninety macro expansions of `store`, because
-    // the default is on the row now. A declared row's slot is made the same way, by the
-    // same function, which is what stops the two paths from being able to disagree.
     for (const Row& r : kRows) {
         storeDefault(slots.emplace_back(), r);
     }
@@ -571,16 +515,11 @@ void Settings::storeDefault(Slot& s, const Row& r) {
     }
 }
 
-// ==================================================================== declaration
-
 Id Settings::declareRow(std::string_view key, Type type, Default builtIn, std::string_view text, double minimum,
                         double maximum, uint8_t flags, std::string_view label) {
     const std::string name(key);
 
     if (schemaFrozen) {
-        // Naming the method rather than the state, because the state is not what the caller
-        // can act on. `configure` writes rows and `declareSettings` adds them, and a game
-        // that reached for the wrong one is one sentence away from the right one.
         Logger::error(LogCategory::Core,
                       "`%s` cannot be declared: the settings schema is frozen. A row is declared from "
                       "`Game::declareSettings`, which runs before the config file is read; `configure` is where a "
@@ -588,17 +527,15 @@ Id Settings::declareRow(std::string_view key, Type type, Default builtIn, std::s
                       name.c_str());
         return Id::None;
     }
-    // `module.name`, both halves non-empty and exactly one dot -- the same shape every
-    // consumer already assumes when it splits a key to find its JSON section.
+    // `module.name`, both halves non-empty and exactly one dot -- the shape every consumer
+    // assumes when it splits a key to find its JSON section.
     const size_t dot = name.find('.');
     if (dot == 0 || dot == std::string::npos || dot + 1 == name.size() || name.find('.', dot + 1) != std::string::npos) {
         Logger::error(LogCategory::Core, "`%s` is not a settings key: a key is <module>.<name>", name.c_str());
         return Id::None;
     }
-    // D17's namespace rule, and it is checked before the duplicate below so that
-    // `render.ssao` is refused for the reason that generalises rather than for the accident
-    // that a row happens to exist today. `engine.` falls out of the same test: it is an
-    // engine module like any other, and there is nothing special-cased about it here.
+    // Before the duplicate check below, so `render.ssao` is refused for owning the module
+    // rather than for the accident that a row happens to exist today.
     if (const std::string_view module = std::string_view(name).substr(0, dot); engineOwnsModule(module)) {
         Logger::error(LogCategory::Core,
                       "`%s` cannot be declared: `%.*s` is an engine module. A game owns every module the engine does "
@@ -608,11 +545,9 @@ Id Settings::declareRow(std::string_view key, Type type, Default builtIn, std::s
                       module.data(), name.c_str() + dot + 1);
         return Id::None;
     }
-    // The entry that is easy to miss, and the one D14 is about to add forty more of: a key
-    // that *used to be* an engine setting. Every config file still carrying one would
-    // silently start feeding a row it was never written for -- and `lighting.sun` is the
-    // shape that gets through the module test, because the engine no longer names `lighting`
-    // at all.
+    // A key that *used to be* an engine setting gets through the module test whenever the
+    // engine no longer names that module -- `lighting.sun` is the shape. Without this, every
+    // config file still carrying one starts feeding a row it was never written for.
     for (const RemovedKey& removed : removedKeys()) {
         if (name == removed.key) {
             Logger::error(LogCategory::Core,
@@ -622,9 +557,7 @@ Id Settings::declareRow(std::string_view key, Type type, Default builtIn, std::s
             return Id::None;
         }
     }
-    // `kEngine` means *the engine owns this live state and no JSON key names it*. A game
-    // declaring one would get a row no door can write and no save can keep -- the control
-    // that moves and does nothing, arrived at from the other direction.
+    // A game declaring `kEngine` would get a row no door can write and no save can keep.
     if ((flags & kEngine) != 0) {
         Logger::error(LogCategory::Core,
                       "`%s` cannot be declared as engine-owned: that flag marks live state the engine reports, and a "
@@ -654,12 +587,10 @@ Id Settings::declareRow(std::string_view key, Type type, Default builtIn, std::s
     return static_cast<Id>(count() + declared.size() - 1);
 }
 
-// ================================================================== slot lookup
-
 Settings::Slot& Settings::slot(Id id) {
     const auto index = static_cast<uint16_t>(id);
     if (index < slots.size()) return slots[index];
-    (void)row(id); // says so once, in the one place that says it
+    (void)row(id); // for its once-only warning
     return slots[0];
 }
 
@@ -669,8 +600,6 @@ const Settings::Slot& Settings::slot(Id id) const {
     (void)row(id);
     return slots[0];
 }
-
-// ========================================================================= reads
 
 bool Settings::getBool(Id id) const {
     const Slot& s = slot(id);
@@ -716,9 +645,9 @@ std::string Settings::valueString(Id id) const {
             std::snprintf(buffer, sizeof(buffer), "%" PRIu64, getUint64(id));
             return buffer;
         case Type::Float:
-            // %g rather than a fixed precision: 0.0015 and 60 are both settings, and a
-            // dump that printed one of them as 0.001500 or 60.000000 would be harder to
-            // diff against the file it came from, which is what the dump is for.
+            // %g, matching `defaultString` to the character -- "differs from its default"
+            // is a string comparison of the two. A fixed precision would also print 60 as
+            // 60.000000 and stop the dump diffing against the file it came from.
             std::snprintf(buffer, sizeof(buffer), "%g", static_cast<double>(getFloat(id)));
             return buffer;
         case Type::String: return getString(id);
@@ -726,13 +655,11 @@ std::string Settings::valueString(Id id) const {
     return {};
 }
 
-// ======================================================================== writes
-
 bool Settings::writable(Id id, Type type, Source from) {
-    // Before anything else, because every other question below is asked of a row and an id
-    // naming none has no row to ask. Reading an unknown handle answers the first row; a
-    // *write* through one has to change nothing at all, or a refused `declare` would hand
-    // back a handle that quietly assigns `window.width`.
+    // First, because every question below is asked of a row. A read through an unknown
+    // handle answers the first row, but a *write* through one has to change nothing -- a
+    // refused `declare` would otherwise hand back a handle that quietly assigns
+    // `window.width`.
     if (static_cast<uint16_t>(id) >= rowCount()) {
         Logger::error(LogCategory::Core, "a settings handle names no row; refusing the write");
         return false;
@@ -743,20 +670,16 @@ bool Settings::writable(Id id, Type type, Source from) {
         Logger::error(LogCategory::Core, "%s is a %s; refusing a %s", r.key, typeName(r.type), typeName(type));
         return false;
     }
-    // An `engine.` row is engine-owned live state. It is readable and dumpable, and
-    // writable only through the API that owns the side effect -- `setEngineOwned`, which
-    // does not come through here. Assigning a scene path is not loading a scene.
+    // `setEngineOwned` is the only writer of an `engine.` row, and does not come through
+    // here: assigning a scene path is not loading a scene.
     if ((r.flags & kEngine) != 0) {
         Logger::warn(LogCategory::Core, "%s is engine-owned and cannot be set; it reports state rather than taking it",
                      r.key);
         return false;
     }
     if ((r.flags & kInitOnly) != 0 && initFrozen) {
-        // A reason, not a silent clamp. The light buffer is sized from `lightBudget` at
-        // init, so a budget raised afterwards would write past a mapped range -- and the
-        // code that used to clamp it quietly gave no way to find that out. The same
-        // sentence covers the rows that are *read* once rather than sized once, which is
-        // why it says applied rather than sized.
+        // A stated refusal, never a silent clamp: what these rows size is already sized, so
+        // a later write reaches nothing and a quiet one leaves no way to find that out.
         Logger::warn(LogCategory::Core, "%s is applied at startup and cannot change afterwards; ignoring", r.key);
         return false;
     }
@@ -767,8 +690,8 @@ bool Settings::writable(Id id, Type type, Source from) {
 void Settings::published(Id id, Source from, std::string_view origin) {
     Slot& s = slot(id);
     s.src = from;
-    // Through a copy because `bindLive` passes the slot's own `from` back in, and a string
-    // assigned from a view of itself is a self-overlapping copy.
+    // Through a temporary: `bindLive` passes the slot's own `from` back in, and assigning a
+    // string from a view of itself is a self-overlapping copy.
     s.from = std::string(origin);
 
     if (s.live == nullptr) return;
@@ -837,8 +760,6 @@ void Settings::setEngineOwned(Id id, std::string_view value) {
 bool Settings::setFromString(std::string_view key, std::string_view value, Source from, std::string_view origin) {
     const Id id = find(key);
     if (id == Id::None) {
-        // Checked against the removed list first, so someone whose config still carries a
-        // moved key is told where it went rather than that it does not exist.
         const std::string name(key);
         for (const RemovedKey& removed : removedKeys()) {
             if (name == removed.key) {
@@ -876,25 +797,20 @@ bool Settings::setFromString(std::string_view key, std::string_view value, Sourc
 }
 
 void Settings::bindLive(Id id, void* address) {
-    // Refused rather than clamped, unlike a read: answering the first row for an unknown
-    // handle is a wrong value in one place, but binding it would make every later write to
-    // `window.width` go through an address the caller never meant.
+    // Refused rather than clamped, unlike a read: binding the first row would send every
+    // later write to `window.width` through an address the caller never meant.
     if (static_cast<uint16_t>(id) >= rowCount()) {
         Logger::error(LogCategory::Core, "a settings handle names no row; refusing to bind it");
         return;
     }
     Slot& s = slot(id);
     s.live = address;
-    // Push what the table already holds, so binding is what *applies* the config rather
-    // than merely remembering where it should have gone.
+    // Pushes what the table already holds, so binding *applies* the config rather than
+    // merely remembering where it should have gone.
     published(id, s.src, s.from);
 }
 
-// ========================================================================== dump
-
 void Settings::dumpTable(std::FILE* out) const {
-    // Widths from the table rather than from a guess, so adding a long key does not
-    // silently ragged the whole dump.
     size_t keyWidth = 0;
     size_t valueWidth = 0;
     for (uint16_t i = 0; i < rowCount(); ++i) {
@@ -912,9 +828,6 @@ void Settings::dumpTable(std::FILE* out) const {
 }
 
 void Settings::dumpJson(std::FILE* out) const {
-    // Written by hand rather than through rapidjson's writer, for the reason
-    // `writeDefaultConfig` is: this is one flat object of four-member records, and a
-    // dependency on the document model to emit it would be more code, not less.
     const auto quoted = [out](const std::string& s) {
         std::fputc('"', out);
         for (const char c : s) {
@@ -935,8 +848,8 @@ void Settings::dumpJson(std::FILE* out) const {
         std::fputs("  ", out);
         quoted(r.key);
         std::fputs(": {\"value\": ", out);
-        // A bool and a number stay a bool and a number, so a diff of two dumps is a diff
-        // of values rather than of their spellings.
+        // A bool and a number stay unquoted, so a diff of two dumps is a diff of values
+        // rather than of their spellings.
         if (r.type == Type::String) {
             quoted(valueString(id));
         } else {

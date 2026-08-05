@@ -12,9 +12,9 @@ namespace {
 
 constexpr uint8_t kIdentifier[12] = {0xAB, 0x4B, 0x54, 0x58, 0x20, 0x32, 0x30, 0xBB, 0x0D, 0x0A, 0x1A, 0x0A};
 
-/// Everything before the level index, in file order. The KTX2 header is a fixed 80
-/// bytes; reading it as a struct rather than field by field is safe because every
-/// member is a fixed-width little-endian integer and the format guarantees the packing.
+/// Everything before the level index, in file order. Read whole with `memcpy`, which is
+/// safe only while every member stays a fixed-width little-endian integer -- the
+/// static_assert below is what holds the 80-byte packing the format guarantees.
 struct Header {
     uint8_t identifier[12];
     uint32_t vkFormat;
@@ -69,10 +69,9 @@ bool loadKtx2(const std::filesystem::path& path, Ktx2Image& out) {
         return false;
     }
 
-    // The two rejections that keep this a reader rather than a codec. Both are things
-    // `scripts/ktx2.py` is responsible for not producing, so hitting either means the
-    // cache was built by something else -- worth a warning rather than a silent
-    // fallback, because the fallback is a 4x memory regression nobody would notice.
+    // Warned rather than silently fallen back on: `scripts/ktx2.py` produces neither, so
+    // either means the cache was built by something else, and the fallback costs 4x memory
+    // nobody would otherwise notice.
     if (header.supercompressionScheme != 0) {
         core::Logger::warn(core::LogCategory::GLTF, "%s: supercompression scheme %u is not supported; using the source image",
                      path.string().c_str(), header.supercompressionScheme);
@@ -112,9 +111,8 @@ bool loadKtx2(const std::filesystem::path& path, Ktx2Image& out) {
         LevelIndexEntry entry{};
         std::memcpy(&entry, out.bytes.data() + sizeof(Header) + i * sizeof(LevelIndexEntry), sizeof(entry));
 
-        // Every offset is checked against the file rather than trusted. A texture cache
-        // is a file on disk that a build script wrote, and a truncated one should
-        // produce a message rather than a read past the end of a vector.
+        // Checked, not trusted: a truncated cache file would otherwise be read past the
+        // end of `out.bytes`.
         if (entry.byteOffset + entry.byteLength > size) {
             core::Logger::warn(core::LogCategory::GLTF, "%s: level %u runs past the end of the file", path.string().c_str(), i);
             out.bytes.clear();

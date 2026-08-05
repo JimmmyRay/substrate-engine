@@ -10,17 +10,16 @@ namespace core {
 
 namespace {
 
-/// Eight bytes, so a file that is not one of these fails on its first word. The framing
-/// version is a separate field for the reason `SceneData` gives about its own: a magic
-/// that moved with the format would turn "a save this build cannot read" into "not a
-/// save", and those want different messages.
+/// Eight bytes, so a file that is not one of these fails on its first word. It must not
+/// move with the format -- a magic that did would turn "a save this build cannot read" into
+/// "not a save", and those want different messages.
 constexpr char kMagic[8] = {'S', 'B', 'S', 'A', 'V', 'E', '\0', '\0'};
 
 constexpr size_t kNameBytes = 16;
 
 /// magic + framing version + section count.
 constexpr size_t kHeaderBytes = sizeof(kMagic) + sizeof(uint32_t) * 2;
-/// name + version + offset + length, fixed width so the table can be walked without
+/// name + version + offset + length. Fixed width, so the table can be walked without
 /// allocating and without trusting a length inside it.
 constexpr size_t kEntryBytes = kNameBytes + sizeof(uint32_t) + sizeof(uint64_t) * 2;
 
@@ -32,7 +31,6 @@ template <typename T> void append(std::vector<uint8_t>& out, const T& value) {
 
 } // namespace
 
-// ==================================================================== SaveWriter
 
 void SaveWriter::closeSection() {
     if (!open) return;
@@ -44,8 +42,8 @@ void SaveWriter::beginSection(std::string_view name, uint32_t version) {
     closeSection();
 
     Entry e;
-    // One byte reserved for the terminator, so a 15-byte name still round-trips and a
-    // reader can treat the field as a C string.
+    // One byte reserved for the terminator, so a reader may treat the field as a C string.
+    // Filling all 16 makes a 15-byte name run into the next field.
     if (name.size() >= kNameBytes) {
         Logger::warn(LogCategory::Core, "save section '%.*s' is longer than %zu bytes and was truncated",
                      static_cast<int>(name.size()), name.data(), kNameBytes - 1);
@@ -62,8 +60,8 @@ void SaveWriter::u32(uint32_t value) { append(payload, value); }
 void SaveWriter::u64(uint64_t value) { append(payload, value); }
 void SaveWriter::i32(int32_t value) { append(payload, value); }
 void SaveWriter::f32(float value) { append(payload, value); }
-/// One byte, not `sizeof(bool)`. The C++ type's size is implementation-defined and a save
-/// file is not, which is the whole difference between a format and a memory dump.
+/// One byte, never `sizeof(bool)`: that is implementation-defined, and a save file written
+/// by one compiler has to be readable by another.
 void SaveWriter::boolean(bool value) { append(payload, static_cast<uint8_t>(value ? 1 : 0)); }
 void SaveWriter::vec3(const glm::vec3& value) { append(payload, value); }
 void SaveWriter::vec4(const glm::vec4& value) { append(payload, value); }
@@ -90,9 +88,8 @@ bool SaveWriter::write(const std::filesystem::path& path) {
     append(out, kSaveFileVersion);
     append(out, static_cast<uint32_t>(toc.size()));
 
-    // Offsets are rewritten as absolute file positions here rather than kept relative,
-    // because the table's own size depends on how many sections there turned out to be --
-    // which is not known until this point.
+    // Offsets become absolute file positions only here: the table's own size depends on how
+    // many sections there turned out to be, which is not known before this point.
     const uint64_t base = kHeaderBytes + toc.size() * kEntryBytes;
     for (const Entry& e : toc) {
         out.insert(out.end(), std::begin(e.name), std::end(e.name));
@@ -102,12 +99,11 @@ bool SaveWriter::write(const std::filesystem::path& path) {
     }
     out.insert(out.end(), payload.begin(), payload.end());
 
-    // Written beside the save and renamed over it: a save that failed half way through is
-    // worse than one that did not happen, because the player cannot get the old one back.
+    // Written beside the save and renamed over it. Writing in place leaves a save that
+    // failed half way through, and the player cannot get the old one back.
     return writeFileAtomically(path, out.data(), out.size(), LogCategory::Core, "save");
 }
 
-// ==================================================================== SaveReader
 
 void SaveReader::fail(std::string message) {
     good = false;
@@ -180,15 +176,14 @@ bool SaveReader::openBytes(std::vector<uint8_t> bytes) {
         std::memcpy(&length, p + kNameBytes + sizeof(version) + sizeof(offset), sizeof(length));
         p += kEntryBytes;
 
-        // Checked against the file's own length before anything trusts it. A table
-        // claiming a section runs past the end is the shape a truncated save takes, and
-        // the shape a hand-edited one takes too.
+        // Checked against the file's own length before anything trusts it: a table claiming
+        // a section runs past the end is what a truncated or hand-edited save looks like.
         if (offset > data.size() || length > data.size() - offset) {
             failure = "truncated: section '" + std::string(name) + "' runs past the end of the file";
             return false;
         }
-        // The terminator is guaranteed by the writer reserving a byte for it, but a file
-        // is not something to take promises from.
+        // The writer reserves a byte for the terminator, but a file on disk is not bound by
+        // that promise.
         name[kNameBytes - 1] = '\0';
         toc.push_back({std::string(name), version, length});
         offsets.push_back(offset);
@@ -200,8 +195,8 @@ bool SaveReader::section(std::string_view name, uint32_t knownVersion) {
     for (size_t i = 0; i < toc.size(); ++i) {
         if (toc[i].name != name) continue;
         if (toc[i].version > knownVersion) {
-            // Not `fail()`: nothing has been consumed, the reader is still usable for
-            // other sections, and the caller is the one who decides whether this is fatal.
+            // Not `fail()`: nothing has been consumed, so the reader stays usable for other
+            // sections and the caller decides whether this one is fatal.
             failure = "section '" + toc[i].name + "' is version " + std::to_string(toc[i].version) +
                       ", but this build reads up to version " + std::to_string(knownVersion);
             return false;
@@ -276,7 +271,7 @@ glm::mat4 SaveReader::mat4() {
 std::string SaveReader::text() {
     const auto length = static_cast<size_t>(u64());
     if (!good) return {};
-    // Checked against what is left before it is reserved. A corrupt length is how a
+    // Checked against what is left *before* it is reserved: a corrupt length is how a
     // truncated file turns into a multi-gigabyte allocation.
     if (length > static_cast<size_t>(end - cursor)) {
         fail("a string in this save claims to be longer than the section holding it");

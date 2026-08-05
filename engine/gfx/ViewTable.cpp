@@ -7,7 +7,7 @@ namespace gfx {
 namespace {
 
 /// Returned by `at()` for a slot nobody owns, so the device half can walk a range
-/// without every read needing a bounds test of its own.
+/// without a bounds test per read.
 const ViewTable::Entry kDeadEntry{};
 
 } // namespace
@@ -30,19 +30,15 @@ void ViewTable::shutdown() {
 
 ViewId ViewTable::create(ImageTable& images, glm::uvec2 extent) {
     // Slot zero is a real view here, unlike the image table's: there is no fallback view
-    // to reserve it for. What a stale handle resolves to is nothing at all -- `camera`
-    // returns null and `image` an invalid id -- because a view has no harmless default the
-    // way a texture slot has the font atlas.
+    // to reserve it for, so a stale handle resolves to nothing rather than to a default.
     uint32_t s;
     if (!freeSlots.empty()) {
         s = freeSlots.back();
         freeSlots.pop_back();
     } else {
         if (static_cast<uint32_t>(entries.size()) >= slotCapacity) {
-            // A stated limit rather than a silent truncation. The number is `kMaxViews`
-            // less the presenting view, and it is a uniform-block count rather than an
-            // arbitrary cap -- raising it costs one block, light buffer and shadow-matrix
-            // buffer per frame slot.
+            // `kMaxViews` less the presenting view. Raising it costs one uniform block,
+            // light buffer and shadow-matrix buffer per frame slot.
             core::Logger::warn(core::LogCategory::Render, "views().create(): all %u view slots are in use",
                                slotCapacity);
             return {};
@@ -59,14 +55,11 @@ ViewId ViewTable::create(ImageTable& images, glm::uvec2 extent) {
     // Either component zero is "follow the presenting view", so a caller that named one
     // side and left the other gets the follow rule rather than a one-pixel-tall view.
     e.extent = (extent.x != 0 && extent.y != 0) ? extent : glm::uvec2{0, 0};
-    // A reacquired slot must not still be driven by the camera the previous view's owner
-    // installed, which may well have been destroyed with it.
+    // A reacquired slot must not still be driven by the previous owner's camera, which
+    // was very likely destroyed with it.
     e.installed = nullptr;
     e.image = images.adopt("view");
     if (!e.image.valid()) {
-        // The slot goes straight back. A view whose destination cannot be named is a view
-        // that renders where nothing can read it, which is worse than not having one --
-        // and reporting it here means the caller learns at the call it made.
         core::Logger::warn(core::LogCategory::Render, "views().create(): no image slot for the view's destination");
         freeSlots.push_back(s);
         return {};
@@ -84,8 +77,8 @@ void ViewTable::destroy(ViewId id, ImageTable& images) {
     images.destroy(e.image);
     e.image = {};
     e.live = false;
-    // Past the wrap, back to 1 rather than 0: zero is "never issued", and a slot that has
-    // been reused four billion times is still a slot that has been issued.
+    // Past the wrap, back to 1 rather than 0: zero is "never issued", so wrapping to it
+    // would make every stale handle on this slot validate again.
     e.generation = e.generation == 0xFFFFFFFFu ? 1 : e.generation + 1;
     freeSlots.push_back(id.index);
     --liveSlots;
@@ -116,9 +109,8 @@ void ViewTable::resize(ViewId id, glm::uvec2 extent) {
     if (!valid(id)) return;
     Entry& e = entries[id.index];
     const glm::uvec2 want = (extent.x != 0 && extent.y != 0) ? extent : glm::uvec2{0, 0};
-    // Only when it moved. The revision is what makes the renderer wait on the device and
-    // rebuild a target set, so a game assigning the same size every frame would otherwise
-    // pay that every frame.
+    // Only when it moved: the revision makes the renderer wait on the device and rebuild a
+    // target set, so a game assigning the same size every frame would pay that every frame.
     if (want == e.extent) return;
     e.extent = want;
     ++rev;

@@ -12,7 +12,7 @@ using namespace core;
 
 /**
  * @file tests/SaveFileTests.cpp
- * @brief The save stream: what round-trips, and what it refuses (C6).
+ * @brief The save stream: what round-trips, and what it refuses.
  *
  * A save file is read on a machine and a build that are not the ones that wrote it. That
  * is the entire difficulty, and it is why the refusals below outnumber the round trips: a

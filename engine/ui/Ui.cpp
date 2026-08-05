@@ -10,10 +10,8 @@ namespace ui {
 
 namespace {
 
-/// Everything after `##` identifies the widget and is not drawn. Two rows that both say
-/// "Reset" are otherwise one widget, because the caption *is* the identity -- see
-/// `Context::makeId`. This is the escape hatch for that, and it is the same convention
-/// every immediate-mode UI settled on for the same reason.
+/// Everything after `##` identifies the widget and is not drawn. Without it two rows that both
+/// say "Reset" are one widget, because the caption *is* the identity -- see `Context::makeId`.
 std::string displayText(const std::string& label) {
     const size_t cut = label.find("##");
     return cut == std::string::npos ? label : label.substr(0, cut);
@@ -48,9 +46,8 @@ void appendText(std::vector<DrawVertex>& out, const FontMetrics& font, float x, 
     for (char c : value) {
         const Glyph* g = font.glyph(c);
         if (g == nullptr) continue;
-        // A zero-area glyph -- the space, in every font -- would emit six degenerate
-        // vertices the rasteriser then discards. Skipping is cheaper and the advance
-        // still applies.
+        // A zero-area glyph -- the space, in every font -- emits six degenerate vertices the
+        // rasteriser then discards. The advance still applies.
         if (g->x1 > g->x0 && g->y1 > g->y0) {
             const float x0 = x + g->x0;
             const float y0 = baselineY + g->y0;
@@ -67,8 +64,6 @@ void appendText(std::vector<DrawVertex>& out, const FontMetrics& font, float x, 
     }
 }
 
-// ============================================================== DrawList (S6.1)
-
 void DrawList::reset(const glm::vec4& fullClip) {
     verts.clear();
     cmds.clear();
@@ -78,9 +73,8 @@ void DrawList::reset(const glm::vec4& fullClip) {
 
 void DrawList::breakCommand() {
     if (!cmds.empty() && cmds.back().vertexCount == 0) {
-        // The trailing command has nothing in it yet, so retarget it rather than leaving
-        // a zero-vertex draw behind. Two pushes in a row are the ordinary way this
-        // happens -- a panel that opens a list before drawing anything itself.
+        // Retargeted rather than appended, or two clips pushed in a row -- a panel opening a
+        // list before drawing anything itself -- leave a zero-vertex draw behind.
         cmds.back().firstVertex = static_cast<uint32_t>(verts.size());
         cmds.back().clip = clipStack.back();
         return;
@@ -94,8 +88,6 @@ void DrawList::finish() {
 
 void DrawList::pushClip(const glm::vec4& rect) {
     const glm::vec4& top = clipStack.back();
-    // Intersected, never replaced: a clip can only shrink, so no widget can escape the
-    // panel containing it by asking for a bigger rectangle.
     clipStack.push_back({std::max(rect.x, top.x), std::max(rect.y, top.y), std::min(rect.z, top.z),
                          std::min(rect.w, top.w)});
     breakCommand();
@@ -119,21 +111,15 @@ void DrawList::quad(float x0, float y0, float x1, float y1, float u0, float v0, 
 
 void DrawList::rect(const glm::vec4& r, uint32_t rgba) {
     if (r.z <= r.x || r.w <= r.y) return;
-    // Both texcoords are the solid block's centre, so the whole quad samples coverage 1
-    // and comes out as the vertex colour. That is the whole of "rect drawing" -- see
-    // FontMetrics.h for why it is not a second pipeline.
+    // Both texcoords are the solid block's centre, so the quad samples coverage 1 throughout
+    // and comes out as the vertex colour.
     quad(r.x, r.y, r.z, r.w, whiteU, whiteV, whiteU, whiteV, rgba);
 }
 
 void DrawList::image(const glm::vec4& r, uint32_t texture, uint32_t rgba) {
     if (r.z <= r.x || r.w <= r.y) return;
-    // The whole image, top-left to bottom-right. A source rectangle would be the next
-    // thing to want -- an icon sheet is one image and many glyphs of it -- and it is
-    // deliberately not here: nothing in the tree has two icons yet, and a `uv` overload
-    // added at the first caller is cheaper than a parameter every caller passes 0..1 to.
-    //
-    // No command break. The texture index rides on the vertex, so a panel that mixes
-    // text and images is still one draw per clip rectangle rather than one per switch.
+    // No command break: the texture index rides on the vertex, so a panel mixing text and
+    // images is still one draw per clip rectangle rather than one per switch.
     quad(r.x, r.y, r.z, r.w, 0.0f, 0.0f, 1.0f, 1.0f, rgba, texture);
 }
 
@@ -152,17 +138,14 @@ void DrawList::text(const FontMetrics& font, float x, float baselineY, const std
     cmds.back().vertexCount += static_cast<uint32_t>(verts.size() - before);
 }
 
-// =============================================================== Context (S6.2)
-
 void Context::begin(const InputState& in, float width, float height, const FontMetrics& fontMetrics, float scale) {
     input = in;
     font = &fontMetrics;
     screen = {width, height};
     dpiScale = scale > 0.0f ? scale : 1.0f;
 
-    // The one place resolution independence happens (S6.5). Every widget below reads
-    // `metrics`, never `theme`, so there is no second place a pixel count could be
-    // written that forgot to scale.
+    // Every widget below must read `metrics`, never `theme`: a distance taken from `theme` is
+    // one that never got the DPI scale, and it looks right at 100%.
     metrics = theme;
     metrics.padding *= dpiScale;
     metrics.spacing *= dpiScale;
@@ -192,13 +175,12 @@ void Context::begin(const InputState& in, float width, float height, const FontM
 void Context::end() {
     applyFocusChange();
 
-    // After every widget has had its chance to observe the release. Clearing it in
-    // `begin` instead would mean a button released between two frames never saw the edge
-    // that fires it.
+    // After every widget has observed the release. Clear it in `begin` instead and a button
+    // released between two frames never sees the edge that fires it.
     if (!input.mouseDown) active = kNoId;
 
-    // A click that landed on no widget at all drops focus, which is what makes clicking
-    // the background -- or the gap between two rows -- dismiss a text field.
+    // A click on no widget drops focus, which is what makes clicking the background -- or the
+    // gap between two rows -- commit and dismiss a text field.
     if (input.mousePressed && hot == kNoId) {
         focus = kNoId;
         focusIsText = false;
@@ -214,9 +196,7 @@ void Context::end() {
 }
 
 Id Context::makeId(const std::string& label) const {
-    // FNV-1a, seeded with the enclosing frame's id so the same caption in two panels is
-    // two widgets -- and the same caption in the same panel is the same widget between
-    // frames, which is the entire reason focus and drag survive at all.
+    // FNV-1a, seeded with the enclosing frame's id.
     uint32_t h = 2166136261u ^ frames.back().id;
     for (char c : label) {
         h ^= static_cast<uint32_t>(static_cast<unsigned char>(c));
@@ -231,9 +211,8 @@ Context::PanelState& Context::panelState(Id id) {
     for (PanelState& s : panels) {
         if (s.id == id) return s;
     }
-    // Linear, and it stays linear: this holds one entry per panel and per scrolling list
-    // that has ever been opened, which is single digits in every caller there is or is
-    // likely to be. A map would be a container to maintain for a scan of four elements.
+    // Linear over one entry per panel and per scrolling list ever opened -- single digits in
+    // every caller so far, and the scan it looks like for one that opens hundreds.
     panels.push_back({id, 0.0f, 0.0f});
     return panels.back();
 }
@@ -244,9 +223,8 @@ bool Context::behave(Id id, const glm::vec4& r, bool& pressed, bool& released) {
 
     focusOrder.push_back({id, false});
 
-    // Clipped out entirely -- scrolled past the end of a list -- means not interactive.
-    // Testing the rectangle alone would let a row that is off screen answer a click that
-    // landed on whatever is drawn over it.
+    // Clipped out entirely -- scrolled past the end of a list -- means not interactive. Test
+    // the rectangle alone and an off-screen row answers a click that landed on what covers it.
     const glm::vec4& clip = drawList.clip();
     const bool visible = overlaps(r, clip);
     const bool over = visible && hitTest(r) && contains(clip, input.mouse);
@@ -276,8 +254,8 @@ uint32_t Context::stateColor(Id id, bool hovered) const {
 
 void Context::drawCaption(const glm::vec4& r, const std::string& value, uint32_t rgba) {
     if (font == nullptr) return;
-    // Vertically centred on the row rather than sat on its top edge: a caption and a
-    // checkbox in the same row have different heights and both have to look placed.
+    // Vertically centred on the row: a caption and a checkbox in one row have different heights
+    // and both must look placed.
     const float baseline = r.y + (r.w - r.y - font->lineHeight()) * 0.5f + font->ascent();
     drawList.text(*font, r.x + metrics.padding, baseline, value, rgba);
 }
@@ -310,7 +288,6 @@ void Context::applyFocusChange() {
     focusStep = 0;
 }
 
-// ---------------------------------------------------------------- panels (S6.2)
 
 bool Context::beginPanel(const std::string& title, const glm::vec2& pos, const glm::vec2& size) {
     const Id id = makeId(title);
@@ -318,9 +295,8 @@ bool Context::beginPanel(const std::string& title, const glm::vec2& pos, const g
 
     const glm::vec4 outer{pos.x, pos.y, pos.x + size.x, pos.y + size.y};
     const bool hovered = hitTest(outer);
-    // The pointer being over a panel is what "the UI wants the mouse" means, and it is
-    // decided here rather than by each widget: the gaps between widgets are still the
-    // panel, and a drag that starts on one and crosses a gap must not reach the camera.
+    // Decided from the whole panel rather than per widget: the gaps between widgets are still
+    // the panel, and a drag crossing one must not reach the camera.
     if (hovered) pointerCaptured = true;
 
     drawList.rect(outer, metrics.panelBackground);
@@ -341,10 +317,8 @@ bool Context::beginPanel(const std::string& title, const glm::vec2& pos, const g
     const float viewHeight = std::max(viewBottom - viewTop, 0.0f);
     float contentRight = outer.z - metrics.padding;
 
-    // Sized from what *last* frame measured. An immediate-mode scrollbar cannot know its
-    // extent before the content it is scrolling has been laid out, and the content is
-    // laid out after the bar is drawn. One frame of lag on a scrollbar's proportions is
-    // invisible; the alternative is laying the panel out twice.
+    // Sized from what *last* frame measured; the content is laid out after the bar is drawn.
+    // Removing the lag means laying the panel out twice.
     const bool scrolls = state.contentHeight > viewHeight + 0.5f;
     if (scrolls) {
         contentRight -= metrics.scrollWidth + metrics.padding;
@@ -389,7 +363,6 @@ void Context::endPanel() {
     drawList.popClip();
 }
 
-// ---------------------------------------------------------------- layout (S6.2)
 
 void Context::beginRow(uint32_t columns) {
     Frame row = frames.back();
@@ -404,8 +377,8 @@ void Context::endRow() {
     const Frame row = frames.back();
     frames.pop_back();
     float y = row.cursor.y;
-    // A row left part-filled still occupies its height. Without this a `beginRow(3)` with
-    // two widgets in it would have the next thing drawn on top of them.
+    // A row left part-filled still occupies its height. Drop this and a `beginRow(3)` holding
+    // two widgets has the next thing drawn on top of them.
     if (row.column != 0) y += row.rowHeight + metrics.spacing;
     frames.back().cursor.y = y;
 }
@@ -422,18 +395,15 @@ void Context::separator() {
 }
 
 void Context::image(gfx::ImageId id, float height, float aspect, uint32_t rgba) {
-    // The one place a handle becomes a slot, so it is the one place a destroyed or
-    // never-issued one is caught. `slot()` answers the fallback for both, which draws the
-    // font atlas -- the same degradation an out-of-range index has always had here.
+    // The one place a handle becomes a slot, so the one place a destroyed or never-issued one
+    // is caught; `slot()` answers the fallback, which draws the font atlas.
     const uint32_t texture = imageTable != nullptr ? imageTable->slot(id) : gfx::ImageTable::kFallbackSlot;
 
     const float h = height > 0.0f ? height * dpiScale : metrics.rowHeight;
     const glm::vec4 row = allocate(h);
 
-    // The row decides the height and the container decides the maximum width, which is
-    // the rule every other widget here follows. An aspect wider than the container is
-    // clamped rather than overflowing: a panel that clipped its own logo would look like
-    // a layout bug in the panel rather than a number the caller chose.
+    // An aspect wider than the container is clamped, never allowed to overflow: a panel
+    // clipping its own logo reads as a layout bug rather than as a number the caller chose.
     const float full = row.z - row.x;
     const float width = aspect > 0.0f ? std::min(h * aspect, full) : full;
     drawList.image({row.x, row.y, row.x + width, row.w}, texture, rgba);
@@ -465,7 +435,6 @@ glm::vec4 Context::allocate(float height) {
     return r;
 }
 
-// --------------------------------------------------------------- widgets (S6.3)
 
 void Context::label(const std::string& value) { drawCaption(allocate(), displayText(value), metrics.text); }
 
@@ -495,7 +464,6 @@ bool Context::button(const std::string& caption) {
         drawList.text(*font, r.x + (r.z - r.x - font->measure(shown)) * 0.5f, baseline, shown, metrics.text);
     }
 
-    // The keyboard fires it too, which is what makes Tab traversal worth having.
     if (focus == id && input.enter) return true;
     return released;
 }
@@ -539,14 +507,13 @@ bool Context::slider(const std::string& caption, float& value, float min, float 
     const float span = max - min;
     const float before = value;
     if (active == id && span != 0.0f) {
-        // Read from the pointer's absolute position rather than accumulated from its
-        // delta: a drag that leaves the track and comes back has to land where the
-        // pointer is, not where the sum of the deltas got to.
+        // Absolute pointer position, never accumulated deltas: a drag that leaves the track
+        // and comes back must land where the pointer is, not where the sum got to.
         const float t = clampf((input.mouse.x - r.x) / std::max(r.z - r.x, 1.0f), 0.0f, 1.0f);
         value = min + t * span;
     }
-    // The keyboard moves it in twentieths, which is a step somebody can actually aim
-    // with; a slider that only responded to a drag would be unreachable by Tab.
+    // Twentieths -- a step somebody can aim with, and the only way a slider reached by Tab
+    // can be moved at all.
     if (focus == id && span != 0.0f) {
         if (input.up) value = clampf(value + span * 0.05f, min, max);
         if (input.down) value = clampf(value - span * 0.05f, min, max);
@@ -571,9 +538,6 @@ bool Context::slider(const std::string& caption, float& value, float min, float 
 }
 
 bool Context::sliderInt(const std::string& caption, int& value, int min, int max) {
-    // A wrapper rather than a second widget: the visual, the hit test and the drag are
-    // the same thing at a different rounding, and two copies of a drag would be two
-    // places to get the absolute-versus-relative decision above wrong.
     float asFloat = static_cast<float>(value);
     const int before = value;
     slider(caption, asFloat, static_cast<float>(min), static_cast<float>(max));
@@ -587,9 +551,8 @@ bool Context::textField(const std::string& caption, std::string& value) {
     bool pressed = false;
     bool released = false;
     const bool over = behave(id, r, pressed, released);
-    // behave() records every widget as non-text; a field has to correct that, because
-    // Tab traversal decides `focusIsText` from this list rather than from the widget it
-    // is about to land on.
+    // `behave` records every widget as non-text and a field must correct it here: Tab
+    // traversal reads `focusIsText` off this list, not off the widget it is about to reach.
     if (!focusOrder.empty()) focusOrder.back().isText = true;
 
     if (pressed) focusIsText = true;
@@ -600,8 +563,8 @@ bool Context::textField(const std::string& caption, std::string& value) {
     if (focused && text != nullptr) {
         focusIsText = true;
         if (textEditing != id) {
-            // The transition, taken exactly once. Seeding on every focused frame would
-            // overwrite what the user had just typed.
+            // Taken exactly once. Seed on every focused frame instead and each one overwrites
+            // what the user just typed.
             textEditing = id;
             textSeed = value;
             text->setActive(true);
@@ -618,9 +581,8 @@ bool Context::textField(const std::string& caption, std::string& value) {
         } else {
             const bool submitted = text->takeSubmitted();
             if (text->text() != value) {
-                // Write-through rather than commit-on-Enter: an inspector that only
-                // applied a value when the user remembered to press Return is one where
-                // half the edits silently do nothing.
+                // Write-through, not commit-on-Enter: gate it on Return and half the edits an
+                // inspector makes silently do nothing.
                 value = text->text();
                 changed = true;
             }
@@ -632,8 +594,7 @@ bool Context::textField(const std::string& caption, std::string& value) {
             }
         }
     } else if (textEditing == id) {
-        // Focus left without Enter or Escape -- a click elsewhere. That commits, which is
-        // what every text field outside a dialog box does.
+        // Focus left without Enter or Escape -- a click elsewhere. That commits.
         if (text != nullptr) {
             if (text->text() != value) {
                 value = text->text();
@@ -654,17 +615,15 @@ bool Context::textField(const std::string& caption, std::string& value) {
         const float baseline = r.y + (r.w - r.y - font->lineHeight()) * 0.5f + font->ascent();
         drawList.text(*font, r.x + metrics.padding, baseline, displayText(caption), metrics.text);
 
-        // Clipped to the box, so a string longer than the field does not run across the
-        // panel. The scroll keeps the caret in view, which is the only reason a field
-        // that cannot fit its own contents is usable at all.
+        // Clipped to the box, or a string longer than the field runs across the panel. The
+        // scroll below is what keeps the caret inside that clip.
         drawList.pushClip({box.x + metrics.border, box.y, box.z - metrics.border, box.w});
         const float inner = box.z - box.x - 2.0f * metrics.padding;
         const float caretX = focused && text != nullptr ? font->measurePrefix(value, text->cursor()) : 0.0f;
         const float shift = std::max(0.0f, caretX - inner);
         drawList.text(*font, box.x + metrics.padding - shift, baseline, value, metrics.text);
 
-        // Half a second on, half a second off. A caret that did not blink is one nobody
-        // finds in a panel of six fields.
+        // Half a second on, half a second off.
         if (focused && std::fmod(caretBlink, 1.0f) < 0.5f) {
             const float x = box.x + metrics.padding - shift + caretX;
             drawList.rect({x, box.y + metrics.border * 2.0f, x + metrics.border, box.w - metrics.border * 2.0f},
@@ -715,9 +674,6 @@ bool Context::list(const std::string& caption, const std::vector<std::string>& i
 
     const uint32_t before = selected;
 
-    // Up and Down move the selection when the list has the keyboard, and the view follows
-    // it. A list that could be tabbed to and then not navigated would be a list that
-    // needs a mouse, which is the thing S6.4 exists to stop being true.
     if (focus == id && !items.empty()) {
         if (input.down && selected + 1 < items.size()) ++selected;
         if (input.up && selected > 0) --selected;
@@ -728,8 +684,8 @@ bool Context::list(const std::string& caption, const std::vector<std::string>& i
     for (size_t i = 0; i < items.size(); ++i) {
         const float top = r.y + metrics.border + static_cast<float>(i) * rowHeight - state.scroll;
         const glm::vec4 row{r.x + metrics.border, top, right, top + rowHeight};
-        // Cheap reject before the hit test and the six vertices. A list of a thousand
-        // rows draws the twenty that are visible.
+        // Cheap reject before the hit test and the six vertices: a thousand-row list draws the
+        // twenty that are visible.
         if (row.w < r.y || row.y > r.w) continue;
 
         const bool rowOver = hitTest(row) && contains(drawList.clip(), input.mouse);
@@ -758,8 +714,7 @@ bool Context::list(const std::string& caption, const std::vector<std::string>& i
         drawList.rect({track.x, top, track.z, top + thumbHeight}, metrics.scrollThumb);
     }
 
-    // Keep the selection in view after a keyboard move, which is the other half of being
-    // navigable without a mouse.
+    // Scrolls to the selection after a keyboard move, so Up and Down cannot walk it off screen.
     if (focus == id && selected < items.size()) {
         const float top = static_cast<float>(selected) * rowHeight;
         if (top < state.scroll) state.scroll = top;

@@ -17,9 +17,8 @@ uint32_t mipLevelsFor(VkExtent2D extent) {
 }
 
 void setObjectName(const VulkanContext& ctx, uint64_t handle, VkObjectType type, const char* name) {
-    // Null whenever VK_EXT_debug_utils did not make it onto the instance -- volk leaves
-    // the pointer unresolved -- which is what lets every caller pass a name
-    // unconditionally.
+    // volk leaves the pointer unresolved when VK_EXT_debug_utils is not on the instance,
+    // which is what lets every caller pass a name unconditionally.
     if (name == nullptr || vkSetDebugUtilsObjectNameEXT == nullptr) return;
 
     VkDebugUtilsObjectNameInfoEXT info{VK_STRUCTURE_TYPE_DEBUG_UTILS_OBJECT_NAME_INFO_EXT};
@@ -161,9 +160,7 @@ VkImageView createLayerView(const VulkanContext& ctx, const GpuImage& img, uint3
                             VkImageAspectFlags aspect) {
     VkImageViewCreateInfo info{VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO};
     info.image = img.image;
-    // 2D, not 2D_ARRAY: a single-layer view is what vkCmdBeginRendering wants as a
-    // colour or depth attachment, and rendering to one cascade at a time keeps the
-    // shadow pass a plain loop with no geometry shader or multiview.
+    // 2D, not 2D_ARRAY: a rendering attachment must be a single-layer view.
     info.viewType = VK_IMAGE_VIEW_TYPE_2D;
     info.format = img.format;
     info.subresourceRange.aspectMask = aspect;
@@ -209,8 +206,8 @@ void transitionImage(VkCommandBuffer cmd, VkImage image, VkImageLayout oldLayout
 void bufferBarrier(VkCommandBuffer cmd, std::initializer_list<VkBuffer> buffers, VkPipelineStageFlags2 srcStage,
                    VkAccessFlags2 srcAccess, VkPipelineStageFlags2 dstStage, VkAccessFlags2 dstAccess,
                    VkDeviceSize offset, VkDeviceSize size) {
-    // Aborts rather than clamping. A barrier that covered four of five buffers would
-    // still validate, still run, and be wrong only under load on someone else's driver.
+    // Aborts rather than clamping: a barrier covering four of five buffers still
+    // validates, still runs, and is wrong only under load on someone else's driver.
     if (buffers.size() > kMaxBufferBarriers) {
         core::Logger::critical(core::LogCategory::Render, "bufferBarrier: %zu buffers, limit is %zu", buffers.size(),
                                kMaxBufferBarriers);
@@ -238,8 +235,6 @@ void bufferBarrier(VkCommandBuffer cmd, std::initializer_list<VkBuffer> buffers,
     vkCmdPipelineBarrier2(cmd, &dep);
 }
 
-// ==================================================================== Uploader
-
 void Uploader::init(const VulkanContext& ctx) {
     VkCommandPoolCreateInfo poolInfo{VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO};
     poolInfo.flags = VK_COMMAND_POOL_CREATE_RESET_COMMAND_BUFFER_BIT;
@@ -255,7 +250,6 @@ void Uploader::init(const VulkanContext& ctx) {
     VkFenceCreateInfo fenceInfo{VK_STRUCTURE_TYPE_FENCE_CREATE_INFO};
     vkCheck(vkCreateFence(ctx.device, &fenceInfo, nullptr, &fence), "vkCreateFence(upload)");
 
-    // ---------------------------------------------------------- transfer (4.6b)
     poolInfo.queueFamilyIndex = ctx.transferFamily;
     vkCheck(vkCreateCommandPool(ctx.device, &poolInfo, nullptr, &transferPool), "vkCreateCommandPool(transfer)");
     cbInfo.commandPool = transferPool;
@@ -266,11 +260,9 @@ void Uploader::init(const VulkanContext& ctx) {
 }
 
 void Uploader::shutdown(const VulkanContext& ctx) {
-    // A batch left in flight -- `endBatchAsync` submitted and nothing ever called
-    // `reclaimBatch` -- owns staging buffers and a fence with work outstanding. Waiting and
-    // reclaiming here is what makes the async half of the API safe to walk away from; the
-    // blocking `endBatch` pair already leaves nothing behind, so this is a no-op for every
-    // caller in the tree today and a trap disarmed for the first one that is not.
+    // An `endBatchAsync` nobody reclaimed still owns staging buffers and a fence with work
+    // outstanding; destroying them below without this wait frees memory the device is
+    // reading.
     if (batchInFlight) {
         vkCheck(vkWaitForFences(ctx.device, 1, &fence, VK_TRUE, UINT64_MAX), "vkWaitForFences(transfer, shutdown)");
         reclaimBatch(ctx);
@@ -298,9 +290,8 @@ void Uploader::begin(const VulkanContext& ctx) {
 }
 
 void Uploader::submitAndWait(const VulkanContext& ctx) {
-    // The batch submit *and* the fence wait, which is the point: this is where the CPU
-    // stops during a load, and the two halves are one zone because a caller cannot act on
-    // the split -- there is nothing else for this thread to do either way.
+    // The zone covers the submit *and* the fence wait: this is where the CPU stops during
+    // a load, and splitting them would attribute the stall to neither.
     auto zone = core::Profiler::scope("Uploader::submitAndWait");
     vkCheck(vkEndCommandBuffer(cmd), "vkEndCommandBuffer(upload)");
 
@@ -358,15 +349,10 @@ void Uploader::uploadImageWithMips(const VulkanContext& ctx, GpuImage& dst, cons
 }
 
 void Uploader::beginBatch(const VulkanContext& ctx) {
-    // **Both buffers, because which queue an upload belongs on is not known until it
-    // arrives.** A plain copy runs on the DMA engine; generating a mip chain is
-    // `vkCmdBlitImage`, which a transfer-only family cannot record at all. So
-    // `addImageWithMips` records onto the graphics buffer this begins and the acquire
-    // submit at the end carries it.
-    //
-    // A command buffer may only be submitted to a queue of the family its *pool* was
-    // created for, so routing the transfer buffer to the graphics queue is not an option
-    // however much the work in it needs one. That is what this used to do.
+    // Both buffers are begun, because a command buffer may only be submitted to a queue of
+    // the family its *pool* was created for: `addImageWithMips` needs `vkCmdBlitImage`,
+    // which a transfer-only family cannot record, so it goes on the graphics buffer and no
+    // amount of routing can send the transfer one to the graphics queue instead.
     begin(ctx); // the graphics buffer, and the fence both submits share
 
     vkCheck(vkResetCommandBuffer(transferCmd, 0), "vkResetCommandBuffer(transfer)");
@@ -398,14 +384,11 @@ void Uploader::submitBatch(const VulkanContext& ctx) {
 
     vkCheck(vkQueueSubmit2(ctx.transferQueue, 1, &transferSubmit, VK_NULL_HANDLE), "vkQueueSubmit2(transfer)");
 
-    // The graphics half, always -- already begun by `beginBatch`, and holding whatever
-    // `addImageWithMips` put there. Across families the barriers below complete the
-    // ownership transfer,
-    // with src/dst indices mirroring the release exactly -- the layouts must match too,
-    // because these are one barrier recorded twice on two queues, and a mismatch is
-    // undefined behaviour rather than an error. Within one family the indices are
-    // IGNORED and what is left is the plain visibility barrier the transfer queue could
-    // not record, which is why this runs either way.
+    // The graphics half runs either way: across families these barriers are the acquire,
+    // and their family indices *and* layouts must mirror `releaseToGraphics` exactly --
+    // one barrier recorded twice on two queues, where a mismatch is undefined behaviour
+    // rather than a validation error. Within one family what is left is the visibility
+    // barrier the transfer queue could not record.
     const bool crossFamily = ctx.transferFamily != ctx.graphicsFamily;
     std::vector<VkImageMemoryBarrier2> acquires;
     acquires.reserve(batchImages.size());
@@ -453,20 +436,12 @@ void Uploader::addImageWithMips(const VulkanContext& ctx, GpuImage& dst, const v
                                          VMA_ALLOCATION_CREATE_MAPPED_BIT);
     std::memcpy(staging.mapped, pixels, size);
 
-    // **Onto the graphics buffer, not the batch's.** Generating the mip chain means
-    // `vkCmdBlitImage`, which a transfer-only queue cannot record, and neither can it
-    // record the barrier to the fragment stage that follows. During a batch `cmd` is the
-    // transfer buffer and `transferCmd` is the graphics one, so the swap is how
-    // `recordImageWithMips` reaches the right one.
+    // Onto the graphics buffer, not the batch's: during a batch `cmd` is the transfer
+    // buffer, and a transfer-only queue can record neither `vkCmdBlitImage` nor the
+    // fragment-stage barrier that follows it. Hence the swap around the record.
     //
-    // That is not a limitation so much as the other half of 4.6a's argument: a texture
-    // whose mips were built offline uploads as pure copies and can therefore stream on
-    // the DMA engine, while one that needs its chain generated cannot. Compression and
-    // streaming are the same decision seen twice.
-    //
-    // **Deliberately not in `batchImages`.** That list drives the acquire barriers, and
-    // an acquire naming the transfer family as its source would be claiming a release
-    // that never happened -- this image never touched the transfer queue.
+    // Not pushed to `batchImages`: that list drives the acquire barriers, and an acquire
+    // naming the transfer family would claim a release this image never made.
     if (batching) std::swap(cmd, transferCmd);
     recordImageWithMips(dst, staging.buffer);
     if (batching) std::swap(cmd, transferCmd);
@@ -522,10 +497,9 @@ void Uploader::endImmediate(const VulkanContext& ctx) { submitAndWait(ctx); }
 void Uploader::releaseToGraphics(const VulkanContext& ctx, const GpuImage& dst) {
     if (ctx.transferFamily == ctx.graphicsFamily) return;
 
-    // The release half of the ownership transfer. dstStageMask is NONE and
-    // dstAccessMask 0 by rule: the receiving queue's *acquire* barrier is what makes
-    // the data visible, and naming a destination stage here that the transfer queue
-    // does not support would be invalid.
+    // dstStageMask NONE and dstAccessMask 0 by rule: the acquire is what makes the data
+    // visible, and naming a destination stage the transfer queue does not support here is
+    // invalid.
     VkImageMemoryBarrier2 barrier{VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER_2};
     barrier.srcStageMask = VK_PIPELINE_STAGE_2_ALL_TRANSFER_BIT;
     barrier.srcAccessMask = VK_ACCESS_2_TRANSFER_WRITE_BIT;
@@ -551,17 +525,15 @@ void Uploader::recordImageLevels(GpuImage& dst, VkBuffer staging,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0, VK_PIPELINE_STAGE_2_COPY_BIT,
                     VK_ACCESS_2_TRANSFER_WRITE_BIT);
 
-    // One copy per level, all independent -- no barriers between them, unlike the blit
-    // chain, because no level is another's source.
     std::vector<VkBufferImageCopy> regions;
     regions.reserve(levels.size());
     for (uint32_t level = 0; level < levels.size() && level < dst.mipLevels; ++level) {
         VkBufferImageCopy region{};
         region.bufferOffset = levels[level].first;
         region.imageSubresource = {VK_IMAGE_ASPECT_COLOR_BIT, level, 0, 1};
-        // The extent is in *texels*, not blocks, even for a compressed format. Vulkan
-        // does the block arithmetic; passing block counts here would upload a quarter of
-        // each level and read past the end of the staging buffer for the rest.
+        // Texels, not blocks, even for a compressed format -- Vulkan does the block
+        // arithmetic. Block counts here upload a quarter of each level and read past the
+        // end of the staging buffer for the rest.
         region.imageExtent = {std::max(1u, dst.extent.width >> level), std::max(1u, dst.extent.height >> level), 1};
         regions.push_back(region);
     }
@@ -570,23 +542,18 @@ void Uploader::recordImageLevels(GpuImage& dst, VkBuffer staging,
                                static_cast<uint32_t>(regions.size()), regions.data());
     }
 
-    // dstStage NONE, not FRAGMENT_SHADER: this may be recorded on a transfer-only
-    // queue, where naming a graphics stage is invalid. What makes the write visible to
-    // the fragment stage is the acquire barrier submitBatch() records on the graphics
-    // queue -- which it does whether or not the families differ, precisely so this
-    // barrier does not have to know.
+    // dstStage NONE, not FRAGMENT_SHADER: this may be recorded on a transfer-only queue,
+    // where naming a graphics stage is invalid. `submitBatch`'s acquire barrier is what
+    // makes the write visible to the fragment stage.
     transitionImage(cmd, dst.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
                     VK_PIPELINE_STAGE_2_COPY_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT, VK_PIPELINE_STAGE_2_NONE, 0);
 }
 
 void Uploader::recordImageWithMips(GpuImage& dst, VkBuffer staging) {
-    // COPY *and* BLIT, and the second half is not decoration: this transition covers
-    // every level, and only level 0 is written by the copy below -- levels 1..n-1 are
-    // first written by `vkCmdBlitImage`, which is the BLIT stage. Granting COPY alone
-    // leaves every blit destination unsynchronised against the layout transition that
-    // made it writable. Sync validation reports it as WRITE_AFTER_WRITE with
-    // `write_barriers: SYNC_COPY_TRANSFER_WRITE`, which is the barrier saying in as many
-    // words that it covered the wrong stage.
+    // COPY *and* BLIT: this covers every level, but only level 0 is written by the copy
+    // below -- the rest are first written by `vkCmdBlitImage`. COPY alone leaves every
+    // blit destination unsynchronised against the transition that made it writable, which
+    // sync validation reports as WRITE_AFTER_WRITE with `SYNC_COPY_TRANSFER_WRITE`.
     transitionImage(cmd, dst.image, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
                     VK_PIPELINE_STAGE_2_TOP_OF_PIPE_BIT, 0,
                     VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT);
@@ -597,15 +564,15 @@ void Uploader::recordImageWithMips(GpuImage& dst, VkBuffer staging) {
     region.imageExtent = {dst.extent.width, dst.extent.height, 1};
     vkCmdCopyBufferToImage(cmd, staging, dst.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
 
-    // Successive halving blits. Each level must be read-ready before it is the source
-    // for the next, so the barriers walk down the chain one level at a time.
+    // Each level must be read-ready before it is the next one's source, so the barriers
+    // walk down the chain one level at a time rather than covering the range at once.
     int32_t mipWidth = static_cast<int32_t>(dst.extent.width);
     int32_t mipHeight = static_cast<int32_t>(dst.extent.height);
 
     for (uint32_t level = 1; level < dst.mipLevels; ++level) {
-        // Same correction on the source side. Level 0 arrived by copy, but every level
-        // after it arrived by blit, so the wait has to name both stages -- otherwise
-        // this barrier waits on a copy that, from level two down, never happened.
+        // Both stages on the source side too: level 0 arrived by copy and every level
+        // after it by blit, so naming COPY alone waits, from level two down, on something
+        // that never happened.
         transitionImage(cmd, dst.image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
                         VK_PIPELINE_STAGE_2_COPY_BIT | VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_WRITE_BIT,
                         VK_PIPELINE_STAGE_2_BLIT_BIT, VK_ACCESS_2_TRANSFER_READ_BIT, VK_IMAGE_ASPECT_COLOR_BIT,

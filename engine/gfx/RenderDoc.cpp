@@ -22,15 +22,10 @@ bool renderDocAttach(const std::filesystem::path& pathTemplate) {
     if (attachAttempted) return api != nullptr;
     attachAttempted = true;
 
-    // RTLD_NOLOAD is the load-bearing flag. It returns a handle only if the library is
-    // *already* in the process -- which it is exactly when the implicit capture layer
-    // was activated -- so this is a detection rather than a second, unhooked copy of
-    // RenderDoc loaded behind the Vulkan loader's back.
-    //
-    // GetModuleHandle is the faithful translation and not an approximation: it looks up an
-    // already-loaded module and never loads one, which is exactly the property the comment
-    // above depends on. LoadLibrary would be the wrong call for the same reason a plain
-    // dlopen would be.
+    // RTLD_NOLOAD, and GetModuleHandle rather than LoadLibrary, are load-bearing: both
+    // return a handle only for a module *already* in the process. A plain dlopen or
+    // LoadLibrary would pull in a second, unhooked copy of RenderDoc behind the Vulkan
+    // loader's back.
 #ifdef _WIN32
     HMODULE lib = GetModuleHandleA("renderdoc.dll");
 #else
@@ -61,9 +56,8 @@ bool renderDocAttach(const std::filesystem::path& pathTemplate) {
     std::filesystem::create_directories(pathTemplate.parent_path(), ec);
     api->SetCaptureFilePathTemplate(pathTemplate.string().c_str());
 
-    // Unbind RenderDoc's own hotkey. It defaults to F12, which this application already
-    // uses for the PNG capture -- leaving both bound means one keypress writes a
-    // screenshot *and* an .rdc, and the one you did not ask for is the one you find.
+    // Unbind RenderDoc's own hotkey: it defaults to F12, which this application already
+    // uses for the PNG capture, so leaving both bound makes one keypress write two files.
     api->SetCaptureKeys(nullptr, 0);
 
     core::Logger::status(core::LogCategory::Render, "RenderDoc: attached, captures go to %s_frameNNNN.rdc",

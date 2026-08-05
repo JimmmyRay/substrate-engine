@@ -84,10 +84,8 @@ void Swapchain::create(const VulkanContext& ctx, GLFWwindow* window, bool vsync)
     info.imageColorSpace = surfaceFormat.colorSpace;
     info.imageExtent = extent;
     info.imageArrayLayers = 1;
-    // TRANSFER_SRC is for frame capture (5.2), which copies the presented image out.
-    // Surfaces are not required to allow it, so it is requested only where the surface
-    // reports it: asking for an unsupported usage is a swapchain creation failure, and
-    // losing screenshots is a far better outcome than losing the window.
+    // TRANSFER_SRC is frame capture's, and surfaces are not required to allow it --
+    // requesting an unsupported usage fails swapchain creation outright.
     captureSupported = (caps.supportedUsageFlags & VK_IMAGE_USAGE_TRANSFER_SRC_BIT) != 0;
     info.imageUsage = VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT;
     if (captureSupported) info.imageUsage |= VK_IMAGE_USAGE_TRANSFER_SRC_BIT;

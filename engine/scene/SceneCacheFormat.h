@@ -11,40 +11,29 @@
 
 /**
  * @file engine/scene/SceneCacheFormat.h
- * @brief The `.scene` wire format, shared by the reader and the writer (D9).
+ * @brief The `.scene` wire format, shared by the reader and the writer.
  *
- * ## Why this is a header and not one translation unit
+ * Every `put` is adjacent to its `get`: the two halves of a serializer are the classic place
+ * for a field to be added to one and not the other, and the round-trip test in
+ * tests/SceneDataTests.cpp is what catches it when they disagree.
  *
- * C15 wrote the two halves into one file, and the comment on the payload section said
- * why: *"the two halves of a serializer are the classic place for a field to be added to
- * one and not the other"*. That is still true and this header is what keeps it true --
- * every `put` is still adjacent to its `get`, and adding a field to one without the other
- * is still one screen apart rather than one file apart.
- *
- * What changed is who links which half. D9's invariant is that the running process never
- * writes a file a later run reads as an input, and a static library links by object file:
- * as long as `writeSceneCache` shared a translation unit with `readSceneCache`, every game
- * that could read a sidecar also shipped the code to write one. So the two functions are
- * now two translation units -- `SceneData.cpp` reads, `SceneCacheWrite.cpp` writes, and
- * only `substrate-bake` and the unit suite link the second -- with the format itself here,
- * where both can see all of it.
+ * The two functions are two translation units on purpose -- `SceneData.cpp` reads,
+ * `SceneCacheWrite.cpp` writes, and only `substrate-bake` and the unit suite link the
+ * second. A static library links by object file, so putting them together would ship every
+ * game that can read a sidecar the code to write one.
  */
 namespace scene::cache {
 
-/// Eight bytes so a file that is not one of these is rejected on its first word rather
-/// than by arithmetic on garbage. Not a version -- that is its own field, because a
-/// magic that changed with the format would make every old cache "not a scene file"
+/// Eight bytes, so a file that is not one of these is rejected on its first word rather than
+/// by arithmetic on garbage. **Never version it** -- the version is its own field, and a
+/// magic that moved with the format would report every old cache as "not a scene file"
 /// instead of "a scene file this build cannot read".
 inline constexpr char kMagic[8] = {'S', 'B', 'S', 'C', 'E', 'N', 'E', '\0'};
 
-// Every POD written verbatim below. The static_asserts are the build-time half of the
-// layout check: a field added to any of these is a compile error here, at the one place
-// that knows the file format depends on it.
-//
-// The run-time half is `kLayoutDigest`, folded from the same numbers. Between them, a
-// change to a struct cannot produce a cache that loads and is wrong -- which is the
-// failure mode a version number alone leaves open, because the person who changed
-// `Vertex` is not the person who remembers this file exists.
+// Every POD written verbatim below. These are the build-time half of the layout check -- a
+// field added to any of them stops the build here -- and `kLayoutDigest` is the run-time
+// half, folded from the same numbers. Between them a struct change cannot produce a cache
+// that loads and is wrong, which is the failure a version number alone leaves open.
 static_assert(sizeof(Vertex) == 48, "Vertex changed: bump kSceneCacheVersion");
 static_assert(sizeof(SkinVertex) == 32, "SkinVertex changed: bump kSceneCacheVersion");
 static_assert(sizeof(MorphDelta) == 36, "MorphDelta changed: bump kSceneCacheVersion");
@@ -78,10 +67,9 @@ constexpr uint32_t layoutDigest() {
 
 inline constexpr uint32_t kLayoutDigest = layoutDigest();
 
-/// The source's identity, so an edited glTF invalidates its own cache. Size and mtime
-/// rather than a hash of the contents: hashing a 60 MB document to decide whether to skip
-/// parsing it costs a measurable fraction of the parse it is trying to avoid, and this
-/// pair is what every build system in existence has settled on for the same reason.
+/// The source's identity, so an edited glTF invalidates its own cache. Size and mtime rather
+/// than a content hash: hashing a 60 MB document costs a measurable fraction of the parse it
+/// is trying to skip.
 struct SourceStamp {
     uint64_t size = 0;
     int64_t mtime = 0;
@@ -102,9 +90,8 @@ struct SourceStamp {
 /// least this long before it reads a byte and the writer adds it to the payload size.
 inline constexpr size_t kHeaderSize = sizeof(kMagic) + sizeof(uint32_t) * 2 + sizeof(SourceStamp);
 
-/// Appended to, never seeked. The whole payload is built in memory and written once,
-/// because a scene cache is a few megabytes and a write per field would be thousands of
-/// syscalls to save an allocation nobody notices.
+/// Appended to, never seeked: the whole payload is built in memory and written once, since a
+/// write per field would be thousands of syscalls to save an allocation of a few megabytes.
 struct Writer {
     std::vector<uint8_t> bytes;
 
@@ -128,9 +115,8 @@ struct Writer {
     }
 };
 
-/// Bounds-checked on every read, and that is the point rather than diligence: a truncated
-/// cache is the normal result of a build killed mid-write, and it must fall back to the
-/// document rather than read past the end of a buffer.
+/// Bounds-checked on every read: a truncated cache is the normal result of a build killed
+/// mid-write, and it has to fall back to the document rather than read past the buffer.
 struct Reader {
     const uint8_t* p = nullptr;
     const uint8_t* end = nullptr;
@@ -150,9 +136,8 @@ struct Reader {
         raw(&v, sizeof(T));
         return v;
     }
-    /// Refused rather than trusted. A corrupt length is how a truncated file turns into a
-    /// multi-gigabyte allocation, so a count is checked against the bytes that remain
-    /// before anything is reserved for it.
+    /// Checked against the bytes that remain before anything is reserved for it: a trusted
+    /// length is how a truncated file turns into a multi-gigabyte allocation.
     size_t count(size_t elementSize) {
         const auto n = static_cast<size_t>(pod<uint64_t>());
         if (!ok) return 0;
@@ -180,20 +165,15 @@ struct Reader {
 /**
  * @brief A copy of `v` whose padding bytes are zero.
  *
- * Three of the `put`s below write a *byte range* of their struct rather than field by
- * field -- one memcpy instead of thirty writes -- and that range includes whatever the
- * compiler left between a `bool` and the `float` after it. Those bytes are never read back
- * as anything, but they were written, and in an object nobody zero-filled they are
- * indeterminate: D9 measured `particles.gltf` baked alone against the same scene baked
- * second in one invocation of the tool and got **16 differing bytes**, all of them padding
- * inside `ParticleEmitter`, from a document neither run had touched.
+ * Three of the `put`s below write a *byte range* of their struct, which includes whatever
+ * the compiler left between a `bool` and the `float` after it. Nothing reads those bytes
+ * back, but they are written, and in an object nobody zero-filled they are indeterminate --
+ * enough to make two bakes of one unchanged document differ under `cmp`, which is how every
+ * build output in this tree is checked.
  *
- * A build artifact that changes with the allocation history of the process that wrote it
- * cannot be checked with `cmp`, which is how every other build output in this tree is
- * checked. So: `T out{}` is value-initialisation, which zero-initialises the whole object
- * including its padding, and the assignment that follows is memberwise -- all three of
- * these types hold a `std::string` or a `std::vector`, so none is trivially copyable and
- * none can have that assignment turn into a `memcpy` that would bring the padding back.
+ * `T out{}` value-initialises the padding as well, and the memberwise assignment that
+ * follows cannot become a `memcpy` that brings it back -- which is what the static_assert
+ * holds to.
  */
 template <typename T> [[nodiscard]] T zeroPadded(const T& v) {
     static_assert(!std::is_trivially_copyable_v<T>,
@@ -202,13 +182,6 @@ template <typename T> [[nodiscard]] T zeroPadded(const T& v) {
     out = v;
     return out;
 }
-
-// ------------------------------------------------------------------ the payload
-//
-// One function per non-POD type, writer and reader adjacent. Adjacent deliberately: the
-// two halves of a serializer are the classic place for a field to be added to one and not
-// the other, and the round-trip test in tests/SceneDataTests.cpp is what catches it when
-// they are not.
 
 inline void put(Writer& w, const SceneImageRef& v) {
     w.text(v.uri);
@@ -221,9 +194,9 @@ inline void get(Reader& r, SceneImageRef& v) {
 
 inline void put(Writer& w, const ParticleEmitter& v) {
     w.text(v.name);
-    // The trailing runtime fields (`accumulator`, `emitted`) go with it. They are zero in
-    // an emitter the loader just built, and writing the struct whole is one memcpy rather
-    // than thirty field writes to save eight bytes per emitter.
+    // The trailing runtime fields (`accumulator`, `emitted`) go with it: they are zero in an
+    // emitter the loader just built, and the whole range is one memcpy rather than thirty
+    // field writes to save eight bytes per emitter.
     const ParticleEmitter z = zeroPadded(v);
     w.raw(reinterpret_cast<const uint8_t*>(&z) + offsetof(ParticleEmitter, transform),
           sizeof(ParticleEmitter) - offsetof(ParticleEmitter, transform));
@@ -300,8 +273,8 @@ inline void put(Writer& w, const AnimationClip& v) {
 inline void get(Reader& r, AnimationClip& v) {
     r.text(v.name);
     // Two fields per event and neither is fixed-size, so the count is checked against one
-    // byte per element rather than a stride -- the least this can be and still refuse a
-    // length that could not possibly fit.
+    // byte per element rather than a stride: the weakest bound that still refuses a length
+    // which could not possibly fit.
     const size_t events = r.count(1);
     if (!r.ok) return;
     v.events.resize(events);
@@ -319,10 +292,9 @@ inline void get(Reader& r, AnimationClip& v) {
 
 inline void put(Writer& w, const AnimationRig& v) {
     w.podVector(v.bind.nodes);
-    // Parallel to the nodes and written as its own run rather than folded into them, because
-    // `SceneNode` is a POD written verbatim and a string in it would end that. A baked scene
-    // that dropped these would make `SceneAnimator::findNode` answer `kNoNode` for every name
-    // the moment a scene was baked -- which is the fast path, so it would be the *normal* path.
+    // Its own run rather than folded into the nodes: `SceneNode` is a POD written verbatim,
+    // and a string in it would end that. Dropping these makes `SceneAnimator::findNode`
+    // answer `kNoNode` for every name on the cached path -- which is the usual path.
     w.count(v.nodeNames.size());
     for (const std::string& n : v.nodeNames) w.text(n);
     w.podVector(v.bind.weights);
@@ -370,17 +342,11 @@ template <typename T> bool getList(Reader& r, std::vector<T>& v) {
  * @brief The stats block as it is written, which is not the stats block as it was
  *        measured.
  *
- * Every duration in `SceneStats` is time *this* run spent, and D9 found what that cost: a
- * sidecar baked twice from one unchanged document differed in 34 bytes, all of them inside
- * these eight doubles. A build artifact that is not reproducible cannot be checked with
- * `cmp`, which is exactly how the `.png.ktx2` cache and every other build output in the
- * tree are checked.
- *
- * Zeroing them costs nothing, because no reader has ever used them: `loadSceneCpu` clears
- * the parse timings on a cache hit anyway -- reporting a previous run's parse time for a
- * run that did no parsing would be a lie the log tells every time the cache works -- and
- * `textureMs` and `totalMs` are measured by the upload half, after the bake has already
- * been written. The counts beside them are properties of the scene and stay.
+ * Every duration in `SceneStats` is time *this* run spent, so writing them makes two bakes
+ * of one unchanged document differ in those eight doubles and stops the sidecar being
+ * checkable with `cmp`. Nothing reads them back: `loadSceneCpu` clears the parse timings on
+ * a cache hit, and `textureMs` and `totalMs` are measured by the upload half after the bake
+ * is written. The counts beside them are properties of the scene and stay.
  */
 [[nodiscard]] inline SceneStats bakedStats(const SceneStats& measured) {
     SceneStats out = measured;

@@ -508,6 +508,14 @@ The UI context is begun *lazily*, on the first call to `Engine::ui()`. That is w
 a panel opened this frame draw this frame -- the action that opens it is yours, and it
 runs after `beginFrame()`.
 
+**The split of state is the immediate-mode bargain, and it decides what your game has to
+hold.** `ui::Context` owns *interaction* state -- what is hovered, what is held, what has
+keyboard focus -- and your game owns every value on screen. A capture path being typed
+into, the index a dropdown is showing, the string a `Save settings` button left behind:
+those are fields on the game, because nothing else remembers them between frames.
+`game/demo/DemoGame.h`'s `PanelState` is that struct, and it is short on purpose. A
+retained UI would own both halves and then need a way to tell them apart.
+
 ---
 
 ## Composing a world out of assets
@@ -544,6 +552,14 @@ with the factor, none of which a placement matrix does. Set it before the first 
 Everything sizes itself from what arrives. There is no budget to state and no order to get
 right: the physics world, the particle pool, the light buffer, the voice list and the
 bindless texture array all grow when a game asks for more than they hold (C40).
+
+**The particle pool is the clearest case, because its size is arithmetic rather than a
+guess.** `requiredCapacity` is `ceil(rate x maxLifetime) + 1` per emitter -- the steady-state
+population of one emitter, plus the slot the next birth needs -- summed over the emitters and
+rounded up to a power of two. The demo's four emitters a brazier come to about 130 particles
+each, 520 over the four, which rounds to a pool of 1,024. Raising a `rate` or a `maxLifetime`
+raises the pool by itself; the only thing to check afterwards is that `droppedSpawns()` is
+still zero.
 
 ## The scene tree: saying that one thing follows another
 
@@ -604,6 +620,41 @@ used to hold:
 | `playImpacts` | **G7** and **C3** meeting on one event -- `playAt` for the sound, `spawnEffect` for the dust |
 | `bannerCloth` and `stepDemoWorld` | **G11**: a mesh whose *shape* is a function of the step -- `MeshData::morphTargets` at build time, two `setMorphWeight` calls per step |
 | the four `Profiler::scope` calls in `applyActions`, `playImpacts`, `driveLocomotion` and `stepDemoWorld` | A game profiling its own code with the engine's own profiler |
+
+### A flame is a stack of emitters, because colour has two stops
+
+A particle lerps `colorStart` to `colorEnd` and nothing else, so no single emitter can run
+white-hot to yellow to orange to red the way a flame does. Two overlapping emitters with
+different lifetimes and different two-stop ramps do it between them: in the demo's brazier
+`core` is the short white root that is actually burning, and `flame` is the longer orange
+tongue rising through it. Smoke and embers are two more, which is why a brazier is four
+emitters and not one.
+
+**Small and many is the wrong instinct**, and the braziers were built the wrong way first:
+twelve hundred 6 cm discs each, on the theory that enough of them blend into a volume. They
+do not, and a hundred and ten half-metre sheet particles read as fire and cost a tenth as
+much — see [systems.md, "The sheet is the
+effect"](../architecture/systems.md#the-sheet-is-the-effect) for why the mask rather than the
+count is what decides that.
+
+**Sizes and speeds are world units and are deliberately not multiplied by the demo's world
+scale.** Everything the demo *places* is; a flame is half a metre of burning gas whatever
+size the building is, and scaling it with the architecture makes a bonfire in a soup bowl.
+
+### Two morph targets, because one can only breathe
+
+`bannerCloth` builds a hanging cloth with two morph targets, and the count is the lesson.
+Each target is a standing wave along the width, pinned at the bar and free at the hem, and
+the second is the first shifted a quarter period. A single target can only make the cloth
+breathe in and out of one fixed shape; two driven in quadrature — `sin` and `cos` of the
+same clock, which is the whole of what `stepDemoWorld` does per step — sum to a wave that
+*travels* along the banner. That is the cheapest effect that cannot be faked by scaling one
+target, which is what makes it an honest demonstration that the dispatch computes a weighted
+sum of several.
+
+Normal deltas are the first-order term of the displaced surface's normal, which is what a
+glTF `NORMAL` target carries and is exact only at full weight. Tangents can be left at zero
+when nothing reads them — the banner has no normal map.
 
 ### Profiling a game's own code
 

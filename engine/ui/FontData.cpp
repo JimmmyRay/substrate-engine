@@ -5,13 +5,10 @@ namespace ui {
 /**
  * The built-in font, as pictures rather than hex.
  *
- * 95 glyphs, ASCII 32..126, each 5 columns wide and 9 rows tall. The first seven
- * rows sit above the baseline and the last two are the descender, which is why 'g',
- * 'j', 'p', 'q', 'y' and ';' have ink down there and nothing else does.
- *
- * Hex tables are half the size and impossible to proofread. This is the same data
- * in the only form where a wrong pixel is visible on inspection, and it is converted
- * to the R8 atlas once at startup by Font::fillFromBitmap().
+ * 95 glyphs, ASCII 32..126, each exactly 5 columns wide and 9 rows tall --
+ * `Font::fillFromBitmap` indexes by that shape, and a row of any other length reads off
+ * the end of a string literal. The first seven rows sit above the baseline and the last
+ * two are the descender.
  */
 // clang-format off
 const char* const kGlyphArt[kGlyphCount][kArtRows] = {

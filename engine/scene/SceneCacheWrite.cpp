@@ -9,15 +9,12 @@
 
 /**
  * @file engine/scene/SceneCacheWrite.cpp
- * @brief The sidecar **writer**, in the one translation unit a game never links (D9).
+ * @brief The sidecar **writer**, in the one translation unit a game never links.
  *
- * `substrate-bake` links this and so does the unit suite, which is what keeps
- * `SceneDataTests.cpp` able to write a cache and read it back; `libsubstrate.a` does not,
- * and neither does any game built on it. That is the mechanism behind the invariant --
- * *the running process never writes a file a later run reads as an input* -- and it is a
- * link-time mechanism rather than a `#if`, for the same reason the engine builds with
- * nothing under `game/` in the tree: a boundary the linker enforces cannot be crossed by
- * accident.
+ * `substrate-bake` links this and so does the unit suite; `libsubstrate.a` does not, and
+ * neither does any game built on it. That link-time boundary is what holds the invariant
+ * that a running process never writes a file a later run reads as an input -- a `#if` here
+ * could be crossed by accident, and this cannot.
  */
 namespace scene {
 
@@ -28,10 +25,10 @@ size_t sceneCacheSize(const SceneData& data) {
 }
 
 bool writeSceneCache(const std::filesystem::path& source, const SceneData& data) {
-    // See SceneData.h: an embedded image is reachable only through the document, so a
-    // sidecar for a scene holding one that has no `.ktx2` would need the very file it
-    // exists to avoid opening. Refused, loudly, because whoever asked for a bake wants to
-    // know it did not happen.
+    // An embedded image is reachable only through the document -- see SceneData.h -- so a
+    // sidecar for a scene holding one with no `.ktx2` beside it would need the very file it
+    // exists to avoid opening. Refused loudly: whoever asked for a bake wants to know it did
+    // not happen.
     for (size_t i = 0; i < data.images.size(); ++i) {
         if (!data.images[i].uri.empty()) continue;
         const std::filesystem::path ktx =
@@ -54,9 +51,8 @@ bool writeSceneCache(const std::filesystem::path& source, const SceneData& data)
     w.pod(stamp);
     cache::writeBody(w, data);
 
-    // Written beside the source and then renamed, so a build killed mid-write leaves the
-    // previous cache rather than a truncated one. The reader would reject the truncated
-    // file anyway -- this is about not destroying a good answer to produce a bad one.
+    // Written and then renamed, so a build killed mid-write leaves the previous cache rather
+    // than destroying a good answer to produce a truncated one.
     const std::filesystem::path cachePath = sceneCachePath(source);
     if (!core::writeFileAtomically(cachePath, w.bytes.data(), w.bytes.size(), core::LogCategory::GLTF,
                                    "scene cache")) {

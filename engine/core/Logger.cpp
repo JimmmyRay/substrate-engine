@@ -25,12 +25,9 @@ namespace core {
 namespace {
 
 #ifdef _WIN32
-/// Teach the console to interpret the escapes below instead of printing them.
-///
-/// Windows Terminal does this already; the legacy conhost.exe that still opens for a
-/// double-clicked .exe does not, and renders every one of them as literal `<-[32m`. It is
-/// the first thing anyone sees, so it is worth four lines. Failure is ignored on purpose:
-/// output redirected to a file has no console mode to set, and that is not an error.
+/// Teach the console to interpret the escapes below instead of printing them: legacy
+/// conhost.exe renders every one as a literal `<-[32m`. Failure is ignored on purpose --
+/// output redirected to a file has no console mode to set.
 void enableVirtualTerminal() {
     for (DWORD handle : {STD_OUTPUT_HANDLE, STD_ERROR_HANDLE}) {
         HANDLE h = GetStdHandle(handle);
@@ -58,27 +55,24 @@ std::condition_variable g_queueCv;
 std::queue<std::string> g_queue;
 bool g_running = false;
 
-// --------------------------------------------------------------------- the name lists
-// One per enum (D12), canonical spelling first. `warning` is an input convenience for
-// `warn` and never what a save writes back.
-
+// Canonical spelling first: `warning` must stay after `warn`, or a save starts writing it.
 constexpr Named<LogLevel> kLogLevels[] = {
     {"critical", LogLevel::Critical}, {"error", LogLevel::Error},   {"warn", LogLevel::Warn},
     {"warning", LogLevel::Warn},      {"status", LogLevel::Status}, {"debug", LogLevel::Debug},
 };
 static_assert(namesEveryValue(kLogLevels), "a level reachable from the enum and from no name");
 
-/// `LogOutput` and `LogCategory` are masks and have no `Count` for `namesEveryValue` to
-/// walk, so their totality is checked by the suite instead -- over `LogOutput::Both` and
-/// over `AllLogCategories`, both of which a new bit has to be added to anyway.
+/// `LogOutput` and `LogCategory` are masks with no `Count` for `namesEveryValue` to walk,
+/// so the unit suite checks their totality instead, over `LogOutput::Both` and
+/// `AllLogCategories`.
 constexpr Named<LogOutput> kLogOutputs[] = {
     {"terminal", LogOutput::Terminal},
     {"file", LogOutput::File},
     {"both", LogOutput::Both},
 };
 
-/// Title-cased because this is also the tag printed on every line. It parses
-/// case-insensitively, so a config file still says `"vulkan"`.
+/// Title-cased because this is also the tag printed on every line; parsing is
+/// case-insensitive, so a config file may still say `"vulkan"`.
 constexpr Named<LogCategory> kLogCategories[] = {
     {"Core", LogCategory::Core},     {"Vulkan", LogCategory::Vulkan},   {"GLTF", LogCategory::GLTF},
     {"Scene", LogCategory::Scene},   {"Render", LogCategory::Render},   {"Asset", LogCategory::Asset},
@@ -86,8 +80,6 @@ constexpr Named<LogCategory> kLogCategories[] = {
 };
 
 const char* categoryName(LogCategory c) {
-    // The same list the config file parses against, so the tag on a line and the name that
-    // turns that tag on cannot be two different words.
     const char* name = nameOf(logCategoryNames(), c);
     return name != nullptr ? name : "Unknown";
 }
@@ -118,8 +110,7 @@ std::string timestamp() {
 
     std::tm tmBuf{};
 #ifdef _WIN32
-    // Note the argument order, which is reversed from localtime_r's and is the one thing
-    // about this line that can be got wrong silently.
+    // Argument order is reversed from localtime_r's below, and getting it wrong is silent.
     localtime_s(&tmBuf, &sec);
 #else
     localtime_r(&sec, &tmBuf);
@@ -209,9 +200,8 @@ void Logger::init(const std::string& filePath, LogOutput output) {
 }
 
 void Logger::setOutput(LogOutput output) {
-    // Deliberately does not touch the file: `init` owns opening it, and a run that turns
-    // the terminal off before `init` still wants every line it suppressed to reach the log
-    // once there is one.
+    // Must not touch the file: `init` owns opening it, and a run that turns the terminal
+    // off before `init` still wants those lines in the log once there is one.
     g_output = output;
 }
 
@@ -286,8 +276,8 @@ std::string Logger::vformat(const char* fmt, va_list args) {
 }
 
 void Logger::critical(LogCategory c, const std::string& msg) {
-    // Critical always emits, regardless of filtering — then flushes before exiting,
-    // so the reason for the exit actually reaches the log file.
+    // Emits unfiltered and flushes before exiting, or the reason for the exit never reaches
+    // the log file.
     emit(LogLevel::Critical, c, msg);
     shutdown();
     std::exit(1);

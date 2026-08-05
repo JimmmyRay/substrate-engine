@@ -11,9 +11,8 @@ void RangeAllocator::reset(uint32_t capacity) {
 }
 
 uint32_t RangeAllocator::allocate(uint32_t count) {
-    // A primitive with no indices is a real thing a glTF contains. Returning an offset
-    // that consumes nothing keeps the check out of every caller, and the offset is
-    // meaningful: it is where the range would have started.
+    // A glTF really does contain primitives with no indices; refusing them pushes the check
+    // onto every caller. The offset returned is where the range would have started.
     if (count == 0) return holes.empty() ? 0u : holes.front().first;
 
     for (size_t i = 0; i < holes.size(); ++i) {
@@ -33,9 +32,9 @@ uint32_t RangeAllocator::allocate(uint32_t count) {
 
 void RangeAllocator::free(uint32_t first, uint32_t count) {
     if (count == 0) return;
-    // A range outside the buffer is refused rather than inserted. Inserting it would
-    // corrupt the free list in a way that only shows up as a later allocation handing back
-    // an offset past the end of the buffer -- which is a GPU fault a long way from here.
+    // A range outside the buffer is refused, never inserted: it corrupts the free list in a
+    // way that surfaces as a later allocation handing back an offset past the end, which is
+    // a GPU fault a long way from here.
     if (first >= total || count > total - first) return;
 
     // Insertion point: the first hole starting after this range.
@@ -44,8 +43,8 @@ void RangeAllocator::free(uint32_t first, uint32_t count) {
     const auto index = static_cast<size_t>(at - holes.begin());
     holes.insert(at, Hole{first, count});
 
-    // Merge right, then left. Right first, because merging left can move this entry's
-    // index and the right-hand neighbour's position is only stable until it does.
+    // Right first, then left: merging left can move this entry's index, and the right-hand
+    // neighbour's position is only stable until it does.
     if (index + 1 < holes.size() && holes[index].first + holes[index].count == holes[index + 1].first) {
         holes[index].count += holes[index + 1].count;
         holes.erase(holes.begin() + static_cast<long>(index) + 1);
@@ -60,9 +59,8 @@ bool RangeAllocator::grow(uint32_t newCapacity) {
     if (newCapacity <= total) return false;
 
     const uint32_t added = newCapacity - total;
-    // Merged onto the tail when the buffer already ends in free space, so growing twice in
-    // a row leaves one hole rather than two -- which is what lets a large allocation
-    // succeed after incremental growth.
+    // Merged onto the tail when the buffer already ends in free space, or growing twice in
+    // a row leaves two holes and a large allocation fails after incremental growth.
     if (!holes.empty() && holes.back().first + holes.back().count == total) {
         holes.back().count += added;
     } else {

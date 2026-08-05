@@ -6,7 +6,7 @@ using namespace core;
 
 /**
  * @file tests/RecorderTests.cpp
- * @brief The pacing rule that keeps a recording the length of the session (S7).
+ * @brief The pacing rule that keeps a recording the length of the session.
  *
  * What is tested here is the arithmetic, not the encoder. `start()` spawns ffmpeg and
  * writes a file, which makes it an integration test of the machine rather than of this

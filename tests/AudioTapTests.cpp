@@ -10,7 +10,7 @@ using namespace core;
 
 /**
  * @file tests/AudioTapTests.cpp
- * @brief The mix copy handed from the audio thread to the recorder (S7).
+ * @brief The mix copy handed from the audio thread to the recorder.
  *
  * Two properties are worth defending and only one of them is about correctness of a
  * single call. The first is ordering: what comes out is exactly what went in, in order,

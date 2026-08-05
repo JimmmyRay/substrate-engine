@@ -17,17 +17,12 @@ extern const char* const kGlyphArt[kGlyphCount][kArtRows];
 /**
  * @brief An R8 glyph atlas and its glyph table.
  *
- * Two fills, one atlas. The embedded 8x16 bitmap font is always available and needs
- * no asset on disk; a TTF rasterised through stb_truetype replaces it when one is
- * configured. Everything downstream -- upload, measurement, quad emission, the
- * pipeline -- is written once against the result.
+ * Two fills -- the embedded 8x16 bitmap, or a TTF through stb_truetype -- into one atlas, so
+ * everything downstream is written once. The character set is fixed at init; there is no
+ * repacking, so a glyph outside 32..126 cannot be added later.
  *
- * There is no glyph cache and no dynamic repacking: the character set is 95 glyphs
- * fixed at init, which is all a debug HUD and a settings panel need.
- *
- * The *numbers* live in `FontMetrics`, in a header with no Vulkan in it, so that
- * measuring a string does not require a device -- see the note there. This class is the
- * atlas plus the two fills that produce one.
+ * The numbers live in `FontMetrics`, in a header with no Vulkan in it. Measure through that,
+ * not this, or measuring a string starts requiring a device.
  */
 class Font {
   public:
@@ -43,20 +38,17 @@ class Font {
      * @param pixelHeight Rasterisation height for the TTF path. Ignored otherwise --
      *                    the embedded font is a bitmap and only exists at 16 px.
      */
-    /// A TTF that cannot be read or baked falls back to the embedded bitmap font and
-    /// warns, so there is no failure to report. `ready()` is the query that matters.
+    /// Never fails: a TTF that cannot be read or baked warns and falls back to the embedded
+    /// font. `ready()` is the query that matters.
     void init(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, const std::string& ttfPath, float pixelHeight);
     void shutdown(const gfx::VulkanContext& ctx);
 
     VkImageView view() const { return atlas.view; }
     bool ready() const { return atlas.view != VK_NULL_HANDLE; }
 
-    /// Everything that is arithmetic rather than memory. Handed out by reference so the
-    /// UI can hold it without holding the atlas.
+    /// Handed out by reference so the UI can hold the metrics without holding the atlas.
     const FontMetrics& metrics() const { return fontMetrics; }
 
-    // Kept as thin forwards because the overlay has called them since 0.8, and renaming
-    // forty call sites to prove a point about indirection is not an improvement.
     float lineHeight() const { return fontMetrics.lineSpacing; }
     float ascent() const { return fontMetrics.ascentPx; }
     float measure(const std::string& text) const { return fontMetrics.measure(text); }
@@ -64,14 +56,13 @@ class Font {
 
   private:
     /// @param magnify whole-number texel replication, so the embedded bitmap font can
-    ///        follow the DPI scale (S6.5). Whole numbers only: NEAREST sampling makes an
+    ///        follow the DPI scale. Whole numbers only: NEAREST sampling makes an
     ///        integer magnification exact, and anything else blurry.
     void fillFromBitmap(std::vector<uint8_t>& pixels, uint32_t& width, uint32_t& height, uint32_t magnify);
     bool fillFromTtf(const std::string& path, float pixelHeight, std::vector<uint8_t>& pixels, uint32_t& width,
                      uint32_t& height);
-    /// Append the solid block `FontMetrics::whiteU/V` point at, growing `pixels` by a
-    /// few rows. Called for both fills, because a rect has to work whichever font is
-    /// loaded -- see FontMetrics.h for why four texels replace a whole pipeline.
+    /// Append the solid block `FontMetrics::whiteU/V` point at, growing `pixels` by a few
+    /// rows. Must run for both fills, or rectangles stop drawing under one of the two fonts.
     void reserveWhiteBlock(std::vector<uint8_t>& pixels, uint32_t width, uint32_t& height);
 
     gfx::GpuImage atlas;

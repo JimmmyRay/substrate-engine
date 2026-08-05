@@ -16,7 +16,6 @@ namespace ui {
 
 namespace {
 
-// ------------------------------------------------------- embedded bitmap font
 // Each glyph occupies an 8x16 cell in the atlas. The 5x9 art from FontData.cpp is
 // inset one column from the left, and its top row lands 7 rows below the top of the
 // cell, which puts the baseline at cell row 10:
@@ -41,9 +40,9 @@ constexpr float kBitmapAdvance = 6.0f;
 /// Atlas dimensions for the TTF path. 512x512 holds 95 glyphs well past 48 px.
 constexpr uint32_t kTtfAtlasSize = 512;
 
-/// Side of the solid block appended below the glyphs (S6.1). Four rather than one so
-/// that the texel `whiteU`/`whiteV` name is surrounded by its own kind, which costs 3 KB
-/// and removes any question about rounding at the edge.
+/// Side of the solid block appended below the glyphs. Four rather than one so the texel
+/// `whiteU`/`whiteV` name is surrounded by its own kind, which costs 3 KB and removes any
+/// question about rounding at its edge.
 constexpr uint32_t kWhiteBlock = 4;
 
 std::vector<uint8_t> readFile(const std::string& path) {
@@ -62,14 +61,9 @@ std::vector<uint8_t> readFile(const std::string& path) {
 } // namespace
 
 void Font::fillFromBitmap(std::vector<uint8_t>& pixels, uint32_t& width, uint32_t& height, uint32_t magnify) {
-    // **Integer magnification, and only integer** (S6.5). The embedded font is a bitmap
-    // that exists at exactly one size, so a UI at 200% would otherwise be twice as big
-    // around text that stayed 16 px -- which is the "correct at one resolution and wrong
-    // at another" the row is about. Replicating each texel N times and sampling NEAREST
-    // is *exact*: every output pixel is a source pixel, so a doubled glyph is as crisp as
-    // the original. A fractional scale would not be, which is why this rounds to a whole
-    // number rather than taking the DPI scale as given -- a blurry bitmap font would be
-    // worse than a small one.
+    // Whole numbers only. Replicating each texel N times under NEAREST is exact -- every
+    // output pixel is a source pixel -- and a fractional scale is not, so taking the DPI scale
+    // as given gives a blurred font instead of a small one.
     const uint32_t n = std::max(magnify, 1u);
     const uint32_t cellWidth = kCellWidth * n;
     const uint32_t cellHeight = kCellHeight * n;
@@ -175,11 +169,8 @@ bool Font::fillFromTtf(const std::string& path, float pixelHeight, std::vector<u
 }
 
 void Font::reserveWhiteBlock(std::vector<uint8_t>& pixels, uint32_t width, uint32_t& height) {
-    // Appended rather than packed into a gap. Both fills leave unused texels -- the
-    // bitmap font's cell margins, the TTF's unbaked rows -- but "unused" is a property of
-    // the fill rather than of the atlas, and a block placed in a gap one of them happens
-    // to have is a block the other one overwrites. Four rows at the bottom cost 3 KB and
-    // are correct for both.
+    // Appended, never packed into a gap: a gap is a property of one fill, so a block placed
+    // in the bitmap font's cell margins is one the TTF fill overwrites.
     const uint32_t oldHeight = height;
     height += kWhiteBlock;
     pixels.resize(static_cast<size_t>(width) * height, 0);
@@ -190,9 +181,8 @@ void Font::reserveWhiteBlock(std::vector<uint8_t>& pixels, uint32_t width, uint3
         }
     }
 
-    // Every glyph's t was normalised against the old height, so growing the atlas moves
-    // all of them. Rescaled here rather than by threading the final height through both
-    // fills, which would make each of them care about a decision neither one takes.
+    // Every glyph's t was normalised against the old height, so growing the atlas moves all
+    // of them and they must be rescaled here.
     const float scale = static_cast<float>(oldHeight) / static_cast<float>(height);
     for (Glyph& g : fontMetrics.glyphs) {
         g.t0 *= scale;
@@ -215,9 +205,8 @@ void Font::init(const gfx::VulkanContext& ctx, gfx::Uploader& uploader, const st
     uint32_t height = 0;
 
     if (ttfPath.empty() || !fillFromTtf(ttfPath, pixelHeight, pixels, width, height)) {
-        // The requested height, rounded to a whole multiple of the bitmap's own 16 px.
-        // A caller asking for 32 gets a crisp 2x; one asking for 24 gets 1x rather than a
-        // blurred 1.5x, which is the trade this font is worth making.
+        // Rounded to a whole multiple of the bitmap's own 16 px: 32 gets a crisp 2x, and 24
+        // gets 1x rather than a blurred 1.5x.
         const auto magnify = static_cast<uint32_t>(std::lround(pixelHeight / static_cast<float>(kCellHeight)));
         fillFromBitmap(pixels, width, height, std::max(magnify, 1u));
     }

@@ -11,64 +11,35 @@
 
 /**
  * @file engine/core/SaveFile.h
- * @brief A versioned byte stream, in sections (C6).
+ * @brief A versioned byte stream, in sections.
  *
- * ## What this is not
+ * A file is a table of contents followed by named sections, each with its own version and
+ * byte length, because the engine and the game version independently. A version this build
+ * does not know is refused before a byte of that section is consumed; a *section* it does
+ * not know is skipped rather than fatal, which is what lets a save written by a later build
+ * still load its engine half into an earlier one.
  *
- * Not a `SaveGame` hierarchy, not an `ISerializable`, not a reflection system. A save
- * system is the classic place for all three to appear and all three are refused in
- * writing: **C6 is two virtuals and a byte stream.** `Game::save` and `Game::load` get a
- * writer and a reader; what a game puts in them is a game's business, and the engine has
- * no opinion beyond the framing.
- *
- * ## Sections, and why the file has a table of contents
- *
- * A save has at least two authors -- the engine and the game -- and they version
- * independently. A file is therefore a list of named sections, each with its own version
- * and byte length, and the list is at the front. Three things follow, and each is a
- * property the disposition table promised:
- *
- * - **A version this build does not know is refused with a reason**, before a byte of that
- *   section is consumed. `section()` returns false and `reason()` says why.
- * - **A section this build does not know is skipped**, not fatal. A save written by a
- *   later build still loads its engine half into an earlier one, which is what makes a
- *   version number a compatibility statement rather than a wall.
- * - **No fixed record count.** A section is a length, so what is inside it is whatever the
- *   author streamed.
- *
- * ## Refusal, not partial application
- *
- * The reader hands out data; it cannot un-apply what a caller already did with it. So the
- * rule is the caller's to keep, and the engine keeps it for its own section: read
- * everything, check it against the world it is being loaded into, and only then write
- * anything. `Engine::loadGame` does exactly that and refuses a save from a different scene
- * rather than scattering one scene's transforms over another's.
- *
- * A game's section is the game's to make atomic, and `section()` returning false *before*
- * any of its data is consumed is the tool for it.
+ * The reader hands out data and cannot un-apply what a caller did with it, so atomicity is
+ * the caller's: read everything, check it against the world, and only then write anything.
+ * `section()` returning false before consuming any data is the tool for that.
  */
 namespace core {
 
-/// Bumped when the framing changes -- the header, the table of contents, the primitive
-/// encodings. Not when a *section's* contents change; that is what a section version is.
+/// Bumped when the *framing* changes -- the header, the table of contents, the primitive
+/// encodings. Not for a section's contents; that is what a section version is. A framing
+/// change without a bump here makes an old save decode as garbage rather than be refused.
 inline constexpr uint32_t kSaveFileVersion = 1;
 
-/**
- * @brief Append-only. Build the whole file in memory, then write it once.
- *
- * A save is a few hundred kilobytes and written when a person asks, so the simple shape
- * is the right one: no seeking, no partial flush, and a file that either exists complete
- * or was never renamed into place.
- */
+/// @brief Append-only. Builds the whole file in memory and writes it once, so a file either
+/// exists complete or was never renamed into place.
 class SaveWriter {
   public:
     /**
      * @brief Open a section. Closes the previous one.
      *
-     * @param name    Up to 15 bytes, so the table of contents is fixed-width and a reader
-     *                can walk it without allocating. Longer is truncated and said so.
-     * @param version The caller's own, and the number a future reader compares against
-     *                what it understands.
+     * @param name    Up to 15 bytes -- the table of contents is fixed-width so a reader can
+     *                walk it without allocating. Longer is truncated, with a warning.
+     * @param version The caller's own, and what a future reader compares against.
      */
     void beginSection(std::string_view name, uint32_t version);
 
@@ -85,13 +56,12 @@ class SaveWriter {
     void text(std::string_view value);
     void blob(const void* data, size_t bytes);
 
-    /// Write to `path`, through a temporary and a rename. A save interrupted mid-write
-    /// leaves the previous save rather than a truncated one, which for the one file a
-    /// player would be upset to lose is worth the rename.
+    /// Write to `path`, through a temporary and a rename. Writing in place instead leaves a
+    /// truncated save where the previous one was when it is interrupted.
     [[nodiscard]] bool write(const std::filesystem::path& path);
 
-    /// The bytes as they stand. For a test, and for a caller that wants the file
-    /// somewhere this class does not know how to put it.
+    /// The bytes as they stand, for a caller putting the file somewhere this class does not
+    /// know how to reach.
     [[nodiscard]] const std::vector<uint8_t>& bytes() const { return payload; }
     [[nodiscard]] size_t sectionCount() const { return toc.size(); }
 
@@ -110,14 +80,10 @@ class SaveWriter {
     bool open = false;
 };
 
-/**
- * @brief Bounds-checked, forward-only within a section.
- *
- * Every read is checked and a failed read sets `ok()` false for good: a reader that went
- * off the end once cannot be trusted for anything after, and returning zeros while
- * pretending otherwise is how a corrupt save turns into a world that is subtly wrong
- * instead of one that refused to load.
- */
+/// @brief Bounds-checked, forward-only within a section.
+///
+/// A failed read sets `ok()` false permanently. Clearing it would let a corrupt save become
+/// a world that is subtly wrong instead of one that refused to load.
 class SaveReader {
   public:
     /**
@@ -128,23 +94,21 @@ class SaveReader {
      *         agree with its own length. `reason()` is set in every case.
      */
     [[nodiscard]] bool open(const std::filesystem::path& path);
-    /// The same, over bytes already in hand. What the tests use, and what a caller with a
-    /// save from somewhere other than a file would.
+    /// The same, over bytes already in hand.
     [[nodiscard]] bool openBytes(std::vector<uint8_t> data);
 
     /**
      * @brief Seek to a section, if this build can read it.
      *
      * @param knownVersion the highest version of this section the caller understands.
-     * @return false when the section is absent, or when its version is higher than
-     *         `knownVersion` -- and in the second case `reason()` says so by name and
-     *         number. **Nothing has been consumed either way**, which is what lets a
-     *         caller decide whether a section it cannot read is fatal.
+     * @return false when the section is absent, or its version is higher than
+     *         `knownVersion`. Nothing is consumed either way, which is what lets a caller
+     *         decide whether a section it cannot read is fatal.
      */
     [[nodiscard]] bool section(std::string_view name, uint32_t knownVersion);
 
-    /// The version of the section `section()` last opened. Lower than or equal to what was
-    /// asked for, so a caller reads the old shape when it sees the old number.
+    /// The version of the section `section()` last opened -- at most what was asked for, so
+    /// a caller seeing an old number must read the old shape.
     [[nodiscard]] uint32_t sectionVersion() const { return currentVersion; }
 
     [[nodiscard]] uint32_t u32();
@@ -169,7 +133,6 @@ class SaveReader {
     [[nodiscard]] const std::string& reason() const { return failure; }
 
     /// Every section in the file, in write order, whether or not this build knows them.
-    /// For a diagnostic that says what a save contains rather than what it could apply.
     struct Section {
         std::string name;
         uint32_t version = 0;

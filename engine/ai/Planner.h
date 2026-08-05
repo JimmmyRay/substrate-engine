@@ -10,24 +10,15 @@ namespace ai {
  * @file ai/Planner.h
  * @brief A goal-oriented planner: what a character is trying to do, and how to get there.
  *
- * **This is not a second state machine and must not become one.** `AnimationStateMachine`
- * decides *what pose*, its parameters are continuous, and `speed` at 0.42 -- most of the way
- * from walk to run -- is a value a planner has no way to express. This decides *what to do*,
- * its state is boolean, and its output is a sequence. The two meet at an intent: the planner
- * decides "walk to the pot", the character controller pursues it, and the machine blends
- * whatever gait that produces. See `architecture/systems.md`.
- *
- * A planner rather than another state machine, and the distinction is the reason the layer
- * exists. A machine needs every route spelled out as a transition: to reach `attack` from
- * `unarmed` somebody authors `unarmed -> draw -> attack`, and authors it again for every
- * state `draw` might be entered from. A planner is given `attack` as a goal and derives the
- * route from what each action requires and produces, so an action added later is reachable
- * from everything that satisfies it without a transition being edited.
+ * Not a state machine, and authoring transitions here turns it into one: an action is reachable
+ * from anything satisfying its prerequisites, so adding one edits nothing that already exists.
+ * `AnimationStateMachine` decides what pose and takes continuous parameters; this decides what
+ * to do, in booleans. See `architecture/systems.md`.
  */
 
-/// Every property a world state can hold an opinion about. Sixty-four is a `uint64_t`, and
-/// the whole design rests on a state fitting in a register: comparison is two instructions,
-/// applying an effect is two, and the search never allocates a state.
+/// Every property a world state can hold an opinion about. Raising it past 64 costs the
+/// `uint64_t` a state is: comparison stops being two instructions and the search starts
+/// allocating.
 inline constexpr uint32_t kMaxProperties = 64;
 
 /// A property that was never declared, and the value `find` returns for a name it has not
@@ -37,10 +28,8 @@ inline constexpr uint32_t kNoProperty = 0xFFFFFFFFu;
 /**
  * @brief What is true, and what this state says nothing about.
  *
- * Two masks rather than one, because "the door is shut" and "I have no opinion about the
- * door" are different claims and a single bitmask cannot tell them apart. An action's
- * prerequisites are the second kind almost everywhere -- most actions care about two
- * properties out of forty -- and a goal is as well.
+ * Two masks and not one: "the door is shut" and "I have no opinion about the door" are
+ * different claims, and a single bitmask cannot tell them apart.
  */
 struct WorldState {
     uint64_t known = 0; ///< bit set: this state has an opinion about that property
@@ -83,9 +72,8 @@ struct WorldState {
     bool operator==(const WorldState& o) const { return known == o.known && value == o.value; }
 };
 
-/// One thing a character can do. A flat record: no `std::function` body and no `shared_ptr`,
-/// because what the planner needs is the *contract* -- what must be true, what becomes true,
-/// what it costs -- and running it is the caller's job at the far end of the plan.
+/// One thing a character can do. The planner reads only the contract; running the action is
+/// the caller's job at the far end of the plan.
 struct Action {
     std::string name;
     WorldState prerequisites;
@@ -98,8 +86,8 @@ struct Action {
 /**
  * @brief The action table and the search over it.
  *
- * Hosted: no Vulkan, no window, no clock. The whole of it is a name table, an action vector
- * and an A* over `WorldState`, so it tests under every sanitizer.
+ * No Vulkan, no window, no clock. Reach for any of the three and this leaves the hosted set
+ * and stops running under the sanitizers.
  */
 class Planner {
   public:
@@ -120,22 +108,18 @@ class Planner {
     /**
      * @brief The cheapest sequence from `from` that satisfies `goal`.
      *
-     * @param out Filled with action indices in the order they must run. Cleared first, and
-     *            **left empty on failure** rather than holding a partial route: a plan that
-     *            got halfway is not a plan, and a caller that executed one would leave the
-     *            world in a state nobody asked for.
+     * @param out Filled with action indices in the order they must run. Cleared first and left
+     *            empty on failure, never holding a partial route -- executing half a plan leaves
+     *            the world in a state nobody asked for.
      * @return false when no sequence reaches the goal within `kMaxPlanNodes`.
      *
-     * A goal already satisfied returns true with an empty plan, which is the honest answer
-     * and is not the same as a failure. Callers have to tell the two apart, so the return
-     * value carries it rather than the size.
+     * A goal already satisfied returns true with an empty plan, so an empty `out` does not
+     * distinguish success from failure and the return value must be read.
      */
     [[nodiscard]] bool plan(const WorldState& from, const WorldState& goal, std::vector<uint32_t>& out) const;
 
-    /// The bound on the search, and it is a bound on *expansions* rather than on plan
-    /// length. A search that hits it returns failure, which is the same answer a caller
-    /// gets for a genuinely unreachable goal -- deliberately, because a plan nobody can
-    /// find and a plan too expensive to find are the same thing to the character.
+    /// A bound on *expansions*, not on plan length. Hitting it returns the same failure a
+    /// genuinely unreachable goal does, so the two cannot be told apart from the outside.
     static constexpr uint32_t kMaxPlanNodes = 4096;
 
   private:
@@ -145,10 +129,6 @@ class Planner {
 
 /**
  * @brief A goal a character carries, the plan it is following, and where it has got to.
- *
- * The layer the card calls an *intent*. A planner on its own answers a question; this is
- * what makes an answer something a character can act on over several steps, and what
- * notices that the world moved out from under it.
  */
 class Agent {
   public:
@@ -161,11 +141,9 @@ class Agent {
      * @return the action to be running now, or `kNoAction` when the goal is met or
      *         unreachable.
      *
-     * **Re-planned on event rather than per frame**, which is the whole reason the plan is
-     * held rather than recomputed: a search run sixty times a second over a question with no
-     * prerequisites and no sequence would cost the cross-fades to do it. `advance` is cheap
-     * on the frames where nothing changed -- it compares the current step's prerequisites
-     * against the world and returns.
+     * Re-plans on event, never per frame. Call it expecting a search each time and a character
+     * costs a full A* sixty times a second; on an unchanged world this compares the current
+     * step's prerequisites and returns.
      */
     uint32_t advance(const Planner& planner, const WorldState& world);
 

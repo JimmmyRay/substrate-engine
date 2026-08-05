@@ -12,43 +12,23 @@ namespace scene {
  *        and isometric.
  *
  * A controller is a `Camera` subclass, so it is a pose and a projection with the three
- * virtuals filled in. Nothing here is installed by default -- `Engine` starts on the base
- * type, which takes no input and declares nothing, and a game that wants fly controls
- * says so with `e.setCamera(&flyCam)`.
+ * virtuals filled in. Nothing here is installed by default; a game says
+ * `e.setCamera(&flyCam)`.
  *
- * All four are installable into a `gfx::ViewTable` view as well, which is what a
- * picture-in-picture inset or a second player's half of the screen wants. **The engine
- * drives none of them there**: it calls neither `activate` nor `update` on a view camera,
- * because there is one `InputMap` and the engine has no notion of whose input a second
- * view is showing. A game that wants a view camera to read input calls `update` on it
- * itself, from `Game::frameUpdate`.
- *
- * What is deliberately not here is policy. None of these decides what a character does,
- * which camera is active, or which key switches between them.
+ * All four are installable into a `gfx::ViewTable` view as well, but **the engine drives
+ * none of them there**: it calls neither `activate` nor `update` on a view camera, because
+ * there is one `InputMap` and the engine has no notion of whose input a second view is
+ * showing. A game that wants a view camera to read input calls `update` on it itself, from
+ * `Game::frameUpdate`.
  */
 
 /**
  * @brief Orbit-and-fly, on nine actions the game opts into by installing it.
  *
- * Dragging turns the camera where it stands -- the eye is held and the focus swings
- * around it -- scrolling dollies toward the focus, and WASD translates the focus in the
- * view plane, so looking and flying are the same state rather than two modes. Dragging
- * used to swing the eye around the focus instead, which is the same four numbers read the
- * other way round and feels like rotating the scene rather than the camera.
- *
- * Movement reads *actions*, not keys (S1.1). The controller declares the ones it needs
- * with their default bindings and then never mentions a key again, which is what lets a
- * stick drive it and a rebind stick.
- *
- * ```cpp
- * class MyGame : public Game {
- *     scene::FlyCamera flyCam;                    // the game owns it
- *     void init(Engine& e) override {
- *         flyCam.applySettings(e.settingsTable());
- *         e.setCamera(&flyCam);
- *     }
- * };
- * ```
+ * Dragging turns the camera where it stands -- the eye is held and the focus swings around
+ * it -- scrolling dollies toward the focus, and WASD translates the focus in the view
+ * plane. Swinging the eye around the focus instead is the same four numbers read the other
+ * way round, and feels like rotating the scene rather than the camera.
  */
 class FlyCamera : public Camera {
   public:
@@ -57,10 +37,8 @@ class FlyCamera : public Camera {
     void update(const core::input::InputMap& in, float dt) override;
 
     /// Take the engine's `camera.*` feel rows -- move speed, orbit sensitivity, zoom step.
-    ///
-    /// The game does this rather than the engine, because the engine holds a `Camera&` and
-    /// these three are not on it. Call it before `Engine::setCamera`, or after any
-    /// `settings.set` that moves one of the rows.
+    /// The game calls it, because the engine holds a `Camera&` and these three are not on
+    /// it. Call it before `Engine::setCamera`, and after any `settings.set` that moves a row.
     void applySettings(const core::settings::Settings& settings);
 
     float moveSpeedScale = 1.0f;     ///< multiplies the distance-derived move speed
@@ -88,15 +66,12 @@ class FlyCamera : public Camera {
  * @brief Look, and deliberately not walk. `distance` is zero, so the eye is the focus.
  *
  * **Continuous mouselook with no held button**: the pointer is grabbed in `activate` and
- * given back in `deactivate`, which is the case a declarative "this action grabs the
- * pointer" flag on the binding could not have expressed, and the reason grabbing is a
- * verb. The engine applies the ask after `update`, so a panel opening still takes the
- * pointer back without this camera having to know.
+ * given back in `deactivate`. The engine applies the ask after `update`, so a panel opening
+ * still takes the pointer back without this camera having to know.
  *
- * **It declares no movement actions and that is the design.** In a first-person game the
- * *character* moves under the solver and the camera follows it; a camera that also walked
- * would fight the controller and would need collision of its own. The camera that flies is
- * `FlyCamera`.
+ * It declares no movement actions. In a first-person game the *character* moves under the
+ * solver and the camera follows it; a camera that also walked would fight the controller
+ * and would need collision of its own.
  *
  * Position comes from `follow()` -- a node in a tree, plus `eyeHeight` -- read during
  * `update`. With no target the game writes `focus` itself and this only turns.
@@ -127,11 +102,9 @@ class FirstPersonCamera : public Camera {
     const Scene* tree = nullptr;
     NodeId target;
 
-    /// One action, and it ships **unbound**: an unbound row means look continuously, which
-    /// is what the pointer grab is for. Bind something to it and the same row becomes
-    /// hold-to-look, which is the only way one action expresses both -- a `bool` on the
-    /// class would leave a declared row nothing ever reads. The grab is not conditional on
-    /// it either way, because unbounded deltas are what a first-person view turns on.
+    /// One action, and it ships **unbound**: an unbound row means look continuously, and
+    /// binding something to it makes the same row hold-to-look. The grab is not conditional
+    /// on it either way, because unbounded deltas are what a first-person view turns on.
     struct Actions {
         core::input::ActionId look = core::input::kInvalidAction;
     } actions;
@@ -141,19 +114,16 @@ class FirstPersonCamera : public Camera {
  * @brief Follow a node, orbit around it, scroll to pull in and out.
  *
  * Holds a target and **reads its world transform itself, during `update`**. It has to:
- * `update` runs before `Game::frameUpdate` so that a game reading `camera().yaw` to resolve
- * "forward" gets this frame's yaw rather than last frame's, and a position the game pushed
- * in would therefore always be one frame behind. The ordering is not the thing to change.
+ * `update` runs before `Game::frameUpdate` so a game reading `camera().yaw` to resolve
+ * "forward" gets this frame's yaw, which means a position the game pushed in would always
+ * be one frame behind.
  *
- * `focus = targetWorld + heightOffset`. **The camera writes `focus` and never `yaw`**, which
- * is the whole answer to the chase problem: a camera that followed a character *and* aimed
- * itself from the character's heading is two integrators feeding each other. Yaw comes from
- * the pointer and from nothing else, so the basis a game's movement resolves against does
- * not depend on the movement.
+ * `focus = targetWorld + heightOffset`. **The camera writes `focus` and never `yaw`**: a
+ * camera that followed a character *and* aimed itself from the character's heading is two
+ * integrators feeding each other, and the basis a game's movement resolves against would
+ * then depend on the movement.
  *
- * **No spring arm and no collision.** Pulling the camera in when a wall comes between it and
- * the target needs physics queries and a policy for when there is nowhere to go; a camera
- * that clips through geometry is a stated gap here rather than a discovery later.
+ * No spring arm and no collision, so it clips through geometry between it and the target.
  */
 class ThirdPersonCamera : public Camera {
   public:
@@ -161,8 +131,7 @@ class ThirdPersonCamera : public Camera {
     void deactivate(core::input::InputMap& map) override;
     void update(const core::input::InputMap& in, float dt) override;
 
-    /// Take `camera.orbitSensitivity` and `camera.zoomStep`. There is no move-speed row to
-    /// take: this controller translates nothing, it follows.
+    /// Take `camera.orbitSensitivity` and `camera.zoomStep`.
     void applySettings(const core::settings::Settings& settings);
 
     /// Follow `node` in `tree`, both non-owning. A null tree stops the follow and leaves
@@ -175,13 +144,12 @@ class ThirdPersonCamera : public Camera {
     float orbitSensitivity = 0.005f; ///< radians per pixel of drag
     float zoomStep = 0.9f;           ///< distance multiplier per scroll notch
     /// **Only the scroll is clamped to these, not the pose.** `Camera::frameBounds` and
-    /// `--camera` both write `distance` directly and neither is this controller's business
-    /// to overrule; clamping every frame would move a camera nobody had touched.
+    /// `--camera` both write `distance` directly, and clamping every frame would move a
+    /// camera nobody had touched.
     float minDistance = 1.5f;
     float maxDistance = 12.0f;
     /// Grabbed mouselook with no held button, as `FirstPersonCamera` does it. Off by
-    /// default: drag-to-orbit is what a third-person camera over a cursor-driven UI wants,
-    /// and a grab that started at `activate` would take the pointer off every panel.
+    /// default, because a grab that started at `activate` takes the pointer off every panel.
     bool continuousLook = false;
 
   private:
@@ -196,20 +164,14 @@ class ThirdPersonCamera : public Camera {
 /**
  * @brief Orthographic, fixed pitch, quarter-turn yaw, and a focus that pans.
  *
- * The first controller to drive `Projection::Orthographic`, which the engine has carried
- * since P3 with nothing but a lambda setting it. **Scroll moves `orthoHeight` rather than
- * `distance`** -- that is the difference the projection makes and the thing a controller
- * written for perspective gets wrong: a parallel projection does not care how far away the
- * eye is, so dollying it changes nothing on screen.
+ * **Scroll moves `orthoHeight` rather than `distance`**, which is what a controller written
+ * for perspective gets wrong here: a parallel projection does not care how far away the eye
+ * is, so dollying it changes nothing on screen.
  *
  * Pitch is fixed at the true isometric angle, where a unit cube's three visible faces
  * project to equal areas. Yaw snaps in quarter turns, rounded to a turn count at the moment
- * of the press rather than accumulated -- so eight presses land exactly back where they
- * started, and `frameBounds` and `--camera` still choose where this camera begins.
- *
- * It does **not** replace `pixelPerfectCamera`. That is a 2D pixel-exact setup -- one world
- * unit per texel, origin centred, yaw pi -- and conflating the two would produce a camera
- * bad at both.
+ * of the press rather than accumulated, so eight presses land exactly back where they
+ * started and `frameBounds` and `--camera` still choose where this camera begins.
  */
 class IsometricCamera : public Camera {
   public:
@@ -222,9 +184,9 @@ class IsometricCamera : public Camera {
     /// Take `camera.moveSpeedScale` as the pan scale and `camera.zoomStep` as the zoom.
     void applySettings(const core::settings::Settings& settings);
 
-    /// 35.264 degrees below the horizon, negated because `pitch` is signed and this camera
-    /// looks down. `atan(1/sqrt(2))`: the angle at which a unit cube's three visible faces
-    /// have equal area, which is what "isometric" means before it means a look.
+    /// `-atan(1/sqrt(2))`, 35.264 degrees below the horizon: the angle at which a unit
+    /// cube's three visible faces have equal area. Negative because `pitch` is signed and
+    /// this camera looks down.
     float fixedPitch = -0.6154797f;
     float panSpeedScale = 1.0f; ///< multiplies the orthoHeight-derived pan speed
     float zoomStep = 0.9f;      ///< orthoHeight multiplier per scroll notch
@@ -232,10 +194,9 @@ class IsometricCamera : public Camera {
     /// worked out from the scene.
     float minOrthoHeight = 1.0f;
     float maxOrthoHeight = 200.0f;
-    /// World units per pixel of drag, per unit of `orthoHeight`. A drag should move the
-    /// ground under the pointer, and the exact ratio wants the viewport height, which a
-    /// camera does not have -- so this is the reciprocal of a nominal 500-pixel half-height
-    /// and is a feel row rather than a derivation.
+    /// World units per pixel of drag, per unit of `orthoHeight`. Moving the ground exactly
+    /// under the pointer wants the viewport height, which a camera does not have, so this is
+    /// the reciprocal of a nominal 500-pixel half-height and is a feel row, not a derivation.
     float dragScale = 0.002f;
 
   private:

@@ -19,7 +19,7 @@ namespace fs = std::filesystem;
 
 /**
  * @file tests/AudioTests.cpp
- * @brief The mixer, the buses, the spatializer and the occlusion filter (S5).
+ * @brief The mixer, the buses, the spatializer and the occlusion filter.
  *
  * Every test here runs the **whole** audio path -- the same decoders, resource manager,
  * spatializer, biquads and node graph a run with speakers uses -- with `backend: "null"`,
@@ -480,7 +480,7 @@ TEST_F(AudioTest, TheMixIsAFunctionOfTheStepAndNotOfTheWallClock) {
     }
 }
 
-// ============================================================ capturing the mix (S7)
+// ============================================================ capturing the mix
 
 TEST_F(AudioTest, CapturingHandsBackTheSameSamplesTheMixProduced) {
     // The tap is not a second mixing path -- it is a copy taken from `onProcess`, which
@@ -546,7 +546,7 @@ TEST_F(AudioTest, NotCapturingCostsNothingAndStoppingIsIdempotent) {
     EXPECT_EQ(audio.readCaptured(block.data(), 1024), 0u);
 }
 
-// D6. `create` returns an invalid handle for a file it could not open or a voice the budget
+// `create` returns an invalid handle for a file it could not open or a voice the budget
 // refused. It is 0xFFFFFFFF, not an unrepresentable value, so a caller that stored it can
 // reach every accessor below with it. Each has to answer the way it would for a source
 // that exists and is silent.
@@ -575,7 +575,7 @@ TEST_F(AudioTest, TheValueCreateReturnsOnFailureIsSafeToAskAbout) {
     audio.update(kStep);
 }
 
-// ========================================== lifetimes: create and destroy (C1)
+// ========================================== lifetimes: create and destroy
 
 TEST_F(AudioTest, DestroyingASourceMakesTheHandleStale) {
     AudioEngine audio;
@@ -649,7 +649,7 @@ TEST_F(AudioTest, TheVoiceBudgetNowBoundsLiveSourcesRatherThanLifetimeTotals) {
     }
 }
 
-// ============================================================ one-shots (G7)
+// ============================================================ one-shots
 //
 // What a contact event unblocks. Everything a source declared by a node does, a one-shot
 // does too -- the bus, the spatialiser, the stream-versus-decode decision -- so what these
@@ -763,7 +763,7 @@ TEST_F(AudioTest, PlayAtOnAnEngineThatNeverCameUpIsANoOp) {
     EXPECT_FALSE(audio.playAt(source(shot), {0.0f, 0.0f, 0.0f}).valid());
 }
 
-// ------------------------------------------------------ more than one pair of ears (C28)
+// ------------------------------------------------------ more than one pair of ears
 
 TEST_F(AudioTest, TheListenerCountIsWhatWasAskedForAndIsClampedToWhatMiniaudioHolds) {
     AudioConfig cfg = config();
