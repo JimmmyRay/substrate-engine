@@ -110,8 +110,9 @@ cmake -B build/debug -G Ninja -DCMAKE_BUILD_TYPE=Debug -DSUBSTRATE_GAME=demo
 cmake --build build/debug
 ```
 
-`-DSUBSTRATE_GAME=` (empty) is the engine-only build. `-DSUBSTRATE_ENTRY_POINT=OFF`
-drops `main()` from the library, for a game that wants to drive `Engine` by hand.
+`-DSUBSTRATE_GAME=` (empty) is the engine-only build. A game that wants to drive `Engine`
+by hand just defines its own `main()`: the archive's copy is pulled to resolve that symbol
+and nothing else, so defining one leaves it unreached.
 
 </details>
 

@@ -1,6 +1,7 @@
 #include "scene/Simulation.h"
 
 #include "Modules.h"
+#include "physics/PhysicsModule.h"
 
 #include <gtest/gtest.h>
 
@@ -65,19 +66,23 @@ TEST(Simulation, StepsAWorldWithNoDeviceAndNoWindow) {
     // that links neither Vulkan nor GLFW. If this file ever needs a device to compile, the
     // link of `substrate_tests` and `substrate-sim` is what says so.
     Simulation sim;
-    sim.physics.init({}, 8);
-    sim.physics.createBody(floorBox());
-    const PhysicsCharacterId player = sim.physics.createCharacter(capsuleAt({0.0f, 2.0f, 0.0f}));
-    sim.physics.finalize();
+    // The world `sim.step` moves is the module's, not one of this file's: linking physics is
+    // what puts a solver behind `modules::physics`, and building a second world here would
+    // step the empty one and assert about this one.
+    physics::PhysicsWorld& world = physics::world();
+    world.init({}, 8);
+    world.createBody(floorBox());
+    const PhysicsCharacterId player = world.createCharacter(capsuleAt({0.0f, 2.0f, 0.0f}));
+    world.finalize();
 
     ASSERT_TRUE(player.valid());
     // Dropped from two metres, so "it fell" and "it landed" are two different assertions.
-    EXPECT_FALSE(sim.physics.characterOnGround(player));
+    EXPECT_FALSE(world.characterOnGround(player));
 
     for (int i = 0; i < 240; ++i) sim.step(kStep);
 
-    EXPECT_TRUE(sim.physics.characterOnGround(player));
-    const glm::mat4 at = sim.physics.characterTransform(player, 0.0f);
+    EXPECT_TRUE(world.characterOnGround(player));
+    const glm::mat4 at = world.characterTransform(player, 0.0f);
     EXPECT_NEAR(at[3].y, 0.0f, 0.05f);
 }
 
@@ -86,35 +91,36 @@ TEST(Simulation, TenThousandStepsReachASteadyStateAndStayThere) {
     // one second, and the three things that break over a long run — a growing vector, an
     // accumulator that drifts, a solver that never settles — all look fine at sixty steps.
     Simulation sim;
-    sim.physics.init({}, 16);
-    sim.physics.createBody(floorBox());
-    sim.physics.createBody(crateAt({0.0f, 3.0f, 0.0f}));
-    const PhysicsCharacterId player = sim.physics.createCharacter(capsuleAt({4.0f, 0.0f, 0.0f}));
-    sim.physics.finalize();
+    physics::PhysicsWorld& world = physics::world();
+    world.init({}, 16);
+    world.createBody(floorBox());
+    world.createBody(crateAt({0.0f, 3.0f, 0.0f}));
+    const PhysicsCharacterId player = world.createCharacter(capsuleAt({4.0f, 0.0f, 0.0f}));
+    world.finalize();
 
-    const uint32_t bodies = sim.physics.bodyCount();
-    const uint32_t characters = sim.physics.characterCount();
+    const uint32_t bodies = world.bodyCount();
+    const uint32_t characters = world.characterCount();
 
     for (int i = 0; i < 2000; ++i) sim.step(kStep);
-    const glm::mat4 settled = sim.physics.characterTransform(player, 0.0f);
-    const BodyId crate = sim.physics.bodyAt(1);
-    const glm::mat4 crateSettled = sim.physics.bodyTransform(crate, 0.0f);
+    const glm::mat4 settled = world.characterTransform(player, 0.0f);
+    const BodyId crate = world.bodyAt(1);
+    const glm::mat4 crateSettled = world.bodyTransform(crate, 0.0f);
 
     for (int i = 0; i < 8000; ++i) sim.step(kStep);
 
     // Nothing was asked to move after it settled, so eight thousand further steps is eight
     // thousand chances to drift. A millimetre is the tolerance because the solver puts a
     // resting body to sleep rather than freezing it exactly.
-    const glm::mat4 later = sim.physics.characterTransform(player, 0.0f);
+    const glm::mat4 later = world.characterTransform(player, 0.0f);
     EXPECT_NEAR(later[3].x, settled[3].x, 1e-3f);
     EXPECT_NEAR(later[3].y, settled[3].y, 1e-3f);
     EXPECT_NEAR(later[3].z, settled[3].z, 1e-3f);
-    EXPECT_NEAR(sim.physics.bodyTransform(crate, 0.0f)[3].y, crateSettled[3].y, 1e-3f);
+    EXPECT_NEAR(world.bodyTransform(crate, 0.0f)[3].y, crateSettled[3].y, 1e-3f);
 
     // **The table did not grow.** A step that appends a slot per iteration is the leak this
     // arm is really watching for, and it is invisible in a position.
-    EXPECT_EQ(sim.physics.bodyCount(), bodies);
-    EXPECT_EQ(sim.physics.characterCount(), characters);
+    EXPECT_EQ(world.bodyCount(), bodies);
+    EXPECT_EQ(world.characterCount(), characters);
 }
 
 TEST(Simulation, AnEmptyWorldStepsAndCostsNothing) {
@@ -122,13 +128,14 @@ TEST(Simulation, AnEmptyWorldStepsAndCostsNothing) {
     // merely cheap — that is what lets the profile carry a named zero per system instead of a
     // missing row. The engine relies on it for a scene that authors none of them.
     Simulation sim;
-    sim.physics.init({}, 1);
-    sim.physics.finalize();
+    physics::PhysicsWorld& world = physics::world();
+    world.init({}, 1);
+    world.finalize();
 
     for (int i = 0; i < 600; ++i) sim.step(kStep);
 
-    EXPECT_EQ(sim.physics.bodyCount(), 0u);
-    EXPECT_EQ(sim.physics.characterCount(), 0u);
+    EXPECT_EQ(world.bodyCount(), 0u);
+    EXPECT_EQ(world.characterCount(), 0u);
     // The step ran against `modules::Anim::empty` -- this binary links no animation module,
     // and that is the arrangement a headless server without one is in.
     EXPECT_TRUE(modules::anim->stats().empty);
@@ -137,18 +144,19 @@ TEST(Simulation, AnEmptyWorldStepsAndCostsNothing) {
 TEST(Simulation, TheStepIsFixedAndTwoRunsOfItAgree) {
     // Determinism is the property a batch tuning job rests on: the same scene stepped the
     // same number of times has to give the same answer, or a sweep over one parameter is
-    // measuring the machine. Two `Simulation`s rather than one stepped twice, because a
-    // reset that quietly kept state would pass the second and fail this.
+    // measuring the machine. The world is rebuilt between the two arms rather than reused,
+    // because a teardown that quietly kept state would pass the second and fail this.
     auto run = [](int steps) {
         Simulation sim;
-        sim.physics.init({}, 8);
-        sim.physics.createBody(floorBox());
-        sim.physics.createBody(crateAt({0.1f, 4.0f, -0.2f}));
-        const PhysicsCharacterId p = sim.physics.createCharacter(capsuleAt({1.0f, 1.0f, 0.0f}));
-        sim.physics.finalize();
-        sim.physics.setCharacterInput(p, {0.0f, 0.0f, 1.0f}, false);
+        physics::PhysicsWorld& world = physics::world();
+        world.init({}, 8);
+        world.createBody(floorBox());
+        world.createBody(crateAt({0.1f, 4.0f, -0.2f}));
+        const PhysicsCharacterId p = world.createCharacter(capsuleAt({1.0f, 1.0f, 0.0f}));
+        world.finalize();
+        world.setCharacterInput(p, {0.0f, 0.0f, 1.0f}, false);
         for (int i = 0; i < steps; ++i) sim.step(kStep);
-        return sim.physics.characterTransform(p, 0.0f)[3];
+        return world.characterTransform(p, 0.0f)[3];
     };
 
     const glm::vec4 first = run(600);

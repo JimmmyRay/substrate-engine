@@ -63,9 +63,9 @@ the same driver segfaults inside `vkCreateDevice` under ThreadSanitizer, so TSan
 CPU-only paths, which in practice means `./test.sh tsan`. See tooling.md, "What each
 configuration can and cannot do", for the table.
 
-Both run the unit suite, which links only `SUBSTRATE_HOSTED_SOURCES`, the translation
-units that pull in neither Vulkan nor a window. It is the only place the profiler's and
-the logger's threading gets checked.
+Both run the unit suite, which links the engine archive without volk or glfw, so anything
+needing a driver fails to link rather than being kept out by a list. It is the only place
+the profiler's and the logger's threading gets checked.
 
 **A leak or lifetime question about a path that draws is two short non-sanitized runs at
 different cycle counts, compared on the `VRAM [...]` lines** — not one long one. Ten

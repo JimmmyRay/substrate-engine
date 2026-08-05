@@ -556,7 +556,7 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
         // Idempotent, and called again for exactly this: it re-snapshots over the slots the
         // bodies above just added, so their rest transforms read as where they are rather
         // than as the identity.
-        physicsWorld.finalize();
+        modules::physics->finalize();
 
         std::vector<DrivenSlot> slots;
         slots.reserve(modelInstances[id].size());
@@ -570,10 +570,10 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
 
         const uint32_t drivenNodes = bindDrivenNodes(added, slots);
 
+        const modules::Physics::Stats solver = modules::physics->stats();
         core::Logger::status(core::LogCategory::Scene,
                              "model %u: %u colliders bound, %u driven -- %u bodies, %u characters now",
-                             id, m.colliderCount, drivenNodes, physicsWorld.bodyCount(),
-                             physicsWorld.characterCount());
+                             id, m.colliderCount, drivenNodes, solver.bodies, solver.characters);
     }
 
     // `setInstances` is the one that is easy to forget: it resizes the indirect command
@@ -1071,16 +1071,16 @@ void Engine::initCloth() {
         // Applied once, into the vertices. The instance's own transform is identity, so a
         // cloth placed anywhere else in the hierarchy is placed twice or not at all.
         desc.transform = p.transform;
-        if (clothSystem.add(physicsWorld, thisSlot, p.primitive, desc)) ++placed;
+        if (modules::physics->addCloth(thisSlot, p.primitive, desc)) ++placed;
     }
 
     if (placed == 0) return;
     core::Logger::status(core::LogCategory::Scene, "Cloth: %u soft bodies, %u vertices", placed,
-                         clothSystem.vertexCount());
+                         modules::physics->stats().clothVertices);
 
     // The deformed vertex buffer is sized from what deforms, and nothing knew a curtain did
     // until now. Without the re-run it stays sized for the skinned meshes alone.
-    render.setCloth(&clothSystem);
+    render.setCloth(modules::physics->clothMeshes());
     refreshSkinCharacters();
 }
 
@@ -1092,10 +1092,10 @@ void Engine::createColliderBodies(uint32_t firstCollider, uint32_t colliderCount
         scene::BodyId body;
         scene::PhysicsCharacterId character;
         if (isCharacter) {
-            character = physicsWorld.createCharacter(desc);
+            character = modules::physics->createCharacter(desc);
             if (!character.valid()) continue;
         } else {
-            body = physicsWorld.createBody(desc);
+            body = modules::physics->createBody(desc);
             if (!body.valid()) continue;
         }
 
@@ -1125,8 +1125,7 @@ uint32_t Engine::bindDrivenNodes(const std::vector<DrivenBody>& added, const std
     // that compares bytes.
     uint32_t drivenNodes = 0;
     for (const DrivenBody& a : added) {
-        const glm::mat4 rest = a.character.valid() ? physicsWorld.characterTransform(a.character, 0.0f)
-                                                   : physicsWorld.bodyTransform(a.body, 0.0f);
+        const glm::mat4 rest = modules::physics->restTransform(a.body, a.character);
         const glm::mat4 restInverse = glm::inverse(rest);
 
         const scene::NodeId bodyNode = sceneTree.create(a.name);
@@ -1178,8 +1177,9 @@ void Engine::initPhysics() {
     pcfg.workerThreads = configData.settings.get(core::options::physics::workerThreads);
     // A soft body is a body to the system that has to hold it, so the cloths are in the
     // count the world is sized from.
-    physicsWorld.init(pcfg, static_cast<uint32_t>(sceneData.colliders().size() + sceneData.clothSources().size()));
-    physicsWorld.debugContacts = configData.physics.debugContacts;
+    modules::physics->init(pcfg,
+                           static_cast<uint32_t>(sceneData.colliders().size() + sceneData.clothSources().size()));
+    modules::physics->setDebugContacts(configData.physics.debugContacts);
 
     // Walks the placements exactly the way `addSceneInstances` did -- same order, same skip
     // -- because the slot numbers have to come out identical.
@@ -1212,16 +1212,16 @@ void Engine::initPhysics() {
     // the pair above, has no cloth to add.
     initCloth();
 
-    physicsWorld.finalize();
+    modules::physics->finalize();
 
     const uint32_t drivenNodes = bindDrivenNodes(added, placementSlots);
 
+    const modules::Physics::Stats solver = modules::physics->stats();
     core::Logger::status(core::LogCategory::Scene, "Physics: %u bodies, %u characters, %u driven nodes, capacity %u",
-                   physicsWorld.bodyCount(), physicsWorld.characterCount(), drivenNodes,
-                   physicsWorld.bodyCapacity());
-    if (physicsWorld.refusedBodies() > 0) {
+                   solver.bodies, solver.characters, drivenNodes, solver.capacity);
+    if (solver.refused > 0) {
         core::Logger::warn(core::LogCategory::Scene, "Physics: %u colliders refused past the body budget",
-                     physicsWorld.refusedBodies());
+                     solver.refused);
     }
 }
 
@@ -1716,7 +1716,9 @@ void Engine::endFrame() {
         targets.instances = &instanceTable;
         targets.lights = &render.lights;
         targets.soundTransform = modules::audio->sourceTransforms();
-        targets.physics = &physicsWorld;
+        targets.bodyTransform = modules::physics->bodyPoses();
+        targets.characterTransform = modules::physics->characterPoses();
+        targets.kinematicTransform = modules::physics->kinematicBodies();
         targets.emitterTransform = modules::particles->emitterTransforms();
         targets.alpha = alpha;
         sceneTree.update(targets);
@@ -1730,7 +1732,7 @@ void Engine::endFrame() {
     // `droppedSteps` is a counter as well as the log line below because the log says *once*
     // that steps were dropped and the counter says on which frames.
     core::Profiler::counter("droppedSteps", simClock.droppedSteps());
-    core::Profiler::counter("bodies", physicsWorld.bodyCount());
+    core::Profiler::counter("bodies", modules::physics->stats().bodies);
     core::Profiler::counter("particles", modules::particles->frame().alive);
     core::Profiler::counter("audioSources", modules::audio->stats().sources);
     core::Profiler::counter("nodes", sceneTree.liveCount());
@@ -1749,7 +1751,7 @@ void Engine::endFrame() {
     // have written into it.
     if (physicsDebugDraw) {
         auto s = core::Profiler::scope("physicsDebugDraw");
-        physicsWorld.drawDebug(render.debugLines, camera().position());
+        modules::physics->drawDebug(render.debugLines, camera().position());
     }
 
     // One line from each listener to each source, green when heard clear and red when fully
@@ -2090,9 +2092,9 @@ int Engine::run(Game& game) {
         // pose is drawn, so reading the solve per step pays the normal recompute several
         // times over for poses nothing looks at. A frame that ran no steps re-reads the same
         // pose, which is what keeps the buffer the renderer copies from valid.
-        if (!clothSystem.empty()) {
+        if (modules::physics->stats().cloths > 0) {
             auto s = core::Profiler::scope("Cloth");
-            clothSystem.update(physicsWorld);
+            modules::physics->updateCloth();
         }
         // After this frame's steps and before `endFrame` takes the capture, so this is the
         // cell the captured image holds. The run does not stop at the capture frame, so

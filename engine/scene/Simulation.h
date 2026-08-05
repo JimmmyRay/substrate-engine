@@ -1,7 +1,6 @@
 #pragma once
 
-#include "scene/Cloth.h"
-#include "scene/Physics.h"
+#include "scene/Body.h"
 #include "scene/Scene.h"
 #include "scene/SpriteTable.h"
 
@@ -9,10 +8,11 @@
  * @file engine/scene/Simulation.h
  * @brief Everything a step moves, and the one place the order of a step is written down.
  *
- * Links without a device: pulling a Vulkan or window type in here, directly or through a
- * header, breaks the `substrate_tests`, baker and `substrate-sim` links on a driverless box.
- * What belongs in a step and what stays host-side is argued in systems.md, "The simulation
- * half".
+ * Every mover a step calls is a module now, reached through `engine/Modules.h`, so what is
+ * left here is what the engine itself owns. Naming a module type in this header would link
+ * that module into every game, and naming a Vulkan or window type would break the
+ * `substrate_tests`, baker and `substrate-sim` links on a driverless box. What belongs in a
+ * step and what stays host-side is argued in systems.md, "The simulation half".
  */
 namespace scene {
 
@@ -26,11 +26,7 @@ class Simulation {
      */
     void step(float stepSeconds);
 
-    // Declaration order is load-bearing: cloth holds bodies in the physics world, so it must
-    // be declared after `physics` to be destroyed before it.
     SpriteTable sprites;
-    PhysicsWorld physics;
-    ClothSystem cloth;
     FixedClock clock;
 
     /// The hierarchy: a body drives a node, and whatever hangs off that node follows.

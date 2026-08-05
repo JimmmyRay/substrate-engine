@@ -1,5 +1,5 @@
 #include "scene/Collider.h"
-#include "scene/Physics.h"
+#include "physics/PhysicsWorld.h"
 #include "scene/SceneTypes.h"
 
 #include <gtest/gtest.h>
@@ -14,6 +14,7 @@
 #include <vector>
 
 using namespace scene;
+using namespace physics;
 
 /**
  * @file tests/BrushGeometryTests.cpp

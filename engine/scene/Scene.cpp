@@ -399,14 +399,11 @@ void Scene::update(const SceneTargets& targets) {
         // Taken exactly, with no decomposition on the way in, and with no parent transform
         // applied: what Jolt hands back is already world space.
         const Attachments& a = n.attached;
-        if (targets.physics != nullptr && a.character.valid()) {
-            n.world = targets.physics->characterTransform(a.character, targets.alpha);
+        if (a.character.valid() && targets.characterTransform(a.character, targets.alpha, &n.world)) {
             n.dirty = true;
             continue;
         }
-        if (targets.physics != nullptr && a.body.valid() && targets.physics->bodyMoves(a.body) &&
-            !targets.physics->bodyKinematic(a.body)) {
-            n.world = targets.physics->bodyTransform(a.body, targets.alpha);
+        if (a.body.valid() && targets.bodyTransform(a.body, targets.alpha, &n.world)) {
             n.dirty = true;
             continue;
         }
@@ -440,11 +437,10 @@ void Scene::update(const SceneTargets& targets) {
                 l.direction = glm::vec4(glm::normalize(-glm::vec3(n.world[2])), l.direction.w);
             }
         }
-        // Kinematic only. Writing a dynamic body's transform back here puts the node and
-        // the solver in a fight over it, since the sweep above just read it.
-        if (targets.physics != nullptr && a.body.valid() && targets.physics->bodyKinematic(a.body)) {
-            targets.physics->setBodyTransform(a.body, n.world);
-        }
+        // Kinematic only, which the slot decides. Writing a dynamic body's transform back
+        // here puts the node and the solver in a fight over it, since the sweep above just
+        // read it.
+        if (a.body.valid()) targets.kinematicTransform(a.body, n.world);
 
         n.dirty = false;
     }

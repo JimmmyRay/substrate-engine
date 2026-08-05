@@ -19,7 +19,7 @@
 #include "gfx/ViewTable.h"
 #include "gfx/VulkanContext.h"
 #include "scene/Camera.h"
-#include "scene/Cloth.h"
+#include "gfx/DeformedMesh.h"
 #include "scene/InstanceTable.h"
 #include "scene/SceneTypes.h"
 #include "scene/SpriteTable.h"
@@ -263,8 +263,9 @@ class Renderer {
     /// @brief Name the scene's cloth, before `setSkinCharacters` sizes the deformed buffer.
     ///
     /// `setSkinCharacters` allocates `skinnedVertices` and resolves `clothDestBase`, so a
-    /// cloth named after it has nowhere to write.
-    void setCloth(const scene::ClothSystem* cloth) { clothSystem = cloth; }
+    /// cloth named after it has nowhere to write. And again after **every** cloth placed:
+    /// the spans are the solver's own storage -- see `gfx::DeformedMesh`.
+    void setCloth(std::span<const gfx::DeformedMesh> meshes) { clothMeshes = meshes; }
 
     /// @brief Allocate the pool for `capacity` particles and `emitterCount` emitters.
     ///
@@ -949,8 +950,8 @@ class Renderer {
         uint32_t weightBase = 0;
     };
     std::vector<SkinBatch> skinBatches;
-    /// Not owned, and null for every scene that authors no `FABRIC_` mesh.
-    const scene::ClothSystem* clothSystem = nullptr;
+    /// Not owned, and empty for every scene that authors no `FABRIC_` mesh.
+    std::span<const gfx::DeformedMesh> clothMeshes;
     /// Where cloth `i`'s vertices start in `skinnedVertices`, in vertices, or UINT32_MAX.
     /// Resolved once in `setSkinCharacters`.
     std::vector<uint32_t> clothDestBase;
@@ -970,9 +971,7 @@ class Renderer {
     bool recordClothUpload(uint32_t slot);
     /// Does anything in this scene write into `skinnedVertices`? The test every deformed
     /// command sweep uses, and **not `skinCharacters` alone**: cloth deforms with no rig.
-    [[nodiscard]] bool deforms() const {
-        return !skinCharacters.empty() || (clothSystem != nullptr && !clothSystem->empty());
-    }
+    [[nodiscard]] bool deforms() const { return !skinCharacters.empty() || !clothMeshes.empty(); }
     /// Submit view `view`'s commands, one indirect draw per variant group: the static half
     /// from the scene's vertex buffer, the skinned half from `skinnedVertices`.
     /// **Every geometry pass calls this rather than `vkCmdDrawIndexedIndirect`**, which

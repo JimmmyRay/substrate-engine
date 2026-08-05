@@ -380,75 +380,18 @@ add_custom_target(layer_guard ALL
     VERBATIM)
 
 # --------------------------------------------------------------------- engine
-# Translation units that pull in neither Vulkan nor a window, listed separately
-# because that is exactly the set a unit test can link against (5.1). Keeping it a
-# list rather than promoting it to a library is deliberate: two targets is not three,
-# and an OBJECT library here would buy nothing but a name.
-set(SUBSTRATE_HOSTED_SOURCES
-    engine/ai/Planner.cpp
-    engine/audio/Audio.cpp
-    engine/audio/miniaudio_impl.cpp
-    engine/nav/NavMesh.cpp
-    engine/particles/ParticleSystem.cpp
-    engine/core/AudioTap.cpp
-    engine/core/AudioBackend.cpp
-    engine/core/Config.cpp
-    engine/core/DebugView.cpp
-    engine/core/FileWrite.cpp
-    engine/core/Input.cpp
-    engine/core/Logger.cpp
-    engine/core/Paths.cpp
-    engine/core/Profiler.cpp
-    engine/core/RangeAllocator.cpp
-    engine/core/Recorder.cpp
-    engine/core/Resources.cpp
-    engine/core/SaveFile.cpp
-    engine/core/Settings.cpp
-    engine/gfx/Decal.cpp
-    engine/gfx/ImageTable.cpp
-    engine/gfx/Light.cpp
-    engine/gfx/Presentation.cpp
-    engine/gfx/ViewTable.cpp
-    engine/scene/Animation.cpp
-    engine/scene/AudioSource.cpp
-    engine/scene/Camera.cpp
-    engine/scene/CameraControllers.cpp
-    engine/scene/Cloth.cpp
-    engine/scene/Collider.cpp
-    engine/scene/InstanceTable.cpp
-    engine/scene/LitSprite.cpp
-    engine/scene/Locomotion.cpp
-    engine/scene/MeshLod.cpp
-    engine/scene/ParticleEmitter.cpp
-    engine/scene/Physics.cpp
-    engine/scene/Scene.cpp
-    engine/scene/SceneData.cpp
-    engine/scene/SceneLoader.cpp
-    engine/scene/Simulation.cpp
-    engine/scene/SpatialIndex.cpp
-    engine/scene/SpriteTable.cpp
-    engine/scene/WorldSave.cpp
-    engine/ui/BindingMenu.cpp
-    engine/ui/Inspector.cpp
-    engine/ui/SettingsUi.cpp
-    engine/ui/Ui.cpp
-)
-
-# Device-free too, and deliberately not in the list above (D9). Both are hosted in the
-# sense that matters -- neither names a Vulkan type, so `substrate-bake` links them with
-# no driver present -- but neither belongs to every binary that links the engine:
+# Every .cpp under engine/ is compiled, and nothing here names one. A file that moves
+# between directories changes no build input -- which is what lets a subsystem move
+# without this file having an opinion about where it went, and why a rename can no longer
+# fail the build at a line that says nothing about the code.
 #
-#   SceneParse.cpp     the CPU half of a glTF load. Not in the unit suite, which has no
-#                      document to parse and would otherwise link fastgltf and stb for
-#                      nothing.
-#   SceneCacheWrite.cpp  the sidecar *writer*. Not in `substrate`, and that is the whole
-#                      mechanism behind D9's invariant: a static library links by object
-#                      file, so while this shared a translation unit with the reader,
-#                      every game that could read a `.scene` also shipped the code to
-#                      write one. The unit suite links it because SceneDataTests.cpp and
-#                      MeshLodTests.cpp write a cache and read it back.
-set(SUBSTRATE_SCENE_PARSE_SOURCES engine/scene/SceneParse.cpp)
-set(SUBSTRATE_SCENE_WRITE_SOURCES engine/scene/SceneCacheWrite.cpp)
+# **What a binary ends up carrying is the linker's answer, not this file's.** A static
+# library yields an archive member only to resolve an undefined symbol, so naming a header
+# and calling through it is what links the code behind it -- the same mechanism the module
+# layout rests on, applied to the build. There is nothing here to grant or withhold it, and
+# no word here for a module.
+file(GLOB_RECURSE SUBSTRATE_ENGINE_SOURCES CONFIGURE_DEPENDS
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine/*.cpp)
 
 # miniaudio's implementation is third-party code the project's warning set was never
 # written for, and it is one file. Silenced as a whole here rather than by chasing the
@@ -461,46 +404,23 @@ set_source_files_properties(engine/audio/miniaudio_impl.cpp PROPERTIES COMPILE_O
 # game/ in the tree, which is the strongest available check that the boundary is real --
 # a dependency leaking from a game into the engine becomes a link error rather than a
 # code review.
-add_library(substrate STATIC
-    ${SUBSTRATE_HOSTED_SOURCES}
-    engine/gfx/GpuProfiler.cpp
-    engine/core/InputGlfw.cpp
-    engine/gfx/vma_impl.cpp
-    engine/gfx/VulkanContext.cpp
-    engine/gfx/Swapchain.cpp
-    engine/gfx/Renderer.cpp
-    engine/gfx/Resources.cpp
-    engine/gfx/SettingsBind.cpp
-    engine/gfx/Pipeline.cpp
-    engine/gfx/SpirvReflect.cpp
-    engine/gfx/FrameCapture.cpp
-    engine/gfx/RenderDoc.cpp
-    engine/gfx/AccelStruct.cpp
-    engine/gfx/Ktx2.cpp
-    engine/scene/stb_impl.cpp
-    ${SUBSTRATE_SCENE_PARSE_SOURCES}
-    engine/scene/GltfScene.cpp
-    engine/ui/Font.cpp
-    engine/ui/FontData.cpp
-    engine/Engine.cpp
-    # The module wiring. Each names `Engine` and so is device-side by construction, which is
-    # why none of these joins SUBSTRATE_HOSTED_SOURCES beside the module it wires: the module
-    # itself stays hosted and testable, and only the wiring leaves.
-    engine/audio/AudioModule.cpp
-    engine/nav/NavModule.cpp
-    engine/particles/ParticlesModule.cpp
-)
-
-# main() itself, and it is optional. ON by default: the engine compiles the entry point
-# and `SUBSTRATE_GAME(T)` is the only thing a game writes to reach it. OFF hands the
-# whole loop to a game that wants to drive `Engine` by hand.
 #
-# It lives in the archive rather than in each game because crt1.o's undefined `main` is
-# what pulls it out -- so a game contributes one object file and gets a program.
-option(SUBSTRATE_ENTRY_POINT "Compile main() into the engine library" ON)
-if(SUBSTRATE_ENTRY_POINT)
-    target_sources(substrate PRIVATE engine/Entry.cpp)
-endif()
+# Three invariants that used to be spelled as source lists are now the archive's own
+# behaviour, and each is stronger for it:
+#
+#   main()             engine/Entry.cpp defines it, and it is pulled only where nothing
+#                      else does. A game writing its own main, and the unit suite with
+#                      tests/main.cpp, resolve the symbol themselves and never see it --
+#                      so the option that used to compile it out has nothing left to do.
+#   the .scene writer  SceneCacheWrite.cpp is reached by `substrate-bake` and by two test
+#                      cases and by nothing a game calls, so a shipped game still holds no
+#                      path that can produce one. D9's invariant, and still a link-time
+#                      one rather than a #if.
+#   the driverless set The unit suite, the baker and the sim loop link no volk and no
+#                      glfw. Anything device-side they pull in is an undefined symbol at
+#                      link, which is the check the hand-kept "hosted" list was standing
+#                      in for -- and it now covers files nobody remembered to list.
+add_library(substrate STATIC ${SUBSTRATE_ENGINE_SOURCES})
 
 # Shader hot reload needs the shader *sources* and a glslang to run, and both are
 # properties of the machine that did the build. ON is right for every development build
@@ -755,18 +675,13 @@ endif()
 # -- no device, no window, no shaders -- is the property that lets a baker run on a build
 # machine or in a container with no GPU at all.
 #
-# It is the only writer of a `.scene` in the tree. `libsubstrate.a` does not link
-# SUBSTRATE_SCENE_WRITE_SOURCES, so a shipped game holds no path that can produce one,
-# and that is a link-time guarantee rather than a `#if` someone can flip.
-add_executable(substrate-bake
-    ${SUBSTRATE_HOSTED_SOURCES}
-    ${SUBSTRATE_SCENE_PARSE_SOURCES}
-    ${SUBSTRATE_SCENE_WRITE_SOURCES}
-    engine/scene/stb_impl.cpp
-    tools/bake.cpp
-)
+# It is the only writer of a `.scene` in the tree, and it stays that way through the
+# archive rather than through a source list: nothing a game calls reaches
+# SceneCacheWrite.cpp, so no game links it. A link-time guarantee, not a `#if` someone
+# can flip.
+add_executable(substrate-bake tools/bake.cpp)
 
-add_dependencies(substrate-bake ascii_guard)
+add_dependencies(substrate-bake ascii_guard substrate)
 
 target_include_directories(substrate-bake PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine)
 
@@ -785,7 +700,10 @@ target_compile_options(substrate-bake PRIVATE
 
 # No volk, no glfw. That absence is the check: the day something device-side is pulled
 # into a hosted translation unit, this target stops linking.
+# The archive, by path rather than by target name: linking the target would inherit volk
+# and glfw as interface requirements and the absence below would stop meaning anything.
 target_link_libraries(substrate-bake PRIVATE
+    $<TARGET_FILE:substrate>
     glm::glm
     fastgltf::fastgltf
     meshoptimizer
@@ -807,14 +725,9 @@ target_link_libraries(substrate-bake PRIVATE
 # surface against a real driver. What makes this more than a second `main()` is that it calls
 # the same `scene::Simulation::step` the drawn engine calls; a headless loop with its own copy
 # of the call order is a loop that disagrees with the rendered one.
-add_executable(substrate-sim
-    ${SUBSTRATE_HOSTED_SOURCES}
-    ${SUBSTRATE_SCENE_PARSE_SOURCES}
-    engine/scene/stb_impl.cpp
-    tools/sim.cpp
-)
+add_executable(substrate-sim tools/sim.cpp)
 
-add_dependencies(substrate-sim ascii_guard)
+add_dependencies(substrate-sim ascii_guard substrate)
 
 target_include_directories(substrate-sim PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine)
 
@@ -833,7 +746,9 @@ target_compile_options(substrate-sim PRIVATE
 
 # No volk, no glfw, and the same sentence applies: that absence is the check. This target is
 # the one that fails to link the day a device dependency reaches the simulation.
+# The archive by path, for the reason substrate-bake gives.
 target_link_libraries(substrate-sim PRIVATE
+    $<TARGET_FILE:substrate>
     glm::glm
     fastgltf::fastgltf
     meshoptimizer
@@ -851,12 +766,11 @@ target_link_libraries(substrate-sim PRIVATE
 # nobody runs. `./test.sh` builds and runs it; `./build.sh <cfg> --target substrate`
 # is the escape hatch for a build that wants the renderer alone.
 #
-# The binary links `SUBSTRATE_HOSTED_SOURCES` and nothing else, so it needs no device,
-# no window and no shaders -- which is what lets it run under TSan, where the renderer
-# cannot go at all.
+# It links the engine archive and names nothing that draws, so the linker hands it no
+# device, no window and no shaders -- which is what lets it run under TSan, where the
+# renderer cannot go at all. `tests/main.cpp` defines main(), so engine/Entry.cpp's copy
+# is never pulled.
 add_executable(substrate_tests
-    ${SUBSTRATE_HOSTED_SOURCES}
-    ${SUBSTRATE_SCENE_WRITE_SOURCES}
     tests/main.cpp
     tests/AveragingBufferTests.cpp
     tests/PathsTests.cpp
@@ -905,7 +819,7 @@ add_executable(substrate_tests
     tests/SettingsUiTests.cpp
 )
 
-add_dependencies(substrate_tests ascii_guard)
+add_dependencies(substrate_tests ascii_guard substrate)
 
 target_include_directories(substrate_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine)
 
@@ -928,7 +842,9 @@ target_compile_options(substrate_tests PRIVATE
     $<$<CONFIG:Release>:-O3>
 )
 
+# The archive by path, for the reason substrate-bake gives.
 target_link_libraries(substrate_tests PRIVATE
+    $<TARGET_FILE:substrate>
     glm::glm
     meshoptimizer
     rapidjson

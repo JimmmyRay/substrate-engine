@@ -14,7 +14,7 @@
 #include "scene/InstanceTable.h"
 #include "scene/LitSprite.h"
 #include "scene/SpatialIndex.h"
-#include "scene/Physics.h"
+#include "scene/Body.h"
 #include "scene/Scene.h"
 #include "scene/Simulation.h"
 #include "scene/SpriteTable.h"
@@ -59,12 +59,16 @@ class SceneAnimator;
 class LocomotionDriver;
 } // namespace anim
 
+namespace physics {
+class PhysicsWorld;
+} // namespace physics
+
 class Engine {
   public:
     /// **Both defined in `Engine.cpp`, not defaulted here.** Inline, the destructor
     /// destroys twenty-odd by-value members in *the caller's* translation unit, so every
     /// object file that lets an `Engine` go out of scope carries an undefined
-    /// `~PhysicsWorld`, `~GltfScene` and `~SceneLoader` that nothing in it mentions.
+    /// `~GltfScene` and `~SceneLoader` that nothing in it mentions.
     Engine();
     /// The backstop for the path `main` does not cover: `run()` calls into arbitrary game
     /// code, and if that unwinds, `Entry.cpp` never reaches `shutdown()` and the window,
@@ -358,7 +362,11 @@ class Engine {
     /// **Defined in `particles/ParticlesModule.cpp`, and naming it is what links
     /// particles** -- a game that never calls this draws none. See that header.
     ::particles::ParticleSystem& particles();
-    scene::PhysicsWorld& physics() { return physicsWorld; }
+    /// The world a game creates bodies in, raycasts against and pushes.
+    ///
+    /// **Defined in `physics/PhysicsModule.cpp`, and naming it is what links physics** -- a
+    /// game that never calls this solves nothing. See that header.
+    ::physics::PhysicsWorld& physics();
     /// The mixer a game places sources in and fires one-shots at.
     ///
     /// **Defined in `audio/AudioModule.cpp`, and naming it is what links audio** -- a game
@@ -593,8 +601,6 @@ class Engine {
      */
     scene::Simulation sim;
     scene::SpriteTable& spriteTable = sim.sprites;
-    scene::PhysicsWorld& physicsWorld = sim.physics;
-    scene::ClothSystem& clothSystem = sim.cloth;
     scene::FixedClock& simClock = sim.clock;
     scene::Scene& sceneTree = sim.tree;
 

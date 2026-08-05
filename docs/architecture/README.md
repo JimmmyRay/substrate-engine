@@ -70,14 +70,14 @@ Three properties of that layout are load-bearing rather than tidy:
 `gfx/DebugLines.h`, a header of sixteen bytes that exists so that neither Jolt reaches the
 renderer nor Vulkan reaches the physics world. Audio never reaches it at all.
 
-**The hosted set is a real boundary.** `SUBSTRATE_HOSTED_SOURCES` in `CMakeLists.txt`
-names the translation units that pull in neither Vulkan nor a window — Config, Input,
-Logger, Profiler, Light, Animation, Audio, AudioSource, Camera, Collider, InstanceTable,
-ParticleSystem, Physics, SpriteTable, BindingMenu, Inspector, Ui. The unit suite links only those,
-which is what lets it run under ThreadSanitizer where the renderer cannot (the proprietary
-NVIDIA driver segfaults inside `vkCreateDevice` under TSan). Moving a file into that set
-is done by removing its device dependency, never by wrapping one. Nothing under `game/`
-ever joins it.
+**The hosted set is a real boundary, and nothing writes it down.** `CMakeLists.txt` globs
+every `.cpp` under `engine/` into one static library and names no file. The unit suite,
+the baker and the sim loop link that archive and link no volk and no glfw, so a member
+that needs a driver is an undefined symbol at link — which is what lets the suite run
+under ThreadSanitizer where the renderer cannot (the proprietary NVIDIA driver segfaults
+inside `vkCreateDevice` under TSan). Getting a file into that set is done by removing its
+device dependency, never by wrapping one and never by editing a list. Nothing under
+`game/` ever joins it.
 
 **`build.sh` produces no runnable binary, and that is the check on `game/`.** The engine
 must build, test and sanitize with nothing under `game/` in the tree, so a dependency

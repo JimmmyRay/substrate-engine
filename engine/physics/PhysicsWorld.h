@@ -1,8 +1,8 @@
 #pragma once
 
-#include "core/Handle.h"
 #include "core/Slot.h"
 #include "gfx/DebugLines.h"
+#include "scene/Body.h"
 #include "scene/CharacterMotion.h"
 #include "scene/Cloth.h"
 #include "scene/Collider.h"
@@ -15,101 +15,29 @@
 #include <span>
 #include <vector>
 
-namespace scene {
+namespace physics {
 
 /**
- * @file Physics.h
- * @brief The fixed-step clock and the rigid-body world.
+ * @file engine/physics/PhysicsWorld.h
+ * @brief The rigid-body world, and the soft bodies solved alongside it.
+ *
+ * What a document authors -- colliders, the world's configuration, the handles a body is
+ * named by -- is `scene/Collider.h` and `scene/Body.h`, where the loaders reach it.
  *
  * The golden images rest on frame N being the same image on every run, and three things here
  * hold that up. Breaking any one of them breaks the golden set on some machines and not
  * others:
  *
- * - The step is fixed and the accumulator is `FixedClock`'s, so the step count before frame N
- *   is a function of the frame index, not of the machine.
+ * - The step is fixed and the accumulator is `scene::FixedClock`'s, so the step count before
+ *   frame N is a function of the frame index, not of the machine.
  * - `workerThreads` defaults to zero, selecting Jolt's single-threaded job system. Jolt is
  *   deterministic for a *fixed* thread count, and zero is the only count fixed everywhere.
  * - Bodies are created in file order and never reordered, so the `BodyID`s the solver's
  *   island ordering depends on are a function of the scene.
  *
- * This header names no Jolt type; adding one puts Jolt on the include path of every file that
- * touches a scene.
+ * This header names no Jolt type; adding one puts Jolt on the include path of everything that
+ * links physics.
  */
-
-/// Everything the world needs to exist. Defaults are the engine's, not Jolt's, where the two
-/// disagree.
-struct PhysicsConfig {
-    /// The simulation step, in seconds. Shared with animation and particles: three subsystems
-    /// stepping at three rates make "frame 60" mean three different times.
-    float step = 1.0f / 60.0f;
-    /// Steps a single frame may run before the remaining accumulated time is dropped, counted
-    /// and reported rather than chased into a frame that never ends.
-    uint32_t maxStepsPerFrame = 4;
-    glm::vec3 gravity{0.0f, -9.81f, 0.0f};
-    /// Bodies the world can hold; zero sizes it from the scene -- see `PhysicsWorld::init`.
-    uint32_t bodyBudget = 0;
-    /// Zero selects Jolt's single-threaded job system; any other value is a pool of that size.
-    /// Determinism needs the count fixed, not one -- see the determinism note above.
-    uint32_t workerThreads = 0;
-    /// Collision sub-steps inside one `step`. Jolt's own default is 1.
-    uint32_t collisionSteps = 1;
-};
-
-/**
- * @brief The accumulator that turns a variable frame rate into a fixed step.
- *
- * Animation and particles step on it too, so a scene with no colliders still has one.
- *
- * A locked clock is this same path fed exactly `step`, which lands the accumulator on exactly
- * zero in float: one step, `alpha()` zero. Adding a second path for it is what would let the
- * locked and realtime clocks drift apart.
- */
-class FixedClock {
-  public:
-    explicit FixedClock(float step = 1.0f / 60.0f, uint32_t maxStepsPerFrame = 4)
-        : stepSeconds(step > 0.0f ? step : 1.0f / 60.0f), maxSteps(maxStepsPerFrame) {}
-
-    /// Add a frame's worth of time and begin a new frame's budget of steps. Negative time is
-    /// ignored: a clock stepped across a system time change is handed one.
-    void accumulate(float dt);
-
-    /// True when another step should run this frame. Consumes it.
-    [[nodiscard]] bool consume();
-
-    /// How far into the next step the render time sits, in [0, 1). Exactly zero under a
-    /// locked clock.
-    [[nodiscard]] float alpha() const;
-
-    /**
-     * @brief Scale time before it is accumulated. 0 is paused, 1 is normal, negatives clamp.
-     *
-     * Applied to what the accumulator *receives*, so animation, particles, physics and audio
-     * occlusion inherit it wherever they inherit their step; rendering, input and the UI sit
-     * outside the step and keep running. Audio playback is miniaudio's clock and this cannot
-     * reach it -- silence during a pause is `AudioEngine::setMuted`.
-     */
-    void setTimeScale(float scale) { timeScaleValue = scale > 0.0f ? scale : 0.0f; }
-    [[nodiscard]] float timeScale() const { return timeScaleValue; }
-    /// True when the scale has stopped time.
-    [[nodiscard]] bool paused() const { return timeScaleValue == 0.0f; }
-
-    [[nodiscard]] float step() const { return stepSeconds; }
-    /// Steps taken since construction.
-    [[nodiscard]] uint64_t stepCount() const { return total; }
-    /// Whole steps discarded by the per-frame cap, cumulative. Time the simulation did not
-    /// run is a fact a game needs, so this must never be dropped silently.
-    [[nodiscard]] uint32_t droppedSteps() const { return dropped; }
-    [[nodiscard]] uint32_t stepsThisFrame() const { return thisFrame; }
-
-  private:
-    float stepSeconds;
-    uint32_t maxSteps;
-    float timeScaleValue = 1.0f;
-    float accumulator = 0.0f;
-    uint32_t thisFrame = 0;
-    uint32_t dropped = 0;
-    uint64_t total = 0;
-};
 
 /// Position and orientation of one body at one instant. Two per body -- before the last step
 /// and after it -- are what the render state interpolates between.
@@ -126,30 +54,6 @@ struct PhysicsState {
 /// Defined in the .cpp, where Jolt's headers are.
 struct PhysicsDebugRenderer;
 
-/// Tags that make a body handle and a character handle unrelated types. Declared, never
-/// defined -- see `core/Handle.h`.
-struct BodyTag;
-struct PhysicsCharacterTag;
-
-/// A rigid body in the physics world.
-using BodyId = core::Handle<BodyTag>;
-/// A `CharacterVirtual`: not solved with the world but reading it, which is why it is its own
-/// handle type. `SceneAnimator`'s characters are unrelated things.
-using PhysicsCharacterId = core::Handle<PhysicsCharacterTag>;
-
-/**
- * @brief What a character is standing on, or not.
- *
- * The third value is why this type exists: a face steeper than the collider's `maxSlopeAngle`
- * is neither ground nor mid-air. Folding it into `OnGround` walks a character up a cliff;
- * folding it into `InAir` plays a fall clip for something the solver is sliding down a slope.
- */
-enum class CharacterGround : uint8_t {
-    InAir,    ///< Touching nothing.
-    OnGround, ///< Standing. The only state a jump launches from, coyote window aside.
-    Sliding,  ///< Too steep to stand on, or Jolt's `NotSupported`: a body that cannot hold it.
-};
-
 class PhysicsWorld {
   public:
     PhysicsWorld();
@@ -164,7 +68,7 @@ class PhysicsWorld {
      *        maximum at init, so the ceiling is that count plus stated headroom, unless
      *        `cfg.bodyBudget` names one. Past it, `createBody` refuses, counts and reports.
      */
-    void init(const PhysicsConfig& cfg, uint32_t expectedBodies);
+    void init(const scene::PhysicsConfig& cfg, uint32_t expectedBodies);
     void shutdown();
 
     /// True until `init()`, and for a scene that declared no collider. `step()` returns on it,
@@ -178,10 +82,10 @@ class PhysicsWorld {
      * A `desc.motion == Character` is refused rather than routed to `createCharacter`, which
      * would return a handle the caller could not tell apart from a body's.
      */
-    BodyId createBody(const ColliderDesc& desc, uint64_t userData = 0);
+    scene::BodyId createBody(const scene::ColliderDesc& desc, uint64_t userData = 0);
 
     /// Create a `CharacterVirtual`. Invalid handle when it was refused.
-    PhysicsCharacterId createCharacter(const ColliderDesc& desc, uint64_t userData = 0);
+    scene::PhysicsCharacterId createCharacter(const scene::ColliderDesc& desc, uint64_t userData = 0);
 
     /**
      * @brief Retire a body or a character. A second destroy of the same handle is a no-op.
@@ -190,27 +94,27 @@ class PhysicsWorld {
      * the free list only at the top of the next `step()`: Jolt cannot have a body removed from
      * under a step in progress.
      */
-    void destroy(BodyId id);
-    void destroy(PhysicsCharacterId id);
+    void destroy(scene::BodyId id);
+    void destroy(scene::PhysicsCharacterId id);
 
     /// The handle currently occupying a slot, for a caller iterating `0..bodyCount()`.
     /// Invalid for a retired slot, which is what makes such a walk skip them.
-    [[nodiscard]] BodyId bodyAt(uint32_t slot) const {
+    [[nodiscard]] scene::BodyId bodyAt(uint32_t slot) const {
         if (slot >= bodies.size() || !bodies[slot].live) return {};
-        return BodyId{slot, bodies[slot].generation};
+        return scene::BodyId{slot, bodies[slot].generation};
     }
-    [[nodiscard]] PhysicsCharacterId characterAt(uint32_t slot) const {
+    [[nodiscard]] scene::PhysicsCharacterId characterAt(uint32_t slot) const {
         if (slot >= characters.size() || !characters[slot].live) return {};
-        return PhysicsCharacterId{slot, characters[slot].generation};
+        return scene::PhysicsCharacterId{slot, characters[slot].generation};
     }
 
     /// Does this handle still name a live body? False for a destroyed one, for a handle
     /// from a different world, and for a default-constructed one.
-    [[nodiscard]] bool valid(BodyId id) const {
+    [[nodiscard]] bool valid(scene::BodyId id) const {
         return id.valid() && id.index < bodies.size() && bodies[id.index].generation == id.generation &&
                bodies[id.index].live;
     }
-    [[nodiscard]] bool valid(PhysicsCharacterId id) const {
+    [[nodiscard]] bool valid(scene::PhysicsCharacterId id) const {
         return id.valid() && id.index < characters.size() && characters[id.index].generation == id.generation &&
                characters[id.index].live;
     }
@@ -226,16 +130,16 @@ class PhysicsWorld {
     [[nodiscard]] uint32_t bodyCount() const { return static_cast<uint32_t>(bodies.size()); }
     /// Bounds-checked, as every accessor below is: passing a handle a refused `createBody`
     /// returned is ordinary use, not a caller error.
-    [[nodiscard]] uint64_t bodyUserData(BodyId id) const { return valid(id) ? bodies[id.index].userData : 0u; }
+    [[nodiscard]] uint64_t bodyUserData(scene::BodyId id) const { return valid(id) ? bodies[id.index].userData : 0u; }
     /// True for a body the solver moves; false also for a stale handle, so a caller skipping
     /// static bodies skips those too.
-    [[nodiscard]] bool bodyMoves(BodyId id) const { return valid(id) && bodies[id.index].moves; }
+    [[nodiscard]] bool bodyMoves(scene::BodyId id) const { return valid(id) && bodies[id.index].moves; }
     /// True for a body that moves but is not solved for -- a platform, a door, a lift. A
     /// dynamic body's transform is the solver's to report; a kinematic one's is something
     /// else's to write, which `bodyMoves` cannot distinguish.
-    [[nodiscard]] bool bodyKinematic(BodyId id) const { return valid(id) && bodies[id.index].kinematic; }
+    [[nodiscard]] bool bodyKinematic(scene::BodyId id) const { return valid(id) && bodies[id.index].kinematic; }
     /// World transform, interpolated `alpha` of the way through the step in flight.
-    [[nodiscard]] glm::mat4 bodyTransform(BodyId id, float alpha) const;
+    [[nodiscard]] glm::mat4 bodyTransform(scene::BodyId id, float alpha) const;
 
     /**
      * @brief Put a body where something outside the solver says it is.
@@ -250,7 +154,7 @@ class PhysicsWorld {
      * one extra `setLinearVelocity(id, {})`. Scale is dropped: a Jolt body has none, and the
      * node's went into the shape at creation.
      */
-    void setBodyTransform(BodyId id, const glm::mat4& transform);
+    void setBodyTransform(scene::BodyId id, const glm::mat4& transform);
 
     /**
      * @brief Push a body, in kilogram-metres per second.
@@ -263,7 +167,7 @@ class PhysicsWorld {
      *
      * Wakes the body, or the impulse arrives whenever something else does.
      */
-    void addImpulse(BodyId id, const glm::vec3& impulse);
+    void addImpulse(scene::BodyId id, const glm::vec3& impulse);
 
     /**
      * @brief Set a body's linear velocity outright, in metres per second.
@@ -277,12 +181,12 @@ class PhysicsWorld {
      * `Plane2D` body to move along Z is a silent no-op. Clamped to Jolt's maximum rather than
      * asserted against it, so a caller multiplying by a bad `dt` gets a fast body, not an abort.
      */
-    void setLinearVelocity(BodyId id, const glm::vec3& velocity);
+    void setLinearVelocity(scene::BodyId id, const glm::vec3& velocity);
 
     /// What the body is moving at now, in metres per second, read from the solver -- there is
     /// no half-step velocity to interpolate. Zero for a static body, a stale handle, and a
     /// world that has not been stepped.
-    [[nodiscard]] glm::vec3 linearVelocity(BodyId id) const;
+    [[nodiscard]] glm::vec3 linearVelocity(scene::BodyId id) const;
 
     /// What `createCloth` returns when it refused.
     static constexpr uint32_t kNoCloth = 0xFFFFFFFFu;
@@ -299,7 +203,7 @@ class PhysicsWorld {
      * @return `kNoCloth` for an uninitialised world, a topology with no faces, or a body Jolt
      *         refused. Counted against the same budget bodies are.
      */
-    uint32_t createCloth(const ClothTopology& topology);
+    uint32_t createCloth(const scene::ClothTopology& topology);
 
     /// How many soft bodies the world holds.
     [[nodiscard]] uint32_t clothCount() const { return static_cast<uint32_t>(clothes.size()); }
@@ -322,10 +226,10 @@ class PhysicsWorld {
     [[nodiscard]] uint32_t bodyCapacity() const { return capacity; }
 
     [[nodiscard]] uint32_t characterCount() const { return static_cast<uint32_t>(characters.size()); }
-    [[nodiscard]] uint64_t characterUserData(PhysicsCharacterId id) const {
+    [[nodiscard]] uint64_t characterUserData(scene::PhysicsCharacterId id) const {
         return valid(id) ? characters[id.index].userData : 0u;
     }
-    [[nodiscard]] glm::mat4 characterTransform(PhysicsCharacterId id, float alpha) const;
+    [[nodiscard]] glm::mat4 characterTransform(scene::PhysicsCharacterId id, float alpha) const;
     /**
      * @brief Put a character where something outside the solver says it is.
      *
@@ -335,12 +239,12 @@ class PhysicsWorld {
      * windows reset, so a placement into mid-air carries no coyote time across from wherever
      * it was standing. Scale is dropped.
      */
-    void setCharacterTransform(PhysicsCharacterId id, const glm::mat4& transform);
+    void setCharacterTransform(scene::PhysicsCharacterId id, const glm::mat4& transform);
     /// Where the character is being asked to go, in world space, and whether it is being
     /// asked to jump. Set once per frame from input; consumed by the next step.
-    void setCharacterInput(PhysicsCharacterId id, const glm::vec3& moveDirection, bool jump);
+    void setCharacterInput(scene::PhysicsCharacterId id, const glm::vec3& moveDirection, bool jump);
     /// Horizontal speed in metres per second after the last step.
-    [[nodiscard]] float characterSpeed(PhysicsCharacterId id) const;
+    [[nodiscard]] float characterSpeed(scene::PhysicsCharacterId id) const;
     /**
      * @brief The horizontal velocity `characterSpeed` is the length of, in m/s. Y is zero.
      *
@@ -353,21 +257,21 @@ class PhysicsWorld {
      * climbed at the speed the ramp allows, a wall slid along. Jolt's `GetLinearVelocity` is
      * the *request*, unchanged by the sweep; reading it back here reintroduces that.
      */
-    [[nodiscard]] glm::vec3 characterVelocity(PhysicsCharacterId id) const;
-    /// This character's top speed in m/s, from the `ColliderDesc` that made it. What
+    [[nodiscard]] glm::vec3 characterVelocity(scene::PhysicsCharacterId id) const;
+    /// This character's top speed in m/s, from the `scene::ColliderDesc` that made it. What
     /// `characterSpeed` is divided by for a state machine's normalised `speed`.
-    [[nodiscard]] float characterMoveSpeed(PhysicsCharacterId id) const;
+    [[nodiscard]] float characterMoveSpeed(scene::PhysicsCharacterId id) const;
     /// Standing, and only standing: a character sliding down a face steeper than its
     /// `maxSlopeAngle` answers false. `characterGround` tells that case apart from mid-air.
-    [[nodiscard]] bool characterOnGround(PhysicsCharacterId id) const;
+    [[nodiscard]] bool characterOnGround(scene::PhysicsCharacterId id) const;
     /// The three-valued answer, for a caller that has to *animate* the difference.
-    [[nodiscard]] CharacterGround characterGround(PhysicsCharacterId id) const;
+    [[nodiscard]] scene::CharacterGround characterGround(scene::PhysicsCharacterId id) const;
     /// The upward normal of whatever the character stands on or slides down. Straight up in
     /// the air, rather than the stale face it last stood on.
-    [[nodiscard]] glm::vec3 characterGroundNormal(PhysicsCharacterId id) const;
+    [[nodiscard]] glm::vec3 characterGroundNormal(scene::PhysicsCharacterId id) const;
     /// What the character is standing on. Falsy in the air, and falsy for geometry this class
     /// handed out no handle for.
-    [[nodiscard]] BodyId characterGroundBody(PhysicsCharacterId id) const;
+    [[nodiscard]] scene::BodyId characterGroundBody(scene::PhysicsCharacterId id) const;
     /**
      * @brief Did the last step actually launch this character?
      *
@@ -375,7 +279,7 @@ class PhysicsWorld {
      * controller wherever the coyote window and the jump buffer do their work -- a press in
      * the air launches, a press on the ground can be delayed a step or two.
      */
-    [[nodiscard]] bool characterJumped(PhysicsCharacterId id) const;
+    [[nodiscard]] bool characterJumped(scene::PhysicsCharacterId id) const;
 
     /**
      * @brief The four readouts above, for a controller named by `core::packHandle`.
@@ -383,10 +287,10 @@ class PhysicsWorld {
      * @return false for a handle this world does not hold, which is what retires a pairing
      *         whose controller has been destroyed.
      *
-     * A packed key rather than a `PhysicsCharacterId` because the only caller reaches this
+     * A packed key rather than a `scene::PhysicsCharacterId` because the only caller reaches this
      * through a `core::Slot`, from a directory that may not name this one.
      */
-    [[nodiscard]] bool characterMotion(uint64_t controller, CharacterMotion* out) const;
+    [[nodiscard]] bool characterMotion(uint64_t controller, scene::CharacterMotion* out) const;
 
     /**
      * @brief What a query hit, or a falsy value for a miss.
@@ -397,7 +301,7 @@ class PhysicsWorld {
      * character.
      */
     struct RayHit {
-        BodyId body;
+        scene::BodyId body;
         /// Where the surface was struck, in world space.
         glm::vec3 point{0.0f};
         /// The surface normal there, pointing out of the body that was hit.
@@ -416,7 +320,7 @@ class PhysicsWorld {
      *
      * @return a falsy `RayHit` for a miss, an empty world, or a zero-length segment.
      */
-    [[nodiscard]] RayHit raycast(const glm::vec3& from, const glm::vec3& to, BodyId ignoreBody = {}) const;
+    [[nodiscard]] RayHit raycast(const glm::vec3& from, const glm::vec3& to, scene::BodyId ignoreBody = {}) const;
 
     /**
      * @brief The closest thing a sphere of `radius` sweeping from `from` to `to` touches.
@@ -425,7 +329,7 @@ class PhysicsWorld {
      * the gap between two floor tiles and a sphere does not.
      */
     [[nodiscard]] RayHit sphereCast(const glm::vec3& from, const glm::vec3& to, float radius,
-                                    BodyId ignoreBody = {}) const;
+                                    scene::BodyId ignoreBody = {}) const;
 
     /**
      * @brief Every body overlapping a sphere, into the caller's storage.
@@ -435,7 +339,7 @@ class PhysicsWorld {
      *         `out.size()` says the answer was truncated. Returning the number written is
      *         indistinguishable from having found exactly that many.
      */
-    [[nodiscard]] uint32_t overlapSphere(const glm::vec3& center, float radius, std::span<BodyId> out) const;
+    [[nodiscard]] uint32_t overlapSphere(const glm::vec3& center, float radius, std::span<scene::BodyId> out) const;
 
     /**
      * @brief Is anything solid between `from` and `to`?
@@ -452,7 +356,7 @@ class PhysicsWorld {
      * @return true when the segment is blocked. False for an empty world.
      */
     [[nodiscard]] bool segmentBlocked(const glm::vec3& from, const glm::vec3& to,
-                                      BodyId ignoreBody = {}) const;
+                                      scene::BodyId ignoreBody = {}) const;
 
     /**
      * @brief Two bodies that *began* to touch during a step.
@@ -466,8 +370,8 @@ class PhysicsWorld {
     struct Contact {
         /// The lower of the two slots. Both live when `contacts()` is first readable; either
         /// may be destroyed mid-walk -- see `contacts()`.
-        BodyId a;
-        BodyId b;
+        scene::BodyId a;
+        scene::BodyId b;
         /// Where they met, in world space: the *centroid* of the manifold, because a box
         /// landing flat produces four points and the solver's ordering among them is arbitrary.
         glm::vec3 point{0.0f};
@@ -536,7 +440,7 @@ class PhysicsWorld {
         /// its length rather than a second field, so the two cannot disagree.
         glm::vec3 velocity{0.0f};
 
-        // Copied out of the `ColliderDesc` that made it -- see that struct. Copied, not
+        // Copied out of the `scene::ColliderDesc` that made it -- see that struct. Copied, not
         // referenced: the desc is the scene's and does not outlive the load.
         float moveSpeed = 4.0f;
         float jumpSpeed = 4.5f;
@@ -568,7 +472,7 @@ class PhysicsWorld {
     /// The handle for a Jolt body, given the raw `BodyID` value `Body::id` stores. Invalid for
     /// geometry this class did not create, such as a character's internal body. Takes a raw
     /// `uint32_t` so this header still needs no Jolt.
-    [[nodiscard]] BodyId handleFor(uint32_t joltRawId) const;
+    [[nodiscard]] scene::BodyId handleFor(uint32_t joltRawId) const;
 
     /// Reclaim the slots whose Jolt objects `destroy` retired. Must run at the top of `step()`:
     /// that is the only point at which removing a body from the system is safe.
@@ -602,7 +506,7 @@ class PhysicsWorld {
     /// Read every body's position and orientation into `current`, in one pass after the step.
     void snapshot();
 
-    PhysicsConfig config;
+    scene::PhysicsConfig config;
     uint32_t capacity = 0;
     uint32_t refused = 0;
 
@@ -658,10 +562,10 @@ class PhysicsWorld {
  * @brief `world` in the shape a locomotion driver reads it, keyed by packed controller.
  *
  * The slot holds a bare pointer, so `world` has to outlive every step that uses it. Taking
- * it fresh each step, as `Simulation` does, is what makes that true by construction.
+ * it fresh each step, as the module does, is what makes that true by construction.
  */
-[[nodiscard]] inline core::Slot<bool(uint64_t, CharacterMotion*)> characterMotionSource(PhysicsWorld& world) {
-    return core::Slot<bool(uint64_t, CharacterMotion*)>::bind<&PhysicsWorld::characterMotion>(&world);
+[[nodiscard]] inline core::Slot<bool(uint64_t, scene::CharacterMotion*)> characterMotionSource(PhysicsWorld& world) {
+    return core::Slot<bool(uint64_t, scene::CharacterMotion*)>::bind<&PhysicsWorld::characterMotion>(&world);
 }
 
-} // namespace scene
+} // namespace physics

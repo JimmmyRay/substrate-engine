@@ -1030,7 +1030,7 @@ void DemoGame::playImpacts(Engine& e) {
     const float volumeScale = e.settingsTable().get(impactVolume);
     const bool dust = e.settingsTable().get(impactDust);
 
-    for (const scene::PhysicsWorld::Contact& contact : e.physics().contacts()) {
+    for (const physics::PhysicsWorld::Contact& contact : e.physics().contacts()) {
         // A floor is touched constantly by anything resting on it, and a shot per graze is
         // a buzz. One metre a second is roughly a five-centimetre drop, which is the point
         // below which nothing sounds like it landed.

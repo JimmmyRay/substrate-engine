@@ -1,7 +1,8 @@
 #include <gtest/gtest.h>
 
+#include "physics/ClothSystem.h"
+#include "physics/PhysicsWorld.h"
 #include "scene/Cloth.h"
-#include "scene/Physics.h"
 
 #include <algorithm>
 #include <cmath>
@@ -25,10 +26,10 @@
  */
 namespace {
 
+using physics::ClothSystem;
+using physics::PhysicsWorld;
 using scene::ClothDesc;
-using scene::ClothSystem;
 using scene::ClothVertex;
-using scene::PhysicsWorld;
 using scene::Vertex;
 
 /// How high above the origin the sheet starts, so "it never rises above its pins" and "it

@@ -280,7 +280,7 @@ discovering the two disagreed about rounding, which is the only interesting thin
 `ImageTable` does: what goes wrong in a presentation step is not a Vulkan call, it is an
 off-by-one in a scale, a bar one pixel wider on the left than the right, or a window one
 pixel too small silently becoming a 0.996x resample. All three are arithmetic, and
-`Presentation.cpp` is in `SUBSTRATE_HOSTED_SOURCES` so the unit suite proves them under
+`Presentation.cpp` reaches no device, so the unit suite links it and proves them under
 every sanitizer. `Renderer` turns the answer into one `VkImageBlit2` and nothing else.
 
 Every field of `PresentLayout` is an integer, and that is the guarantee rather than an

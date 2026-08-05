@@ -1,14 +1,17 @@
 #pragma once
 
 #include "core/Slot.h"
+#include "gfx/DebugLines.h"
+#include "gfx/DeformedMesh.h"
 #include "gfx/Particle.h"
 #include "gfx/Skin.h"
 #include "scene/AnimationRig.h"
 #include "scene/AudioSource.h"
+#include "scene/Body.h"
 #include "scene/CharacterMotion.h"
+#include "scene/Cloth.h"
 #include "scene/Collider.h"
 #include "scene/ParticleEmitter.h"
-#include "scene/Physics.h"
 
 #include <glm/glm.hpp>
 
@@ -245,5 +248,98 @@ struct Anim {
 
 inline Anim Anim::empty;
 inline Anim* anim = &Anim::empty;
+
+/// @brief Physics: the rigid bodies a scene's colliders became, and the cloth solved with them.
+struct Physics {
+    virtual ~Physics() = default;
+
+    /// Every readout the two startup lines, the profiler counter, the occlusion gate and the
+    /// cloth gate take, in one call.
+    struct Stats {
+        /// Slots, not live bodies: what a walker pairs with `PhysicsWorld::bodyAt`.
+        uint32_t bodies = 0;
+        uint32_t characters = 0;
+        /// What `init` settled on after the budget and the scene were both considered.
+        uint32_t capacity = 0;
+        /// Refused past the budget since `init`. Non-zero means the scene declared more
+        /// colliders than the world was sized for.
+        uint32_t refused = 0;
+        uint32_t cloths = 0;
+        /// Across every cloth -- what the renderer sizes its staging buffer from.
+        uint32_t clothVertices = 0;
+        /// No body, no character and no cloth, which is the gate on sweeping occlusion.
+        bool empty = true;
+    };
+
+    /// Build the world at a ceiling of `expectedBodies` plus headroom. **Called whether or not
+    /// the document declared a collider**: gating it on one silently refuses every body a game
+    /// creates in `Game::init`, which runs later.
+    virtual void init(const scene::PhysicsConfig&, uint32_t /*expectedBodies*/) {}
+    virtual void setDebugContacts(bool) {}
+
+    /// A `desc.motion == Character` is refused here rather than routed, which would return a
+    /// handle the caller could not tell apart from a body's.
+    virtual scene::BodyId createBody(const scene::ColliderDesc&) { return {}; }
+    virtual scene::PhysicsCharacterId createCharacter(const scene::ColliderDesc&) { return {}; }
+
+    /// Tell the broad phase that the static set is final, and re-snapshot. **Idempotent, and
+    /// called again after every batch of creates** -- a rest transform read before it is the
+    /// identity.
+    virtual void finalize() {}
+
+    /// Advance exactly one step. The accumulator is the caller's.
+    virtual void step(float) {}
+
+    [[nodiscard]] virtual Stats stats() const { return {}; }
+
+    /// Where the solver has a driven attachment now, which is what a placement's offset is
+    /// measured from. The character wins where both handles are valid, matching the order the
+    /// scene tree pulls them in.
+    [[nodiscard]] virtual glm::mat4 restTransform(scene::BodyId, scene::PhysicsCharacterId) const {
+        return glm::mat4(1.0f);
+    }
+
+    /// Append every body's wireframe, and the contacts of the last step, to `out`.
+    virtual void drawDebug(std::vector<gfx::DebugLineVertex>&, const glm::vec3&) {}
+
+    /// Where the scene tree reads the world transform of a node a *solved* body drives. False
+    /// for a static or kinematic body, which is what leaves the node's own transform in charge.
+    [[nodiscard]] virtual core::Slot<bool(scene::BodyId, float, glm::mat4*)> bodyPoses() { return {}; }
+    /// The same for a character. True for any live handle: a `CharacterVirtual` is never
+    /// driven by the tree.
+    [[nodiscard]] virtual core::Slot<bool(scene::PhysicsCharacterId, float, glm::mat4*)> characterPoses() {
+        return {};
+    }
+    /// Where the scene tree tells a **kinematic** body where it put it. A body the solver owns
+    /// is ignored, so no caller needs the test -- writing a dynamic body's transform back puts
+    /// the node and the solver in a fight over it.
+    [[nodiscard]] virtual core::Slot<void(scene::BodyId, const glm::mat4&)> kinematicBodies() { return {}; }
+
+    /// What a locomotion driver reads about a controller, keyed by `core::packHandle`.
+    [[nodiscard]] virtual core::Slot<bool(uint64_t, scene::CharacterMotion*)> characterMotion() { return {}; }
+    /// Whether a segment is blocked, ignoring the body given -- what the occlusion sweep casts
+    /// through. Tests every layer including the moving one, because a closed door occludes.
+    [[nodiscard]] virtual core::Slot<bool(const glm::vec3&, const glm::vec3&, scene::BodyId)> segmentBlocked() {
+        return {};
+    }
+
+    /// Weld one `FABRIC_` primitive into a soft body and start tracking it, for the instance
+    /// in slot `instance`. False for a cloth that welded to nothing or is pinned nowhere.
+    virtual bool addCloth(uint32_t /*instance*/, uint32_t /*primitive*/, const scene::ClothDesc&) {
+        return false;
+    }
+    /// Read every solved pose back and reshade it. **Once a frame, after the steps** -- per
+    /// step it pays for poses nothing draws.
+    virtual void updateCloth() {}
+    /// The deforming meshes, in creation order. **Valid until the next `addCloth`** and
+    /// re-taken by the renderer at each -- see `gfx::DeformedMesh`.
+    [[nodiscard]] virtual std::span<const gfx::DeformedMesh> clothMeshes() const { return {}; }
+
+    /// The do-nothing implementation `modules::physics` aims at until a module is linked.
+    static Physics empty;
+};
+
+inline Physics Physics::empty;
+inline Physics* physics = &Physics::empty;
 
 } // namespace modules

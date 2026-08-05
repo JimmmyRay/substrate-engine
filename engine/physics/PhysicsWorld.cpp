@@ -1,4 +1,4 @@
-#include "scene/Physics.h"
+#include "physics/PhysicsWorld.h"
 
 #include "core/Logger.h"
 #include "core/Profiler.h"
@@ -54,7 +54,7 @@
 #include <unordered_map>
 #include <utility>
 
-namespace scene {
+namespace physics {
 
 namespace {
 
@@ -147,39 +147,6 @@ void decompose(const glm::mat4& m, glm::vec3& translation, glm::quat& rotation, 
 }
 
 } // namespace
-
-void FixedClock::accumulate(float dt) {
-    thisFrame = 0;
-    // Scaled here rather than at any consumer, so everything downstream of the step inherits
-    // the pause without knowing there is one. At the default scale it is a multiplication by
-    // exactly 1.0f, so a locked clock stays bit-identical.
-    if (dt > 0.0f) accumulator += dt * timeScaleValue;
-}
-
-bool FixedClock::consume() {
-    if (accumulator < stepSeconds) return false;
-
-    if (thisFrame >= maxSteps) {
-        // Discarded in one go: carrying the overrun into the next frame only defers it and
-        // hides that it happened.
-        const auto skipped = static_cast<uint32_t>(accumulator / stepSeconds);
-        dropped += skipped;
-        accumulator -= static_cast<float>(skipped) * stepSeconds;
-        return false;
-    }
-
-    accumulator -= stepSeconds;
-    ++thisFrame;
-    ++total;
-    return true;
-}
-
-float FixedClock::alpha() const {
-    const float a = accumulator / stepSeconds;
-    // 0.99999994f is the float below 1: the contract is [0, 1), and returning 1 would let an
-    // interpolation land on the next step's state a step early.
-    return a < 0.0f ? 0.0f : (a >= 1.0f ? 0.99999994f : a);
-}
 
 glm::mat4 interpolateState(const PhysicsState& a, const PhysicsState& b, float alpha) {
     const glm::vec3 p = glm::mix(a.position, b.position, alpha);
@@ -308,7 +275,7 @@ PhysicsWorld::PhysicsWorld() = default;
 
 PhysicsWorld::~PhysicsWorld() { shutdown(); }
 
-void PhysicsWorld::init(const PhysicsConfig& cfg, uint32_t expectedBodies) {
+void PhysicsWorld::init(const scene::PhysicsConfig& cfg, uint32_t expectedBodies) {
     auto zone = core::Profiler::scope("PhysicsWorld::init");
     shutdown();
     ensureJoltRuntime();
@@ -404,7 +371,7 @@ constexpr float kClothVertexRadius = 0.01f;
 
 } // namespace
 
-uint32_t PhysicsWorld::createCloth(const ClothTopology& topology) {
+uint32_t PhysicsWorld::createCloth(const scene::ClothTopology& topology) {
     if (impl == nullptr || !impl->initialised) return kNoCloth;
     if (topology.positions.empty() || topology.faces.size() < 3) return kNoCloth;
     // Soft bodies share the rigid bodies' budget, so the held count must include both.
@@ -518,11 +485,11 @@ namespace {
 
 /// Build the shape a collider describes, in node space and before the node's scale.
 /// Returns null when the description cannot produce one, having said why.
-JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
+JPH::RefConst<JPH::Shape> makeShape(const scene::ColliderDesc& desc) {
     JPH::ShapeSettings::ShapeResult result;
 
     switch (desc.resolvedShape()) {
-    case ColliderShape::Box: {
+    case scene::ColliderShape::Box: {
         const glm::vec3 he = glm::max(desc.halfExtent, glm::vec3(1e-3f));
         // The convex radius has to fit inside the box or Jolt refuses the shape, and its
         // default of 0.05 is larger than a small crate's half-extent.
@@ -530,16 +497,16 @@ JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
         result = JPH::BoxShapeSettings(toJolt(he), radius).Create();
         break;
     }
-    case ColliderShape::Sphere:
+    case scene::ColliderShape::Sphere:
         result = JPH::SphereShapeSettings(std::max(desc.radius, 1e-3f)).Create();
         break;
-    case ColliderShape::Capsule:
+    case scene::ColliderShape::Capsule:
         result = JPH::CapsuleShapeSettings(std::max(desc.halfHeight, 1e-3f), std::max(desc.radius, 1e-3f)).Create();
         break;
-    case ColliderShape::Cylinder:
+    case scene::ColliderShape::Cylinder:
         result = JPH::CylinderShapeSettings(std::max(desc.halfHeight, 1e-3f), std::max(desc.radius, 1e-3f)).Create();
         break;
-    case ColliderShape::Hull: {
+    case scene::ColliderShape::Hull: {
         if (desc.points.empty()) {
             core::Logger::warn(core::LogCategory::Scene, "Collider '%s': a hull needs the node's mesh, and there is none",
                          desc.name.c_str());
@@ -551,7 +518,7 @@ JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
         result = JPH::ConvexHullShapeSettings(points).Create();
         break;
     }
-    case ColliderShape::Mesh: {
+    case scene::ColliderShape::Mesh: {
         if (desc.points.empty() || desc.indices.size() < 3) {
             core::Logger::warn(core::LogCategory::Scene, "Collider '%s': a mesh shape needs the node's triangles, and there are none",
                          desc.name.c_str());
@@ -569,7 +536,7 @@ JPH::RefConst<JPH::Shape> makeShape(const ColliderDesc& desc) {
         result = JPH::MeshShapeSettings(std::move(vertices), std::move(triangles)).Create();
         break;
     }
-    case ColliderShape::Auto:
+    case scene::ColliderShape::Auto:
         // Unreachable: `resolvedShape()` never returns it. Listed rather than defaulted so a
         // shape added to the enum fails to compile here instead of falling through.
         return nullptr;
@@ -625,11 +592,11 @@ JPH::RefConst<JPH::Shape> scaleShape(const JPH::RefConst<JPH::Shape>& shape, con
 
 } // namespace
 
-BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
+scene::BodyId PhysicsWorld::createBody(const scene::ColliderDesc& desc, uint64_t userData) {
     if (impl == nullptr || !impl->initialised) return {};
-    // Refused, not routed to `createCharacter`: that would hand back a `BodyId` naming
+    // Refused, not routed to `createCharacter`: that would hand back a `scene::BodyId` naming
     // something that is not a body.
-    if (desc.motion == ColliderMotion::Character) return {};
+    if (desc.motion == scene::ColliderMotion::Character) return {};
 
     // Grown rather than refused, which is what keeps `refused` counting only what Jolt itself
     // would not give -- a shape it could not build, or its own index ceiling.
@@ -647,9 +614,9 @@ BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
     decompose(desc.transform, translation, rotation, scale);
     shape = scaleShape(shape, scale, desc.name);
 
-    const bool moves = desc.motion != ColliderMotion::Static;
-    const JPH::EMotionType motion = desc.motion == ColliderMotion::Dynamic  ? JPH::EMotionType::Dynamic
-                                    : desc.motion == ColliderMotion::Kinematic ? JPH::EMotionType::Kinematic
+    const bool moves = desc.motion != scene::ColliderMotion::Static;
+    const JPH::EMotionType motion = desc.motion == scene::ColliderMotion::Dynamic  ? JPH::EMotionType::Dynamic
+                                    : desc.motion == scene::ColliderMotion::Kinematic ? JPH::EMotionType::Kinematic
                                                                                : JPH::EMotionType::Static;
 
     JPH::BodyCreationSettings settings(shape, toJolt(translation), toJolt(rotation), motion,
@@ -664,7 +631,7 @@ BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
     // never solved off its plane and there is nothing to correct afterwards. A static body has
     // no motion properties to hold it and Jolt ignores it there.
     settings.mAllowedDOFs =
-        desc.freedom == ColliderFreedom::Plane2D ? JPH::EAllowedDOFs::Plane2D : JPH::EAllowedDOFs::All;
+        desc.freedom == scene::ColliderFreedom::Plane2D ? JPH::EAllowedDOFs::Plane2D : JPH::EAllowedDOFs::All;
     if (desc.mass > 0.0f) {
         // `CalculateInertia`, so the tensor still comes from the shape; overriding both would
         // need an author to write a 3x3 matrix by hand.
@@ -695,22 +662,22 @@ BodyId PhysicsWorld::createBody(const ColliderDesc& desc, uint64_t userData) {
         slot.id = raw;
         slot.userData = userData;
         slot.moves = moves;
-        slot.kinematic = desc.motion == ColliderMotion::Kinematic;
+        slot.kinematic = desc.motion == scene::ColliderMotion::Kinematic;
     } else {
         index = static_cast<uint32_t>(bodies.size());
         Body slot;
         slot.id = raw;
         slot.userData = userData;
         slot.moves = moves;
-        slot.kinematic = desc.motion == ColliderMotion::Kinematic;
+        slot.kinematic = desc.motion == scene::ColliderMotion::Kinematic;
         bodies.push_back(slot);
     }
 
     impl->bodyIndexById[raw] = index;
-    return BodyId{index, bodies[index].generation};
+    return scene::BodyId{index, bodies[index].generation};
 }
 
-PhysicsCharacterId PhysicsWorld::createCharacter(const ColliderDesc& desc, uint64_t userData) {
+scene::PhysicsCharacterId PhysicsWorld::createCharacter(const scene::ColliderDesc& desc, uint64_t userData) {
     if (impl == nullptr || !impl->initialised) return {};
 
     // No budget check: `capacity` is the body count handed to `PhysicsSystem::Init`, and a
@@ -772,10 +739,10 @@ PhysicsCharacterId PhysicsWorld::createCharacter(const ColliderDesc& desc, uint6
     // must not be able to jump out of it.
     c.airSteps = kAirStepsMax;
     c.coyoteSpent = true;
-    return PhysicsCharacterId{index, c.generation};
+    return scene::PhysicsCharacterId{index, c.generation};
 }
 
-void PhysicsWorld::destroy(BodyId id) {
+void PhysicsWorld::destroy(scene::BodyId id) {
     if (!valid(id)) return;
 
     // Stale now, gone later. The generation moves here so that every handle a caller is
@@ -788,7 +755,7 @@ void PhysicsWorld::destroy(BodyId id) {
     pendingBodyRemoval.push_back(id.index);
 }
 
-void PhysicsWorld::destroy(PhysicsCharacterId id) {
+void PhysicsWorld::destroy(scene::PhysicsCharacterId id) {
     if (!valid(id)) return;
 
     Character& slot = characters[id.index];
@@ -821,7 +788,7 @@ bool PhysicsWorld::grow(uint32_t needed) {
 
     // Shapes are refcounted, so a `RefConst` held here outlives the system it came from --
     // which is what lets the world be captured and rebuilt without re-deriving a shape from a
-    // `ColliderDesc` that is long gone.
+    // `scene::ColliderDesc` that is long gone.
     struct SavedBody {
         uint32_t slot = 0;
         JPH::RefConst<JPH::Shape> shape;
@@ -959,7 +926,7 @@ bool PhysicsWorld::grow(uint32_t needed) {
         }
 
         // The slot keeps its index and its generation and only the raw id moves, which is what
-        // makes a growth invisible to a game holding a `BodyId`.
+        // makes a growth invisible to a game holding a `scene::BodyId`.
         bodies[s.slot].id = body->GetID().GetIndexAndSequenceNumber();
         impl->bodyIndexById[bodies[s.slot].id] = s.slot;
     }
@@ -1273,12 +1240,12 @@ void PhysicsWorld::collectContacts() {
     });
 }
 
-glm::mat4 PhysicsWorld::bodyTransform(BodyId id, float alpha) const {
+glm::mat4 PhysicsWorld::bodyTransform(scene::BodyId id, float alpha) const {
     if (!valid(id) || id.index >= current.size()) return glm::mat4(1.0f);
     return interpolateState(previous[id.index], current[id.index], alpha);
 }
 
-void PhysicsWorld::setBodyTransform(BodyId id, const glm::mat4& transform) {
+void PhysicsWorld::setBodyTransform(scene::BodyId id, const glm::mat4& transform) {
     if (impl == nullptr || !valid(id)) return;
     if (!bodies[id.index].moves) {
         core::Logger::warn(core::LogCategory::Scene,
@@ -1321,7 +1288,7 @@ void PhysicsWorld::setBodyTransform(BodyId id, const glm::mat4& transform) {
     }
 }
 
-void PhysicsWorld::addImpulse(BodyId id, const glm::vec3& impulse) {
+void PhysicsWorld::addImpulse(scene::BodyId id, const glm::vec3& impulse) {
     if (impl == nullptr || !valid(id)) return;
     const Body& body = bodies[id.index];
     if (!body.moves || body.kinematic) {
@@ -1336,7 +1303,7 @@ void PhysicsWorld::addImpulse(BodyId id, const glm::vec3& impulse) {
     impl->system.GetBodyInterface().AddImpulse(JPH::BodyID(body.id), toJolt(impulse));
 }
 
-void PhysicsWorld::setLinearVelocity(BodyId id, const glm::vec3& velocity) {
+void PhysicsWorld::setLinearVelocity(scene::BodyId id, const glm::vec3& velocity) {
     if (impl == nullptr || !valid(id)) return;
     const Body& body = bodies[id.index];
     if (!body.moves) {
@@ -1349,17 +1316,17 @@ void PhysicsWorld::setLinearVelocity(BodyId id, const glm::vec3& velocity) {
     impl->system.GetBodyInterface().SetLinearVelocity(JPH::BodyID(body.id), toJolt(velocity));
 }
 
-glm::vec3 PhysicsWorld::linearVelocity(BodyId id) const {
+glm::vec3 PhysicsWorld::linearVelocity(scene::BodyId id) const {
     if (impl == nullptr || !valid(id)) return glm::vec3(0.0f);
     return toGlm(impl->system.GetBodyInterface().GetLinearVelocity(JPH::BodyID(bodies[id.index].id)));
 }
 
-glm::mat4 PhysicsWorld::characterTransform(PhysicsCharacterId id, float alpha) const {
+glm::mat4 PhysicsWorld::characterTransform(scene::PhysicsCharacterId id, float alpha) const {
     if (!valid(id) || id.index >= currentCharacters.size()) return glm::mat4(1.0f);
     return interpolateState(previousCharacters[id.index], currentCharacters[id.index], alpha);
 }
 
-void PhysicsWorld::setCharacterTransform(PhysicsCharacterId id, const glm::mat4& transform) {
+void PhysicsWorld::setCharacterTransform(scene::PhysicsCharacterId id, const glm::mat4& transform) {
     if (impl == nullptr || !valid(id)) return;
 
     glm::vec3 translation;
@@ -1399,7 +1366,7 @@ void PhysicsWorld::setCharacterTransform(PhysicsCharacterId id, const glm::mat4&
     }
 }
 
-void PhysicsWorld::setCharacterInput(PhysicsCharacterId id, const glm::vec3& moveDirection, bool jump) {
+void PhysicsWorld::setCharacterInput(scene::PhysicsCharacterId id, const glm::vec3& moveDirection, bool jump) {
     if (!valid(id)) return;
     characters[id.index].moveDirection = moveDirection;
     // Latched, not assigned: a jump pressed between two simulation steps is otherwise
@@ -1407,40 +1374,40 @@ void PhysicsWorld::setCharacterInput(PhysicsCharacterId id, const glm::vec3& mov
     characters[id.index].jump = characters[id.index].jump || jump;
 }
 
-float PhysicsWorld::characterSpeed(PhysicsCharacterId id) const {
+float PhysicsWorld::characterSpeed(scene::PhysicsCharacterId id) const {
     return valid(id) ? glm::length(characters[id.index].velocity) : 0.0f;
 }
 
-glm::vec3 PhysicsWorld::characterVelocity(PhysicsCharacterId id) const {
+glm::vec3 PhysicsWorld::characterVelocity(scene::PhysicsCharacterId id) const {
     return valid(id) ? characters[id.index].velocity : glm::vec3(0.0f);
 }
 
-float PhysicsWorld::characterMoveSpeed(PhysicsCharacterId id) const {
+float PhysicsWorld::characterMoveSpeed(scene::PhysicsCharacterId id) const {
     return valid(id) ? characters[id.index].moveSpeed : 0.0f;
 }
 
-bool PhysicsWorld::characterOnGround(PhysicsCharacterId id) const {
-    return characterGround(id) == CharacterGround::OnGround;
+bool PhysicsWorld::characterOnGround(scene::PhysicsCharacterId id) const {
+    return characterGround(id) == scene::CharacterGround::OnGround;
 }
 
-CharacterGround PhysicsWorld::characterGround(PhysicsCharacterId id) const {
-    if (impl == nullptr || !valid(id)) return CharacterGround::InAir;
+scene::CharacterGround PhysicsWorld::characterGround(scene::PhysicsCharacterId id) const {
+    if (impl == nullptr || !valid(id)) return scene::CharacterGround::InAir;
     switch (impl->characters[id.index]->GetGroundState()) {
     case JPH::CharacterBase::EGroundState::OnGround:
-        return CharacterGround::OnGround;
+        return scene::CharacterGround::OnGround;
     // Two of Jolt's four states give one answer: something is under the character and it is
     // going down anyway.
     case JPH::CharacterBase::EGroundState::OnSteepGround:
     case JPH::CharacterBase::EGroundState::NotSupported:
-        return CharacterGround::Sliding;
+        return scene::CharacterGround::Sliding;
     case JPH::CharacterBase::EGroundState::InAir:
         break;
     }
-    return CharacterGround::InAir;
+    return scene::CharacterGround::InAir;
 }
 
-glm::vec3 PhysicsWorld::characterGroundNormal(PhysicsCharacterId id) const {
-    if (impl == nullptr || !valid(id) || characterGround(id) == CharacterGround::InAir) {
+glm::vec3 PhysicsWorld::characterGroundNormal(scene::PhysicsCharacterId id) const {
+    if (impl == nullptr || !valid(id) || characterGround(id) == scene::CharacterGround::InAir) {
         return glm::vec3(0.0f, 1.0f, 0.0f);
     }
     // Jolt keeps the last ground it found, so the air case must be filtered above: without it
@@ -1448,18 +1415,18 @@ glm::vec3 PhysicsWorld::characterGroundNormal(PhysicsCharacterId id) const {
     return toGlm(impl->characters[id.index]->GetGroundNormal());
 }
 
-BodyId PhysicsWorld::characterGroundBody(PhysicsCharacterId id) const {
-    if (impl == nullptr || !valid(id) || characterGround(id) == CharacterGround::InAir) return {};
+scene::BodyId PhysicsWorld::characterGroundBody(scene::PhysicsCharacterId id) const {
+    if (impl == nullptr || !valid(id) || characterGround(id) == scene::CharacterGround::InAir) return {};
     const JPH::BodyID under = impl->characters[id.index]->GetGroundBodyID();
-    return under.IsInvalid() ? BodyId{} : handleFor(under.GetIndexAndSequenceNumber());
+    return under.IsInvalid() ? scene::BodyId{} : handleFor(under.GetIndexAndSequenceNumber());
 }
 
-bool PhysicsWorld::characterJumped(PhysicsCharacterId id) const {
+bool PhysicsWorld::characterJumped(scene::PhysicsCharacterId id) const {
     return valid(id) && characters[id.index].launched;
 }
 
-bool PhysicsWorld::characterMotion(uint64_t controller, CharacterMotion* out) const {
-    const PhysicsCharacterId id = core::unpackHandle<PhysicsCharacterTag>(controller);
+bool PhysicsWorld::characterMotion(uint64_t controller, scene::CharacterMotion* out) const {
+    const scene::PhysicsCharacterId id = core::unpackHandle<scene::PhysicsCharacterTag>(controller);
     if (!valid(id)) return false;
     out->speed = characterSpeed(id);
     out->topSpeed = characterMoveSpeed(id);
@@ -1468,17 +1435,17 @@ bool PhysicsWorld::characterMotion(uint64_t controller, CharacterMotion* out) co
     return true;
 }
 
-BodyId PhysicsWorld::handleFor(uint32_t joltRawId) const {
+scene::BodyId PhysicsWorld::handleFor(uint32_t joltRawId) const {
     const auto it = impl->bodyIndexById.find(joltRawId);
     if (it == impl->bodyIndexById.end()) return {};
     const uint32_t slot = it->second;
     if (slot >= bodies.size() || !bodies[slot].live) return {};
-    return BodyId{slot, bodies[slot].generation};
+    return scene::BodyId{slot, bodies[slot].generation};
 }
 
 // Every query below leaves the two layer filters at their defaults, so every layer is solid:
 // a wall and a closed door are in different ones and both have to stop a bullet and a sound.
-PhysicsWorld::RayHit PhysicsWorld::raycast(const glm::vec3& from, const glm::vec3& to, BodyId ignoreBody) const {
+PhysicsWorld::RayHit PhysicsWorld::raycast(const glm::vec3& from, const glm::vec3& to, scene::BodyId ignoreBody) const {
     RayHit hit;
     if (impl == nullptr || !impl->initialised) return hit;
 
@@ -1518,7 +1485,7 @@ PhysicsWorld::RayHit PhysicsWorld::raycast(const glm::vec3& from, const glm::vec
 }
 
 PhysicsWorld::RayHit PhysicsWorld::sphereCast(const glm::vec3& from, const glm::vec3& to, float radius,
-                                              BodyId ignoreBody) const {
+                                              scene::BodyId ignoreBody) const {
     RayHit hit;
     if (impl == nullptr || !impl->initialised || radius <= 0.0f) return hit;
 
@@ -1556,7 +1523,7 @@ PhysicsWorld::RayHit PhysicsWorld::sphereCast(const glm::vec3& from, const glm::
     return hit;
 }
 
-uint32_t PhysicsWorld::overlapSphere(const glm::vec3& center, float radius, std::span<BodyId> out) const {
+uint32_t PhysicsWorld::overlapSphere(const glm::vec3& center, float radius, std::span<scene::BodyId> out) const {
     if (impl == nullptr || !impl->initialised || radius <= 0.0f) return 0;
 
     const JPH::SphereShape sphere(radius);
@@ -1570,7 +1537,7 @@ uint32_t PhysicsWorld::overlapSphere(const glm::vec3& center, float radius, std:
     // caller could ask nothing about.
     uint32_t found = 0;
     for (const JPH::CollideShapeResult& r : collector.mHits) {
-        const BodyId id = handleFor(r.mBodyID2.GetIndexAndSequenceNumber());
+        const scene::BodyId id = handleFor(r.mBodyID2.GetIndexAndSequenceNumber());
         if (!id.valid()) continue;
         if (found < out.size()) out[found] = id;
         ++found;
@@ -1578,7 +1545,7 @@ uint32_t PhysicsWorld::overlapSphere(const glm::vec3& center, float radius, std:
     return found;
 }
 
-bool PhysicsWorld::segmentBlocked(const glm::vec3& from, const glm::vec3& to, BodyId ignoreBody) const {
+bool PhysicsWorld::segmentBlocked(const glm::vec3& from, const glm::vec3& to, scene::BodyId ignoreBody) const {
     // Over `raycast`, not beside it: a second cast of the same ray with the same filters is
     // one waiting to disagree with the other.
     return static_cast<bool>(raycast(from, to, ignoreBody));
@@ -1635,4 +1602,4 @@ void PhysicsWorld::drawDebug(std::vector<gfx::DebugLineVertex>& out, const glm::
 #endif
 }
 
-} // namespace scene
+} // namespace physics

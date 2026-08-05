@@ -9,7 +9,7 @@ namespace gfx {
 /**
  * @brief One end of one debug line, as `debug_line.vert` reads it.
  *
- * A header of its own because `scene/Physics.h` and `gfx/Renderer.h` both need it:
+ * A header of its own because `physics/PhysicsWorld.h` and `gfx/Renderer.h` both need it:
  * merging it into either puts Vulkan on the physics world's include path or Jolt on the
  * renderer's.
  */

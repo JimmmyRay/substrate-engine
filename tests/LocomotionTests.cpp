@@ -2,7 +2,7 @@
 
 #include "anim/SceneAnimator.h"
 #include "core/Input.h"
-#include "scene/Physics.h"
+#include "physics/PhysicsWorld.h"
 
 #include <gtest/gtest.h>
 
@@ -12,6 +12,7 @@
 
 using namespace core;
 using namespace scene;
+using namespace physics;
 
 using namespace anim;
 

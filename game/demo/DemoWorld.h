@@ -4,6 +4,7 @@
 #include "anim/AnimModule.h"
 #include "audio/AudioModule.h"
 #include "particles/ParticlesModule.h"
+#include "physics/PhysicsModule.h"
 
 #include <glm/glm.hpp>
 

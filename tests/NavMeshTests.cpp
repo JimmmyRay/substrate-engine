@@ -1,6 +1,6 @@
 #include "nav/NavMesh.h"
 
-#include "scene/Physics.h"
+#include "physics/PhysicsWorld.h"
 
 #include <gtest/gtest.h>
 
@@ -12,6 +12,7 @@
 
 using namespace nav;
 using namespace scene;
+using namespace physics;
 
 /**
  * @file tests/NavMeshTests.cpp

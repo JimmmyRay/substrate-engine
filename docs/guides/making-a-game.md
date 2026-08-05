@@ -160,8 +160,8 @@ Every one has an empty default, so a game overrides what it needs and nothing el
 | `drawUi(Engine&, ui::Context&)` | Once per frame, while `uiVisible()` | The panel |
 | `shutdown(Engine&)` | Once, after the last frame | Anything the destructor cannot do |
 
-The loop `Engine::run` runs, which is also the hand-driven form if you turn
-`SUBSTRATE_ENTRY_POINT` off and write your own `main()`:
+The loop `Engine::run` runs, which is also the hand-driven form if you write your own
+`main()`:
 
 ```cpp
 while (engine.beginFrame()) {                     // poll, input, camera, the accumulator
@@ -972,9 +972,10 @@ The arc is designed backwards from this. Everything after it is implementation.
 SUBSTRATE_GAME(DemoGame)
 ```
 
-`SUBSTRATE_ENTRY_POINT` is a CMake option, **ON by default**. With it on, the engine
-library compiles `main()`, and the macro above is the only thing connecting a game class
-to it:
+The engine library compiles `main()`, and the macro above is the only thing connecting a
+game class to it. **Defining your own `main()` is how you opt out** — the archive yields
+its copy only to resolve that symbol, so a game that defines one never links it, and
+there is no build option to set:
 
 ```cpp
 // engine/Entry.h
@@ -983,7 +984,7 @@ to it:
         return std::make_unique<T>();                           \
     }
 
-// engine/Entry.cpp -- compiled only when SUBSTRATE_ENTRY_POINT is ON
+// engine/Entry.cpp -- in the archive, pulled only where nothing else defines main
 int main(int argc, char** argv) {
     Engine engine;
     if (!engine.init(argc, argv)) return engine.exitCode();

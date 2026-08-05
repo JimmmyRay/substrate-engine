@@ -1,5 +1,5 @@
 #include "scene/Collider.h"
-#include "scene/Physics.h"
+#include "physics/PhysicsWorld.h"
 #include "scene/SceneTypes.h"
 #include "scene/SpriteTable.h"
 
@@ -16,6 +16,7 @@
 #include <vector>
 
 using namespace scene;
+using namespace physics;
 
 namespace fs = std::filesystem;
 

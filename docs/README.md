@@ -97,7 +97,7 @@ for the rule that decides which, and
 | Descriptor layouts | Hand-written, reflection-*checked* | Generating them from SPIR-V would hide what is bound; asserting they agree catches a mismatch without the indirection |
 | Config | `substrate.json` (rapidjson) | Source of truth; CLI overrides only per-invocation values |
 | Build / run | `./build.sh`, `./run.sh`, `./test.sh` | Encode config-specific build dirs and the `setarch -R` TSan workaround |
-| Tests | googletest, over the hosted sources only | A test framework is a solved problem. Linking no Vulkan is what lets the suite run under TSan, where the renderer cannot |
+| Tests | googletest, over whatever of the engine the suite names | A test framework is a solved problem. Linking no Vulkan is what lets the suite run under TSan, where the renderer cannot |
 | Benchmarks | `scripts/baseline.py`, reading the trace | The `GPU @` log line is one frame; a table built from it is a median of arbitrary frames |
 
 ## The MSAA problem, in one paragraph

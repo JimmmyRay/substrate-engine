@@ -5,6 +5,7 @@
 #include "anim/AnimModule.h"
 #include "audio/AudioModule.h"
 #include "particles/ParticlesModule.h"
+#include "physics/PhysicsModule.h"
 
 namespace {
 
@@ -41,13 +42,15 @@ void placeLights(gfx::Renderer& renderer, const glm::vec3& boundsMin, const glm:
  * **An include links nothing; calling the accessor is the undefined symbol that pulls the
  * archive member.** Every failure this prevents is silent and none of them fails a build:
  * emitters spawning into a pool of zero, `configure`'s buses never created under
- * `--audio-null`, a skinned mesh held in its bind pose. Every golden case is a viewer run,
- * so a line deleted here is a reference image that renders something else.
+ * `--audio-null`, a skinned mesh held in its bind pose, a scene whose colliders became no
+ * bodies. Every golden case is a viewer run, so a line deleted here is a reference image
+ * that renders something else.
  */
 void linkModules(Engine& e) {
     (void)e.animator();
     (void)e.audio();
     (void)e.particles();
+    (void)e.physics();
 }
 
 } // namespace

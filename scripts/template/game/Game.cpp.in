@@ -98,7 +98,6 @@ void @CLASS@::drawUi(Engine& e, ui::Context& ui) {
     ui.endPanel();
 }
 
-// The whole of a game's entry point. `SUBSTRATE_ENTRY_POINT` is a CMake option, ON by
-// default, and with it on the engine compiles `main()` and this is the only line
-// connecting your class to it.
+// The whole of a game's entry point: the engine compiles `main()` and this is the only
+// line connecting your class to it. Defining your own `main()` is what opts out.
 SUBSTRATE_GAME(@CLASS@)

@@ -977,8 +977,9 @@ unchanged, which is the argument for not writing a second one.
 
 ## Physics
 
-`engine/scene/Physics.{h,cpp}`, Jolt v5.6.0 submoduled. Both files are **hosted**, so the
-solver runs under ASan and TSan.
+`engine/physics/PhysicsWorld.{h,cpp}`, Jolt v5.6.0 submoduled, with the handles, the config
+and the fixed clock left behind in `engine/scene/Body.h` where the loaders reach them. Every
+file named here is **hosted**, so the solver runs under ASan and TSan.
 
 ### Jolt's build defaults
 
@@ -1245,7 +1246,8 @@ per contact in a pile-up is bounded by the same limit rather than by a new one.
 
 ### Cloth
 
-`engine/scene/Cloth.{h,cpp}` and `PhysicsWorld::createCloth`. A mesh whose **name** begins
+`engine/scene/Cloth.{h,cpp}` for the weld and the reshade, `engine/physics/ClothSystem.{h,cpp}`
+for the bookkeeping, and `PhysicsWorld::createCloth`. A mesh whose **name** begins
 `FABRIC_`, carrying a per-vertex `_PIN_WEIGHT` float attribute — 1 pinned, 0 free — becomes
 a Jolt soft body at load. Its solved vertices land in the buffer `skinning.comp` writes, so
 it draws, casts and reflects through the passes that already read that buffer, with no new

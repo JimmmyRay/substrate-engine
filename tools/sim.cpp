@@ -1,4 +1,5 @@
 #include "core/Logger.h"
+#include "physics/PhysicsModule.h"
 #include "scene/SceneData.h"
 #include "scene/SceneParse.h"
 #include "scene/Simulation.h"
@@ -47,12 +48,12 @@ void usage() {
 /// A number a CI run can diff. Positions rather than a hash of them, folded so that a body
 /// that moved a millimetre changes it -- the point is to notice a divergence, not to identify
 /// which body diverged, which the per-body lines are for.
-double checksum(const scene::PhysicsWorld& physics) {
+double checksum(const physics::PhysicsWorld& world) {
     double sum = 0.0;
-    for (uint32_t slot = 0; slot < physics.bodyCount(); ++slot) {
-        const scene::BodyId id = physics.bodyAt(slot);
+    for (uint32_t slot = 0; slot < world.bodyCount(); ++slot) {
+        const scene::BodyId id = world.bodyAt(slot);
         if (!id.valid()) continue;
-        const glm::mat4 m = physics.bodyTransform(id, 0.0f);
+        const glm::mat4 m = world.bodyTransform(id, 0.0f);
         sum += static_cast<double>(m[3].x) + static_cast<double>(m[3].y) + static_cast<double>(m[3].z);
     }
     return sum;
@@ -103,10 +104,13 @@ int main(int argc, char** argv) {
     }
 
     scene::Simulation sim;
+    // The world `Simulation::step` moves is the module's, and naming it here is what links
+    // the solver into this binary at all.
+    physics::PhysicsWorld& world = physics::world();
 
     scene::PhysicsConfig cfg;
     cfg.gravity = glm::vec3(0.0f, -gravity, 0.0f);
-    sim.physics.init(cfg, static_cast<uint32_t>(data.colliders.size()));
+    world.init(cfg, static_cast<uint32_t>(data.colliders.size()));
 
     // The collider walk, and it is **not** the engine's. `Engine::initPhysics` builds scene
     // nodes, binds audio sources to bodies and pairs rigs while it walks the same table; none
@@ -116,36 +120,36 @@ int main(int argc, char** argv) {
     uint32_t characters = 0;
     for (const scene::ColliderDesc& desc : data.colliders) {
         if (desc.motion == scene::ColliderMotion::Character) {
-            if (sim.physics.createCharacter(desc).valid()) ++characters;
+            if (world.createCharacter(desc).valid()) ++characters;
         } else {
-            sim.physics.createBody(desc);
+            world.createBody(desc);
         }
     }
-    sim.physics.finalize();
+    world.finalize();
 
     core::Logger::status(core::LogCategory::Scene, "substrate-sim: %s -- %u bodies, %u characters, %u steps",
-                         scenePath.filename().string().c_str(), sim.physics.bodyCount(), characters, steps);
+                         scenePath.filename().string().c_str(), world.bodyCount(), characters, steps);
 
     const float step = cfg.step;
     for (uint32_t i = 0; i < steps; ++i) sim.step(step);
 
     if (!quiet) {
-        for (uint32_t slot = 0; slot < sim.physics.bodyCount(); ++slot) {
-            const scene::BodyId id = sim.physics.bodyAt(slot);
+        for (uint32_t slot = 0; slot < world.bodyCount(); ++slot) {
+            const scene::BodyId id = world.bodyAt(slot);
             if (!id.valid()) continue;
-            const glm::mat4 m = sim.physics.bodyTransform(id, 0.0f);
+            const glm::mat4 m = world.bodyTransform(id, 0.0f);
             std::printf("body %3u  %8.3f %8.3f %8.3f\n", slot, m[3].x, m[3].y, m[3].z);
         }
-        for (uint32_t slot = 0; slot < sim.physics.characterCount(); ++slot) {
-            const scene::PhysicsCharacterId id = sim.physics.characterAt(slot);
+        for (uint32_t slot = 0; slot < world.characterCount(); ++slot) {
+            const scene::PhysicsCharacterId id = world.characterAt(slot);
             if (!id.valid()) continue;
-            const glm::mat4 m = sim.physics.characterTransform(id, 0.0f);
+            const glm::mat4 m = world.characterTransform(id, 0.0f);
             std::printf("char %3u  %8.3f %8.3f %8.3f  %s\n", slot, m[3].x, m[3].y, m[3].z,
-                        sim.physics.characterOnGround(id) ? "grounded" : "airborne");
+                        world.characterOnGround(id) ? "grounded" : "airborne");
         }
     }
 
-    std::printf("steps %u  bodies %u  characters %u  checksum %.6f\n", steps, sim.physics.bodyCount(),
-                sim.physics.characterCount(), checksum(sim.physics));
+    std::printf("steps %u  bodies %u  characters %u  checksum %.6f\n", steps, world.bodyCount(),
+                world.characterCount(), checksum(world));
     return 0;
 }

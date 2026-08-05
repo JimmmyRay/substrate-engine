@@ -3707,7 +3707,7 @@ void Renderer::setSkinCharacters(std::span<const gfx::SkinCharacter> characters,
     // The gate is "does anything deform", not "is there a skeleton": a scene whose only
     // moving geometry is a curtain has no rig, so `skinCharacters` is allowed to be empty
     // the whole way down from here.
-    const bool hasCloth = clothSystem != nullptr && !clothSystem->empty();
+    const bool hasCloth = !clothMeshes.empty();
     const bool posed = !skinCharacters.empty() && (!s->skinVertices().empty() || !s->morphDeltas().empty());
     if (instances == nullptr || s == nullptr || (!posed && !hasCloth)) {
         skinCharacters = {};
@@ -3754,8 +3754,9 @@ void Renderer::setSkinCharacters(std::span<const gfx::SkinCharacter> characters,
     // scene, so it has to change without the frame resources being torn down. Released by
     // the `destroySkinResources()` at the top of this function.
     if (hasCloth) {
-        const VkDeviceSize clothBytes =
-            std::max<VkDeviceSize>(clothSystem->vertexCount(), 1) * sizeof(scene::Vertex);
+        VkDeviceSize clothVertices = 0;
+        for (const gfx::DeformedMesh& mesh : clothMeshes) clothVertices += mesh.vertices.size();
+        const VkDeviceSize clothBytes = std::max<VkDeviceSize>(clothVertices, 1) * sizeof(scene::Vertex);
         for (uint32_t i = 0; i < kFramesInFlight; ++i) {
             frames[i].clothStaging =
                 createBuffer(*ctx, clothBytes, VK_BUFFER_USAGE_TRANSFER_SRC_BIT, VMA_MEMORY_USAGE_AUTO,
@@ -3793,9 +3794,9 @@ void Renderer::setSkinCharacters(std::span<const gfx::SkinCharacter> characters,
     instanceCapacity = 0;
     ensureInstanceCapacity(slots);
 
-    clothDestBase.assign(hasCloth ? clothSystem->count() : 0u, UINT32_MAX);
+    clothDestBase.assign(clothMeshes.size(), UINT32_MAX);
     for (uint32_t c = 0; c < clothDestBase.size(); ++c) {
-        const uint32_t slot = clothSystem->at(c).instance;
+        const uint32_t slot = clothMeshes[c].instance;
         if (slot < skinDestBase.size()) clothDestBase[c] = skinDestBase[slot];
     }
 
@@ -3804,7 +3805,7 @@ void Renderer::setSkinCharacters(std::span<const gfx::SkinCharacter> characters,
                    skinnedVertexCount, skinCharacters.empty() ? 0u : totalJoints,
                    skinCharacters.empty() ? 0u : totalWeights,
                    static_cast<uint32_t>(skinCharacters.size()),
-                   hasCloth ? clothSystem->count() : 0u);
+                   static_cast<uint32_t>(clothMeshes.size()));
 
     // The acceleration structure's dynamic tier is built over the buffer created above,
     // so it could not exist before this point.
@@ -3902,15 +3903,15 @@ void Renderer::drawSceneIndirect(VkCommandBuffer cmd, uint32_t slot, uint32_t vi
  */
 bool Renderer::recordClothUpload(uint32_t slot) {
     clothCopies.clear();
-    if (clothSystem == nullptr || clothSystem->empty()) return false;
+    if (clothMeshes.empty()) return false;
     FrameSync& f = frames[slot];
     if (f.clothStaging.mapped == nullptr) return false;
 
     auto* dst = static_cast<std::byte*>(f.clothStaging.mapped);
     VkDeviceSize at = 0;
-    for (uint32_t c = 0; c < clothSystem->count() && c < clothDestBase.size(); ++c) {
+    for (uint32_t c = 0; c < clothMeshes.size() && c < clothDestBase.size(); ++c) {
         if (clothDestBase[c] == UINT32_MAX) continue;
-        const auto& cloth = clothSystem->at(c);
+        const gfx::DeformedMesh& cloth = clothMeshes[c];
         const VkDeviceSize bytes = cloth.vertices.size() * sizeof(scene::Vertex);
         if (bytes == 0 || at + bytes > f.clothStaging.size) continue;
         std::memcpy(dst + at, cloth.vertices.data(), bytes);

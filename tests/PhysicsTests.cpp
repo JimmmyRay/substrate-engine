@@ -1,4 +1,4 @@
-#include "scene/Physics.h"
+#include "physics/PhysicsWorld.h"
 
 #include <gtest/gtest.h>
 
@@ -9,6 +9,7 @@
 #include <vector>
 
 using namespace scene;
+using namespace physics;
 
 /**
  * @file tests/PhysicsTests.cpp

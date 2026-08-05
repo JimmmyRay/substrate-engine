@@ -2,7 +2,7 @@
 
 #include "core/Slot.h"
 #include "scene/AudioSource.h"
-#include "scene/Physics.h"
+#include "scene/Body.h"
 
 #include <glm/glm.hpp>
 

@@ -4,9 +4,9 @@
 #include "core/Slot.h"
 #include "gfx/Light.h"
 #include "scene/AudioSource.h"
+#include "scene/Body.h"
 #include "scene/InstanceTable.h"
 #include "scene/Node.h"
-#include "scene/Physics.h"
 
 #include <glm/glm.hpp>
 #include <glm/gtc/quaternion.hpp>
@@ -99,7 +99,6 @@ struct Attachments {
 struct SceneTargets {
     InstanceTable* instances = nullptr;
     std::vector<gfx::GpuLight>* lights = nullptr;
-    PhysicsWorld* physics = nullptr;
     /// Where an emitter attached to a node has its world transform written, by emitter
     /// index. A slot and not a pointer because the system that owns the emitters is a
     /// module, which nothing here may name; unbound it does nothing, which is what a
@@ -108,6 +107,21 @@ struct SceneTargets {
     /// Where a sound attached to a node has its world transform written. A slot for the
     /// same reason `emitterTransform` is one -- the mixer is a module.
     core::Slot<void(SoundId, const glm::mat4&)> soundTransform;
+    /**
+     * @brief The upstream pull: where a node driven by a body reads its world transform, at
+     *        `alpha`.
+     *
+     * False leaves the node's own transform in charge, which is what a static or kinematic
+     * body, a stale handle and an unbound slot all answer -- so a headless test and a game
+     * with no physics get a tree that composes and never reads a solver.
+     */
+    core::Slot<bool(BodyId, float, glm::mat4*)> bodyTransform;
+    /// The same for a character. Unlike a body, every live one is the solver's.
+    core::Slot<bool(PhysicsCharacterId, float, glm::mat4*)> characterTransform;
+    /// The push back down, for a **kinematic** body only. Anything else ignores it, so this
+    /// is called for every attached body and the solver decides -- writing a dynamic body's
+    /// transform here would put it in a fight with the pull above.
+    core::Slot<void(BodyId, const glm::mat4&)> kinematicTransform;
     /// Where between the last two simulation steps the frame is being drawn, in [0, 1].
     /// Read by the upstream pull only; 1.0 snaps a drawn body to the last step.
     float alpha = 1.0f;

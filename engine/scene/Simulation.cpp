@@ -21,14 +21,14 @@ void Simulation::step(float stepSeconds) {
 
     // Last of the three, so a body nothing pushed this step is still where the animation
     // left it.
-    physics.step(stepSeconds);
+    modules::physics->step(stepSeconds);
 
     // After the step, never before: a `CharacterVirtual` that has not been stepped reports
     // its constructed ground state, which reads as in the air. The animator picks these up on
     // the *next* step, so every parameter carries one step of latency uniformly.
     {
         auto ls = core::Profiler::scope("LocomotionDriver::update");
-        modules::anim->updateLocomotion(characterMotionSource(physics));
+        modules::anim->updateLocomotion(modules::physics->characterMotion());
     }
 
     // Audio runs on the fixed step like the other movers; a mixer advanced by wall-clock
@@ -49,10 +49,8 @@ void Simulation::step(float stepSeconds) {
     // therefore reads a position set at the end of the previous frame.
     {
         auto so = core::Profiler::scope("audioOcclusion");
-        if (!physics.empty()) {
-            modules::audio->updateOcclusion(
-                core::Slot<bool(const glm::vec3&, const glm::vec3&, BodyId)>::bind<&PhysicsWorld::segmentBlocked>(
-                    &physics));
+        if (!modules::physics->stats().empty) {
+            modules::audio->updateOcclusion(modules::physics->segmentBlocked());
         }
     }
 

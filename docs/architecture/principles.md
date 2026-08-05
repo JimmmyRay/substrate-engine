@@ -752,7 +752,7 @@ The shape it took is the escape hatch that was recorded in advance, with one sub
 
 | Recorded | Built |
 |---|---|
-| `add_library` plus a thin `main.cpp` | `add_library(substrate)` plus `engine/Entry.cpp`, eight lines, behind `SUBSTRATE_ENTRY_POINT` |
+| `add_library` plus a thin `main.cpp` | `add_library(substrate)` plus `engine/Entry.cpp`, eight lines, reached by the linker or not at all |
 | An `extern "C"` struct of function pointers | `Game`, five empty-defaulted virtuals — the same indirection at the same edge, with better ergonomics |
 | The POD draw-list view the instance table provides | Unchanged; `Engine` hands out references to concrete types and wraps none of them |
 | `readShaderBinary` as the single path indirection | Still one path, and it turned out to be two sites rather than one — see below |
@@ -1065,8 +1065,9 @@ golden suite therefore keeps working with one added prerequisite — `./build_ga
 rather than a rewrite.
 
 **`test.sh` is untouched by any of this**, which is worth stating because it is the property
-most easily broken by accident: the unit suite links `SUBSTRATE_HOSTED_SOURCES` and nothing
-else, so no game can affect whether it runs under ThreadSanitizer.
+most easily broken by accident: the unit suite links the engine archive, names nothing that
+draws, and links no volk and no glfw, so no game can affect whether it runs under
+ThreadSanitizer.
 
 ---
 
