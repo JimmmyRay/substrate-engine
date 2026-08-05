@@ -20,16 +20,16 @@
 
 namespace {
 
-const char* debugViewName(gfx::DebugView view) {
+const char* debugViewName(core::DebugView view) {
     switch (view) {
-    case gfx::DebugView::Lit: return "lit";
-    case gfx::DebugView::Albedo: return "albedo";
-    case gfx::DebugView::Normal: return "normal";
-    case gfx::DebugView::Orm: return "occlusion/roughness/metallic";
-    case gfx::DebugView::Depth: return "depth";
-    case gfx::DebugView::Emissive: return "emissive";
-    case gfx::DebugView::Ssao: return "ssao";
-    case gfx::DebugView::Edges: return "edges";
+    case core::DebugView::Lit: return "lit";
+    case core::DebugView::Albedo: return "albedo";
+    case core::DebugView::Normal: return "normal";
+    case core::DebugView::Orm: return "occlusion/roughness/metallic";
+    case core::DebugView::Depth: return "depth";
+    case core::DebugView::Emissive: return "emissive";
+    case core::DebugView::Ssao: return "ssao";
+    case core::DebugView::Edges: return "edges";
     default: return "?";
     }
 }
@@ -258,7 +258,7 @@ void applyActions(Engine& e, const AppActions& a, bool& inspectorOpen) {
 
     for (uint32_t i = 0; i < 5; ++i) {
         if (!in.pressed(a.view[i])) continue;
-        const auto view = static_cast<gfx::DebugView>(i);
+        const auto view = static_cast<core::DebugView>(i);
         r.setDebugView(view);
         core::Logger::status(core::LogCategory::Render, "Debug view: %s", debugViewName(view));
     }
@@ -343,10 +343,10 @@ void applyActions(Engine& e, const AppActions& a, bool& inspectorOpen) {
         // authored look with `--tonemap` as its one-run override -- and there is no row
         // left to write. A debug key that cycles a game's grade is a debug affordance and
         // does not write back to the setup, which is why nothing here persists.
-        const auto next = static_cast<gfx::TonemapOperator>((static_cast<uint32_t>(r.tonemapOperator) + 1) %
-                                                            static_cast<uint32_t>(gfx::TonemapOperator::Count));
+        const auto next = static_cast<core::TonemapOperator>((static_cast<uint32_t>(r.tonemapOperator) + 1) %
+                                                            static_cast<uint32_t>(core::TonemapOperator::Count));
         r.tonemapOperator = next;
-        core::Logger::status(core::LogCategory::Render, "Tonemap: %s", gfx::tonemapKey(next));
+        core::Logger::status(core::LogCategory::Render, "Tonemap: %s", core::tonemapKey(next));
     }
 
     if (in.pressed(a.screenshot)) r.requestCapture(nextCapturePath());
@@ -449,7 +449,7 @@ void drawSettingsPanel(ui::Context& ui, Engine& e, PanelState& state, const glm:
     // The list is the widget this panel exists to exercise, and it is also the most
     // useful thing on it: nine views the keyboard reaches only by cycling.
     if (ui.list("Views", state.debugViewNames, state.debugView, ui.scaled().rowHeight * 5.0f)) {
-        r.setDebugView(static_cast<gfx::DebugView>(state.debugView));
+        r.setDebugView(static_cast<core::DebugView>(state.debugView));
     }
 
     ui.separator();
@@ -867,8 +867,8 @@ void DemoGame::init(Engine& e) {
 
     inspectorOpen = e.config().ui.inspector;
     panelState.capturePath = e.config().benchmark.capturePath;
-    for (uint32_t i = 0; i < static_cast<uint32_t>(gfx::DebugView::Count); ++i) {
-        panelState.debugViewNames.emplace_back(debugViewName(static_cast<gfx::DebugView>(i)));
+    for (uint32_t i = 0; i < static_cast<uint32_t>(core::DebugView::Count); ++i) {
+        panelState.debugViewNames.emplace_back(debugViewName(static_cast<core::DebugView>(i)));
     }
     panelState.debugView = static_cast<uint32_t>(e.renderer().currentDebugView());
     // C5, and the reason the demo loads one at all: `ImageTable` and the overlay's image
@@ -1209,9 +1209,9 @@ void DemoGame::frameUpdate(Engine& e, float /*dt*/) {
         // target of its own, which is a decision belonging to a game with somewhere to go.
         if (e.input().pressed(actions.navGo)) {
             navFollower.reset({});
-            const scene::NavMesh& nav = e.navMesh();
-            const scene::NavPoint from = nav.nearest(here, 2.0f);
-            const scene::NavPoint to = nav.nearest(e.camera().position(), 4.0f);
+            const nav::NavMesh& nav = e.navMesh();
+            const nav::NavPoint from = nav.nearest(here, 2.0f);
+            const nav::NavPoint to = nav.nearest(e.camera().position(), 4.0f);
             std::vector<glm::vec3> path;
             if (!from || !to) {
                 core::Logger::status(core::LogCategory::Scene, "Nav: %s is not on the navmesh",
@@ -1242,7 +1242,7 @@ void DemoGame::frameUpdate(Engine& e, float /*dt*/) {
 
         glm::vec3 move = manual;
         if (!navFollower.done()) {
-            const glm::vec3 desired = scene::steer(navFollower, here, 1.0f);
+            const glm::vec3 desired = nav::steer(navFollower, here, 1.0f);
             // The controller wants a direction, not a velocity -- it owns the speed.
             if (glm::length(desired) > 1e-4f) move = glm::normalize(desired);
         }
@@ -1738,7 +1738,7 @@ void DemoGame::load(Engine& e, core::SaveReader& in) {
     saveCount = count;
     inspectorOpen = inspector;
     panelState.debugView = view;
-    e.renderer().setDebugView(static_cast<gfx::DebugView>(view));
+    e.renderer().setDebugView(static_cast<core::DebugView>(view));
     core::Logger::status(core::LogCategory::Core, "demo: restored save #%u", saveCount);
 }
 

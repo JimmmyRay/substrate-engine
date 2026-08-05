@@ -11,7 +11,6 @@
 #include "scene/Audio.h"
 #include "scene/Camera.h"
 #include "scene/GltfScene.h"
-#include "scene/NavMesh.h"
 #include "scene/SceneLoader.h"
 #include "scene/InstanceTable.h"
 #include "scene/LitSprite.h"
@@ -77,6 +76,11 @@ struct GLFWwindow;
  * }
  * ```
  */
+namespace nav {
+class NavMesh;
+struct NavBuildParams;
+} // namespace nav
+
 class Engine {
   public:
     /// **Both defined in `Engine.cpp`, not defaulted here.** Inline, the destructor
@@ -258,11 +262,15 @@ class Engine {
     /// The walkable surface, baked from the scene's static mesh colliders. Empty when the
     /// scene authored none, rather than a navmesh over render geometry an agent was never
     /// meant to stand on.
-    [[nodiscard]] const scene::NavMesh& navMesh() const { return navigation; }
+    ///
+    /// **Defined in `nav/NavModule.cpp`, and naming it is what links navigation** -- so a
+    /// game that calls this includes `nav/NavModule.h`, and a game that does not links no
+    /// navmesh at all. See that header.
+    [[nodiscard]] const nav::NavMesh& navMesh() const;
     /// Bake again with different agent parameters. A game with two body sizes needs two
     /// navmeshes and this is where the second one comes from -- it returns the mesh rather
     /// than replacing the engine's, because the engine has no idea which is "the" agent.
-    void bakeNavMesh(scene::NavMesh& out, const scene::NavBuildParams& params) const;
+    void bakeNavMesh(nav::NavMesh& out, const nav::NavBuildParams& params) const;
 
     // ---------------------------------------------------------------------- streaming
 
@@ -692,7 +700,6 @@ class Engine {
     /// Build a soft body for every `FABRIC_` placement. Called from `initPhysics` rather
     /// than beside it, because a cloth has to be in the world it collides with.
     void initCloth();
-    void initNavigation();
     void initLights();
     /// Field of view, the scene framing and `--camera`, applied to whatever camera is
     /// installed. **Called by `run()` after `Game::init`, not from `init()`**, for the
@@ -761,7 +768,6 @@ class Engine {
     scene::Scene& sceneTree = sim.tree;
     std::vector<scene::BodyId>& sourceBody = sim.sourceBody;
 
-    scene::NavMesh navigation;
     scene::SceneLoader sceneLoader;
     /// Instances created per appended model, so `removeModel` can destroy exactly those.
     std::vector<std::vector<scene::InstanceId>> modelInstances;

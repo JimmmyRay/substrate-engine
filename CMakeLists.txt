@@ -368,6 +368,17 @@ add_custom_target(ascii_guard ALL
     COMMENT "ASCII guard (engine/ game/ tests/ tools/)"
     VERBATIM)
 
+# ---------------------------------------------------------------- layer guard
+# The module graph, checked every build for the reason the ASCII guard is: an include
+# that runs the wrong way is cheapest to remove on the build that introduces it. It
+# carries a list of the edges that predate it, so the count can fall and cannot rise --
+# see ACCEPTED in the script, and architecture/README.md for what a module is.
+add_custom_target(layer_guard ALL
+    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_layers.sh
+    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+    COMMENT "layer guard (engine/)"
+    VERBATIM)
+
 # --------------------------------------------------------------------- engine
 # Translation units that pull in neither Vulkan nor a window, listed separately
 # because that is exactly the set a unit test can link against (5.1). Keeping it a
@@ -375,8 +386,11 @@ add_custom_target(ascii_guard ALL
 # and an OBJECT library here would buy nothing but a name.
 set(SUBSTRATE_HOSTED_SOURCES
     engine/ai/Planner.cpp
+    engine/nav/NavMesh.cpp
     engine/core/AudioTap.cpp
+    engine/core/AudioBackend.cpp
     engine/core/Config.cpp
+    engine/core/DebugView.cpp
     engine/core/FileWrite.cpp
     engine/core/Input.cpp
     engine/core/Logger.cpp
@@ -387,7 +401,6 @@ set(SUBSTRATE_HOSTED_SOURCES
     engine/core/Resources.cpp
     engine/core/SaveFile.cpp
     engine/core/Settings.cpp
-    engine/gfx/DebugView.cpp
     engine/gfx/Decal.cpp
     engine/gfx/ImageTable.cpp
     engine/gfx/Light.cpp
@@ -405,7 +418,6 @@ set(SUBSTRATE_HOSTED_SOURCES
     engine/scene/Locomotion.cpp
     engine/scene/MeshLod.cpp
     engine/scene/miniaudio_impl.cpp
-    engine/scene/NavMesh.cpp
     engine/scene/ParticleSystem.cpp
     engine/scene/Physics.cpp
     engine/scene/Scene.cpp
@@ -470,6 +482,10 @@ add_library(substrate STATIC
     engine/ui/Font.cpp
     engine/ui/FontData.cpp
     engine/Engine.cpp
+    # The module wiring. Each names `Engine` and so is device-side by construction, which is
+    # why none of these joins SUBSTRATE_HOSTED_SOURCES beside the module it wires: the module
+    # itself stays hosted and testable, and only the wiring leaves.
+    engine/nav/NavModule.cpp
 )
 
 # main() itself, and it is optional. ON by default: the engine compiles the entry point
@@ -577,7 +593,7 @@ if(WIN32)
     )
 endif()
 
-add_dependencies(substrate shaders ascii_guard)
+add_dependencies(substrate shaders ascii_guard layer_guard)
 
 # PUBLIC: a game includes Engine.h, which reaches every subsystem header.
 target_include_directories(substrate PUBLIC ${CMAKE_CURRENT_SOURCE_DIR}/engine)

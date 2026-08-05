@@ -1,7 +1,7 @@
 #pragma once
 
 #include "core/Handle.h"
-#include "scene/AudioBackend.h"
+#include "core/AudioBackend.h"
 #include "scene/AudioSource.h"
 
 #include <glm/glm.hpp>
@@ -101,7 +101,7 @@ struct AudioConfig {
     /// spelled out as string comparisons here *and* nowhere at all on the parsing side, so
     /// a misspelled backend reached this struct intact and was diagnosed one subsystem
     /// later. `Config` refuses a name that is not one, and what arrives here is a value.
-    AudioBackend backend = AudioBackend::Auto;
+    core::AudioBackend backend = core::AudioBackend::Auto;
 
     /// The mix format. Everything the resource manager decodes is converted to this
     /// once, so a scene of 44.1 kHz and 48 kHz assets resamples at load rather than per

@@ -2,6 +2,7 @@
 
 #include "DemoWorld.h"
 #include "Engine.h"
+#include "nav/NavModule.h"
 #include "ai/Planner.h"
 #include "Game.h"
 #include "scene/CameraControllers.h"
@@ -366,7 +367,7 @@ class DemoGame : public Game {
     /// C12. Empty until `V` asks for a path, and emptied again the moment a movement key
     /// is touched -- a navigation system that fought manual input would be the demo
     /// demonstrating the wrong thing.
-    scene::PathFollower navFollower;
+    nav::PathFollower navFollower;
     /// Appended models, newest last. C10.
     std::vector<scene::GltfScene::ModelId> loadedModels;
     /// G3. A node carrying one of the scene's lights, and whether it is being carried.

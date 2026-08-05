@@ -1,6 +1,6 @@
-#include "gfx/DebugView.h"
+#include "core/DebugView.h"
 
-namespace gfx {
+namespace core {
 
 namespace {
 
@@ -53,4 +53,4 @@ const char* tonemapKey(TonemapOperator op) {
     return core::nameOf(tonemapNames(), op);
 }
 
-} // namespace gfx
+} // namespace core

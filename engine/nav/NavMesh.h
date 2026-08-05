@@ -7,7 +7,7 @@
 #include <vector>
 
 /**
- * @file engine/scene/NavMesh.h
+ * @file engine/nav/NavMesh.h
  * @brief Walkable surface, path through it, and steering along the path (C12).
  *
  * ## What this is
@@ -74,7 +74,7 @@
  * bodies, gets a navmesh in the same plane as the bodies that walk it. +Y is the identity
  * and performs no arithmetic at all.
  */
-namespace scene {
+namespace nav {
 
 /// What `bake` is allowed to decide. Every field is a property of the *agent*, not of the
 /// scene, which is why one scene can carry several navmeshes and none of this lives in the
@@ -349,4 +349,4 @@ struct PathFollower {
  */
 [[nodiscard]] glm::vec3 steer(PathFollower& follower, const glm::vec3& position, float maxSpeed);
 
-} // namespace scene
+} // namespace nav

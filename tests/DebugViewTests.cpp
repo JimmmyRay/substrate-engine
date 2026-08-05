@@ -1,11 +1,11 @@
-#include "gfx/DebugView.h"
+#include "core/DebugView.h"
 
 #include <gtest/gtest.h>
 
 #include <string>
 #include <vector>
 
-using namespace gfx;
+using namespace core;
 
 /**
  * @file tests/DebugViewTests.cpp

@@ -7,7 +7,7 @@
 #include "gfx/AccelStruct.h"
 #include "gfx/DebugLines.h"
 #include "gfx/Decal.h"
-#include "gfx/DebugView.h"
+#include "core/DebugView.h"
 #include "gfx/ImageTable.h"
 #include "gfx/Light.h"
 #include "gfx/Presentation.h"
@@ -267,7 +267,7 @@ struct FrameUniforms {
     glm::mat4 invViewProjNoJitter;
 };
 
-// `DebugView` and `TonemapOperator` live in gfx/DebugView.h so `engine/core/Config.cpp`
+// `core::DebugView` and `core::TonemapOperator` live in core/DebugView.h so `engine/core/Config.cpp`
 // can name them: it is a hosted source and cannot include anything that reaches Vulkan,
 // and a parser returning bare integers was one enum reordering away from silently
 // mis-mapping every `--debug-view` and `--tonemap` flag.
@@ -428,12 +428,12 @@ class Renderer {
     void setSampleCount(uint32_t samples);
     uint32_t sampleCount() const { return static_cast<uint32_t>(msaaSamples); }
 
-    void setDebugView(DebugView view) { debugView = view; }
-    DebugView currentDebugView() const { return debugView; }
+    void setDebugView(core::DebugView view) { debugView = view; }
+    core::DebugView currentDebugView() const { return debugView; }
 
     /// Step `step` places along the debug view list, wrapping, so a game binding "next
-    /// view" to a key writes one call rather than a modulo over `DebugView::Count`.
-    void cycleDebugView(int step) { debugView = advanceDebugView(debugView, step); }
+    /// view" to a key writes one call rather than a modulo over `core::DebugView::Count`.
+    void cycleDebugView(int step) { debugView = core::advanceDebugView(debugView, step); }
 
     /**
      * @brief Whether the ray-traced paths can do anything on this device and scene.
@@ -695,7 +695,7 @@ class Renderer {
     /// shader branch to fold away, only dispatches not to record.
     bool particleSortEnabled = rowDefault::particleSort;
 
-    TonemapOperator tonemapOperator = TonemapOperator::Aces;
+    core::TonemapOperator tonemapOperator = core::TonemapOperator::Aces;
 
     /// SSAO. Off makes the lighting pass fall back to the glTF occlusion texture
     /// alone, which is baked and cannot see anything the artist did not paint.
@@ -1830,7 +1830,7 @@ class Renderer {
     bool gpuTimingAvailable = false;
 
     VkSampleCountFlagBits msaaSamples = VK_SAMPLE_COUNT_4_BIT;
-    DebugView debugView = DebugView::Lit;
+    core::DebugView debugView = core::DebugView::Lit;
 
     /**
      * @brief Everything a frame draws into, at one extent, with the descriptor sets that

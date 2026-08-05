@@ -23,7 +23,7 @@
  * used to sit in `Config.cpp` beside `tonemapKey` is gone, because two lists of one
  * operator's spellings are two lists free to disagree.
  */
-namespace gfx {
+namespace core {
 
 /// Must match TONEMAP_OPERATOR in tonemap.frag. One selector rather than three
 /// booleans: the operators are mutually exclusive, so this is one variant each
@@ -80,4 +80,4 @@ enum class DebugView : uint32_t {
 /// The name `"tonemap"` and `--tonemap` spell it with.
 [[nodiscard]] const char* tonemapKey(TonemapOperator op);
 
-} // namespace gfx
+} // namespace core

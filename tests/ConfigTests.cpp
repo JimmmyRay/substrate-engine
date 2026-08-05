@@ -314,11 +314,11 @@ void expectNamesCoverEveryValue(core::Names<E> names) {
 }
 
 TEST_F(ConfigTest, EveryEnumeratorIsReachableByExactlyOneCanonicalName) {
-    expectNamesCoverEveryValue<gfx::DebugView>(gfx::debugViewNames());
-    expectNamesCoverEveryValue<gfx::TonemapOperator>(gfx::tonemapNames());
+    expectNamesCoverEveryValue<core::DebugView>(core::debugViewNames());
+    expectNamesCoverEveryValue<core::TonemapOperator>(core::tonemapNames());
     expectNamesCoverEveryValue<LogLevel>(logLevelNames());
     expectNamesCoverEveryValue<Tristate>(tristateNames());
-    expectNamesCoverEveryValue<scene::AudioBackend>(scene::audioBackendNames());
+    expectNamesCoverEveryValue<core::AudioBackend>(core::audioBackendNames());
 
     // The two masks have no `Count` to walk, so they are walked over the mask instead --
     // which is the thing a new bit has to be added to anyway. `LogOutput::Both` is every
@@ -346,10 +346,10 @@ TEST_F(ConfigTest, ADefaultConfigHoldsEveryNamedValueAsItsOwnEnumerator) {
     EXPECT_EQ(cfg.logging.level, LogLevel::Status);
     EXPECT_EQ(cfg.logging.output, LogOutput::Both);
     EXPECT_EQ(cfg.logging.file, "debug_frames/substrate.log");
-    EXPECT_EQ(cfg.render.tonemap, gfx::TonemapOperator::Aces);
+    EXPECT_EQ(cfg.render.tonemap, core::TonemapOperator::Aces);
     EXPECT_FALSE(cfg.render.tonemapNamed) << "nothing named one, so GameSetup's curve stands";
-    EXPECT_EQ(cfg.audio.backend, scene::AudioBackend::Auto);
-    EXPECT_EQ(cfg.render.debugView, gfx::DebugView::Lit);
+    EXPECT_EQ(cfg.audio.backend, core::AudioBackend::Auto);
+    EXPECT_EQ(cfg.render.debugView, core::DebugView::Lit);
     EXPECT_TRUE(cfg.render.debugOverlay);
     EXPECT_FALSE(cfg.render.syncValidation);
     EXPECT_TRUE(cfg.physics.enabled);
@@ -414,7 +414,7 @@ TEST_F(ConfigTest, AnAliasParsesAndIsCanonicalisedByTheFlagThatCarriesIt) {
                "WARNING"});
     ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
 
-    EXPECT_EQ(cfg.render.tonemap, gfx::TonemapOperator::Clamp);
+    EXPECT_EQ(cfg.render.tonemap, core::TonemapOperator::Clamp);
     EXPECT_TRUE(cfg.render.tonemapNamed);
     EXPECT_EQ(cfg.logging.level, LogLevel::Warn);
     EXPECT_TRUE(cfg.validationEnabled(false)) << "true is on";
@@ -461,7 +461,7 @@ TEST_F(ConfigTest, AFlagNameThatIsNotOneIsRefusedAndLeavesThePreviousValueStandi
                "--validation", "of", "--msaa", "2"});
     ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
 
-    EXPECT_EQ(cfg.render.tonemap, gfx::TonemapOperator::Reinhard) << "what the first flag said, not the typo";
+    EXPECT_EQ(cfg.render.tonemap, core::TonemapOperator::Reinhard) << "what the first flag said, not the typo";
     EXPECT_TRUE(cfg.render.tonemapNamed) << "the accepted one still overrides the game";
     EXPECT_EQ(cfg.logging.level, LogLevel::Status);
     EXPECT_TRUE(cfg.validationEnabled(true));
@@ -489,17 +489,17 @@ TEST_F(ConfigTest, ADebugViewNameThatIsNotOneIsRefusedByTheFlag) {
     Argv args({"substrate", "--debug-view", "ssao", "--debug-view", "sao"});
 
     ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
-    EXPECT_EQ(cfg.render.debugView, gfx::DebugView::Ssao);
+    EXPECT_EQ(cfg.render.debugView, core::DebugView::Ssao);
 }
 
 TEST_F(ConfigTest, EveryDebugViewNameStillReachesItsView) {
-    for (uint32_t i = 0; i < static_cast<uint32_t>(gfx::DebugView::Count); ++i) {
-        const auto view = static_cast<gfx::DebugView>(i);
+    for (uint32_t i = 0; i < static_cast<uint32_t>(core::DebugView::Count); ++i) {
+        const auto view = static_cast<core::DebugView>(i);
         Config cfg;
         int exitCode = -1;
-        Argv args({"substrate", "--debug-view", gfx::debugViewKey(view)});
+        Argv args({"substrate", "--debug-view", core::debugViewKey(view)});
         ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
-        EXPECT_EQ(cfg.render.debugView, view) << gfx::debugViewKey(view);
+        EXPECT_EQ(cfg.render.debugView, view) << core::debugViewKey(view);
     }
 }
 
@@ -520,17 +520,17 @@ TEST_F(ConfigTest, CategoryMaskCollapsesToAllForAllOrForNothingRecognised) {
 }
 
 TEST_F(ConfigTest, EveryTonemapNameStillReachesItsOperator) {
-    // They return `gfx::TonemapOperator` rather than a magic integer since S4, and come
+    // They return `core::TonemapOperator` rather than a magic integer since S4, and come
     // out of one list rather than two since D12. A loop over `Count` rather than three
     // spelled-out names, because an operator added to the enum and to `tonemapKey` and to
     // nothing else would have passed a list.
-    for (uint32_t i = 0; i < static_cast<uint32_t>(gfx::TonemapOperator::Count); ++i) {
-        const auto op = static_cast<gfx::TonemapOperator>(i);
+    for (uint32_t i = 0; i < static_cast<uint32_t>(core::TonemapOperator::Count); ++i) {
+        const auto op = static_cast<core::TonemapOperator>(i);
         Config cfg;
         int exitCode = -1;
-        Argv args({"substrate", "--tonemap", gfx::tonemapKey(op)});
+        Argv args({"substrate", "--tonemap", core::tonemapKey(op)});
         ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
-        EXPECT_EQ(cfg.render.tonemap, op) << gfx::tonemapKey(op);
+        EXPECT_EQ(cfg.render.tonemap, op) << core::tonemapKey(op);
     }
 }
 
@@ -605,7 +605,7 @@ TEST_F(ConfigTest, FlagsOverrideTheLoadedFile) {
     EXPECT_EQ(cfg.benchmark.exitAfterFrames, 600u);
     EXPECT_FALSE(cfg.settings.get(options::render::ssao));
     EXPECT_TRUE(cfg.settings.get(options::render::taa));
-    EXPECT_EQ(cfg.render.tonemap, gfx::TonemapOperator::Reinhard);
+    EXPECT_EQ(cfg.render.tonemap, core::TonemapOperator::Reinhard);
     EXPECT_EQ(cfg.settings.source(settings::Id::render_msaaSamples), settings::Source::Cli);
     EXPECT_EQ(cfg.settings.origin(settings::Id::render_msaaSamples), "--msaa");
 }
@@ -750,14 +750,14 @@ TEST_F(ConfigTest, ANameThatIsNotOneIsRefusedAtTheOneDoorLeft) {
     Argv args({"substrate", "--tonemap", "reinhard", "--tonemap", "reinhardt", "--set", "render.tonemap=clamp"});
     ASSERT_TRUE(cfg.applyCommandLine(args.argc(), args.argv(), exitCode));
 
-    EXPECT_EQ(cfg.render.tonemap, gfx::TonemapOperator::Reinhard) << "the typo takes neither the value nor the door";
+    EXPECT_EQ(cfg.render.tonemap, core::TonemapOperator::Reinhard) << "the typo takes neither the value nor the door";
     EXPECT_EQ(cfg.settings.find("render.tonemap"), settings::Id::None) << "--set found no row to assign";
 
     // And an alias is still an input spelling: `none` is `clamp`.
     Config alias;
     Argv aliasArgs({"substrate", "--tonemap", "none"});
     ASSERT_TRUE(alias.applyCommandLine(aliasArgs.argc(), aliasArgs.argv(), exitCode));
-    EXPECT_EQ(alias.render.tonemap, gfx::TonemapOperator::Clamp);
+    EXPECT_EQ(alias.render.tonemap, core::TonemapOperator::Clamp);
 }
 
 // The deletions, pinned. A flag that came back as a no-op would otherwise be invisible:

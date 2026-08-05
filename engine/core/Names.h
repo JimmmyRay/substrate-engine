@@ -16,7 +16,7 @@
  * A value a person spells by name -- a tonemap operator, a debug view, a log level, an
  * `auto|on|off` -- used to have its names written twice: once in the parser that turned
  * text into the value, and once in the function that turned the value back into text.
- * `gfx::tonemapKey` and a `kTonemapAliases` table were two lists of the same operator's
+ * `core::tonemapKey` and a `kTonemapAliases` table were two lists of the same operator's
  * spellings, free to disagree, and an operator added to the enum and to one of them was
  * reachable from code and not from a file with nothing to catch it.
  *

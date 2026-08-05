@@ -57,18 +57,9 @@ ma_attenuation_model toMa(AudioAttenuation model) {
 
 /// The one list of backend names (D12), canonical first. `auto` is first and is also the
 /// row's default, which is what a refusal leaves standing.
-constexpr core::Named<AudioBackend> kAudioBackends[] = {
-    {"auto", AudioBackend::Auto},
-    {"device", AudioBackend::Device},
-    {"null", AudioBackend::Null},
-};
-static_assert(core::namesEveryValue(kAudioBackends), "a backend reachable from the enum and from no name");
 
 } // namespace
 
-core::Names<AudioBackend> audioBackendNames() {
-    return kAudioBackends;
-}
 
 /**
  * @brief Everything miniaudio owns.
@@ -219,7 +210,7 @@ bool AudioEngine::init(const AudioConfig& cfg) {
         return false;
     }
 
-    const bool wantDevice = cfg.backend != AudioBackend::Null;
+    const bool wantDevice = cfg.backend != core::AudioBackend::Null;
 
     // The resource manager is ours rather than the engine's own, for one reason: the
     // decoded format. Naming it here converts every asset to the mix format *once, at
@@ -278,7 +269,7 @@ bool AudioEngine::init(const AudioConfig& cfg) {
         // The fallback is not silence and it is not a second code path. Everything past
         // this point -- decoders, spatializer, filters, buses -- is the same objects
         // doing the same work; only the thing pulling frames out of the endpoint differs.
-        if (wantDevice && cfg.backend != AudioBackend::Null) {
+        if (wantDevice && cfg.backend != core::AudioBackend::Null) {
             core::Logger::warn(core::LogCategory::Audio,
                          "Audio: no playback device could be opened -- mixing without one, so every stream, "
                          "duck and filter still runs and nothing reaches a speaker");

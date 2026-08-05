@@ -353,19 +353,19 @@ bool Config::applyCommandLine(int argc, char** argv, int& exitCode) {
             // so a refused spelling must not look like an override either -- which is why
             // `tonemapNamed` follows the parse instead of the flag.
             render.tonemapNamed |=
-                setName(arg.c_str(), nextString(gfx::tonemapKey(render.tonemap)), gfx::tonemapNames(), render.tonemap);
+                setName(arg.c_str(), nextString(core::tonemapKey(render.tonemap)), core::tonemapNames(), render.tonemap);
         } else if (arg == "--debug-view") {
             // The one named value with no row behind it, so it is refused here rather than
             // through a row. It is parsed by the flag rather than carried as a
             // string for the reason `--camera` and `--input-script` are: a name that is not
             // one is refused while the person who typed it is still looking, instead of
             // being resolved to `lit` by a reader three subsystems away.
-            const std::string text = nextString(gfx::debugViewKey(render.debugView));
-            if (const auto view = core::parseName(gfx::debugViewNames(), text)) {
+            const std::string text = nextString(core::debugViewKey(render.debugView));
+            if (const auto view = core::parseName(core::debugViewNames(), text)) {
                 render.debugView = *view;
             } else {
-                refuse(arg.c_str(), text, core::legalNames(gfx::debugViewNames()),
-                       gfx::debugViewKey(render.debugView));
+                refuse(arg.c_str(), text, core::legalNames(core::debugViewNames()),
+                       core::debugViewKey(render.debugView));
             }
         } else if (arg == "--sync-validation") {
             // Implies the layer, because asking for the expensive checks and getting
@@ -461,7 +461,7 @@ bool Config::applyCommandLine(int argc, char** argv, int& exitCode) {
             // Not the same thing as --no-audio, and the difference is the point: this
             // runs the whole mixer and sends it nowhere, which is what a machine with no
             // sound card and a run that must not make noise both want.
-            audio.backend = scene::AudioBackend::Null;
+            audio.backend = core::AudioBackend::Null;
         } else if (arg == "--capture") {
             benchmark.capturePath = nextString(benchmark.capturePath);
             // A frame index is required for a capture to mean anything, but demanding
@@ -703,9 +703,9 @@ bool Config::applyCommandLine(int argc, char** argv, int& exitCode) {
                 "                           needs ENABLE_VULKAN_RENDERDOC_CAPTURE=1 -- use scripts/rdoc.sh\n"
                 "  --rdoc-capture-path <p>  .rdc path prefix (default debug_frames/rdoc/frame)\n"
                 "  -h, --help\n",
-                core::legalNames(gfx::debugViewNames()).c_str(), core::legalNames(logLevelNames()).c_str(),
+                core::legalNames(core::debugViewNames()).c_str(), core::legalNames(logLevelNames()).c_str(),
                 core::legalNames(logOutputNames()).c_str(), core::legalNames(tristateNames()).c_str(),
-                core::legalNames(gfx::tonemapNames()).c_str());
+                core::legalNames(core::tonemapNames()).c_str());
             return false;
         } else if (!arg.empty() && arg[0] != '-') {
             scene.path = arg;
@@ -796,10 +796,10 @@ void Config::logSummary() const {
     Logger::status(LogCategory::Core, "  window %dx%d vsync=%s%s | msaa=%ux | view=%s", settings.get(options::window::width),
                    settings.get(options::window::height), settings.get(options::window::vsync) ? "on" : "off",
                    window.headless ? " headless" : "", settings.get(options::render::msaaSamples),
-                   gfx::debugViewKey(render.debugView));
+                   core::debugViewKey(render.debugView));
     if (settings.get(options::audio::enabled)) {
         Logger::status(LogCategory::Core, "  audio %s %u Hz %u ch | stream past %.1fs",
-                       core::nameOf(scene::audioBackendNames(), audio.backend), settings.get(options::audio::sampleRate),
+                       core::nameOf(core::audioBackendNames(), audio.backend), settings.get(options::audio::sampleRate),
                        settings.get(options::audio::channels),
                        static_cast<double>(settings.get(options::audio::streamThresholdSeconds)));
     }

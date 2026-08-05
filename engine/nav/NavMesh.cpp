@@ -1,4 +1,4 @@
-#include "scene/NavMesh.h"
+#include "nav/NavMesh.h"
 
 #include "core/Profiler.h"
 
@@ -11,7 +11,7 @@
 #include <queue>
 #include <unordered_map>
 
-namespace scene {
+namespace nav {
 
 namespace {
 
@@ -1430,4 +1430,4 @@ glm::vec3 steer(PathFollower& follower, const glm::vec3& position, float maxSpee
     return dir * speed;
 }
 
-} // namespace scene
+} // namespace nav

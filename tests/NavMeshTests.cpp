@@ -1,4 +1,4 @@
-#include "scene/NavMesh.h"
+#include "nav/NavMesh.h"
 
 #include "scene/Physics.h"
 
@@ -10,6 +10,7 @@
 #include <utility>
 #include <vector>
 
+using namespace nav;
 using namespace scene;
 
 /**

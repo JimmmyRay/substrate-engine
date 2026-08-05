@@ -18,7 +18,7 @@
  * config side, so `"backend": "devcie"` opened a device anyway and said so much later. One
  * list (D12), one refusal, at the door.
  */
-namespace scene {
+namespace core {
 
 /// `auto` opens a real device and falls back to the device-less mix if that fails, which
 /// is what makes a headless or a sound-cardless machine run the whole audio path rather
@@ -34,4 +34,4 @@ enum class AudioBackend : uint32_t {
 /// Every spelling `"audio": {"backend": ...}` accepts, canonical first.
 [[nodiscard]] core::Names<AudioBackend> audioBackendNames();
 
-} // namespace scene
+} // namespace core

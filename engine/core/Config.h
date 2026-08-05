@@ -5,8 +5,8 @@
 #include "core/Names.h"
 #include "core/Profiler.h"
 #include "core/Settings.h"
-#include "gfx/DebugView.h"
-#include "scene/AudioBackend.h"
+#include "core/DebugView.h"
+#include "core/AudioBackend.h"
 
 #include <glm/glm.hpp>
 
@@ -104,13 +104,13 @@ struct Config {
 
         /// `--tonemap <name>`, overriding `GameSetup::look.tonemap` for one run.
         /// `tonemapNamed` is what says a flag spoke.
-        gfx::TonemapOperator tonemap = gfx::TonemapOperator::Aces;
+        core::TonemapOperator tonemap = core::TonemapOperator::Aces;
         bool tonemapNamed = false;
 
         /// `--debug-view <name>`, parsed to the value at the flag rather than stored as a
         /// string. Storing the spelling let an unrecognised name reach the reader, which
         /// then silently decided it meant `lit`.
-        gfx::DebugView debugView = gfx::DebugView::Lit;
+        core::DebugView debugView = core::DebugView::Lit;
 
         /// `--virtual-resolution WxH`, which wins over `GameSetup::present.virtualResolution`.
         /// Zero means the game's choice stands.
@@ -165,7 +165,7 @@ struct Config {
         /// `--audio-null`. `auto` takes the device if there is one. `null` is a test mode:
         /// every decoder, filter and bus still runs and nothing reaches a speaker, which
         /// is not the same thing as the `audio.enabled` row muting the output.
-        scene::AudioBackend backend = scene::AudioBackend::Auto;
+        core::AudioBackend backend = core::AudioBackend::Auto;
 
         /// `--audio-debug`, and K toggles it after startup. A line to each source,
         /// coloured by occlusion.

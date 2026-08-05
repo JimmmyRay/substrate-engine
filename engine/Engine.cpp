@@ -1,5 +1,7 @@
 #include "Engine.h"
 
+#include "Modules.h"
+
 #include "Game.h"
 #include "core/InputGlfw.h"
 #include "core/Logger.h"
@@ -309,7 +311,7 @@ bool Engine::init(int argc, char** argv, Game& game) {
     loadScene();
     initAudio();
     initPhysics();
-    initNavigation();
+    modules::nav->rebuild(sceneData.colliders());
     initLights();
     initInput();
     // After the audio device, because the recorder drains the tap that device feeds, and
@@ -546,7 +548,7 @@ void Engine::initRenderer() {
         // and `tonemapNamed` is the same question `claimedByFlag` asks above. What has not
         // changed is the answer -- a flag still wins, which is what makes *"is the tonemap
         // what is flattening this?"* a question one run settles.
-        if (!configData.render.tonemapNamed) render.tonemapOperator = gfx::TonemapOperator::Clamp;
+        if (!configData.render.tonemapNamed) render.tonemapOperator = core::TonemapOperator::Clamp;
     }
 }
 
@@ -619,32 +621,6 @@ void Engine::loadScene() {
     render.fogBaseHeight = sceneData.boundsMin.y;
 }
 
-void Engine::bakeNavMesh(scene::NavMesh& out, const scene::NavBuildParams& params) const {
-    // Static mesh colliders, and nothing else. Three exclusions and each is deliberate:
-    //
-    // - **Render geometry** would put an agent on a windowsill, a curtain and the tops of
-    //   Sponza's pillars. The collision surface is the one a body can actually rest on,
-    //   which is the same question navigation is asking.
-    // - **Anything that moves** would bake a crate's floor into a mesh that is wrong the
-    //   moment the crate is pushed. A dynamic body is what `SpatialIndex` is for.
-    // - **Hulls, boxes and capsules** carry no triangles. A box floor is a real authoring
-    //   choice and it is not covered; the row that follows this one is a voxel bake, which
-    //   would take them all.
-    std::vector<glm::vec3> positions;
-    std::vector<uint32_t> indices;
-    for (const scene::ColliderDesc& desc : sceneData.colliders()) {
-        if (desc.motion != scene::ColliderMotion::Static) continue;
-        if (desc.resolvedShape() != scene::ColliderShape::Mesh) continue;
-        if (desc.points.empty() || desc.indices.empty()) continue;
-
-        const auto base = static_cast<uint32_t>(positions.size());
-        positions.reserve(positions.size() + desc.points.size());
-        for (const glm::vec3& p : desc.points) positions.push_back(glm::vec3(desc.transform * glm::vec4(p, 1.0f)));
-        indices.reserve(indices.size() + desc.indices.size());
-        for (const uint32_t i : desc.indices) indices.push_back(base + i);
-    }
-    out.bake(positions, indices, params);
-}
 
 scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, const glm::mat4& transform) {
     // `appendModel` grows the scene buffers and `setScene` below destroys and rebuilds every
@@ -787,7 +763,7 @@ scene::GltfScene::ModelId Engine::addModel(const std::filesystem::path& path, co
     //
     // Gated on the import actually bringing colliders: a rig or a prop has none, and a bake
     // is a real cost to pay for a file that cannot have changed the answer.
-    if (m.colliderCount > 0) initNavigation();
+    if (m.colliderCount > 0) modules::nav->rebuild(sceneData.colliders());
 
     if (m.skinCount > 0 || !sceneData.skinVertices().empty() || !sceneData.morphDeltas().empty()) {
         render.setAnimator(&sceneAnimator, &sceneData);
@@ -1130,22 +1106,10 @@ void Engine::applyPendingScene() {
     render.setInstances(&instanceTable);
     sceneIndex.build(instanceTable);
     ++indexRevision;
-    initNavigation();
+    modules::nav->rebuild(sceneData.colliders());
     core::Logger::status(core::LogCategory::Scene, "streamed %s", pendingScenePath.string().c_str());
 }
 
-void Engine::initNavigation() {
-    auto zone = core::Profiler::scope("Engine::initNavigation");
-    scene::NavBuildParams params;
-    bakeNavMesh(navigation, params);
-    if (navigation.empty()) {
-        core::Logger::debug(core::LogCategory::Scene, "Nav: no static mesh colliders, so no navmesh");
-        return;
-    }
-    core::Logger::status(core::LogCategory::Scene, "Nav: %u triangles, %u vertices, %u region%s", navigation.triangleCount(),
-                         navigation.vertexCount(), navigation.regionCount(),
-                         navigation.regionCount() == 1 ? "" : "s");
-}
 
 void Engine::initAudio() {
     auto zone = core::Profiler::scope("Engine::initAudio");

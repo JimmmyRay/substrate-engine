@@ -2,7 +2,7 @@
 
 #include "core/SaveFile.h"
 #include "core/Settings.h"
-#include "gfx/DebugView.h"
+#include "core/DebugView.h"
 #include "gfx/Light.h"
 
 #include <glm/glm.hpp>
@@ -73,7 +73,7 @@ struct GameSetup {
 
         /// The tonemap curve. `--tonemap <name>` overrides it for one run. F11 in the demo
         /// cycles the renderer's own field and does not write back here.
-        gfx::TonemapOperator tonemap = gfx::TonemapOperator::Aces;
+        core::TonemapOperator tonemap = core::TonemapOperator::Aces;
 
         /**
          * @brief Shadow bias, in world units.
