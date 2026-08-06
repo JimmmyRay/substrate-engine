@@ -22,8 +22,8 @@ sudo apt install build-essential cmake ninja-build \
 ## First run
 
 ```bash
-./setup.sh                  # submodules, a dependency check, and the sample assets
-./setup.sh --no-assets      # skip the download
+scripts/setup.sh                  # submodules, a dependency check, and the sample assets
+scripts/setup.sh --no-assets      # skip the download
 ```
 
 Everything it does is idempotent, and every one of the three steps is available on its own
@@ -38,9 +38,9 @@ the first real decisions.
 ## Starting a game
 
 ```bash
-./new_game.sh mygame        # scaffolds game/mygame/ from scripts/template/game/
-./build_game.sh mygame
-./run.sh
+scripts/new_game.sh mygame        # scaffolds game/mygame/ from scripts/template/game/
+scripts/build_game.sh mygame
+scripts/run.sh
 ```
 
 The name becomes a directory, a CMake target and part of a C++ class name, so it must be
@@ -52,11 +52,11 @@ thing that shows the loop running.
 ## Build
 
 ```bash
-./build.sh                  # debug (default)
-./build.sh release
-./build.sh asan             # AddressSanitizer + UBSan
-./build.sh tsan             # ThreadSanitizer
-./build.sh clean
+scripts/build.sh                  # debug (default)
+scripts/build.sh release
+scripts/build.sh asan             # AddressSanitizer + UBSan
+scripts/build.sh tsan             # ThreadSanitizer
+scripts/build.sh clean
 ```
 
 **This builds the engine and the unit suite, and produces no runnable binary** — a
@@ -68,17 +68,17 @@ error rather than a code review.
 A program comes from a game:
 
 ```bash
-./build_game.sh demo                 # debug build of game/demo/
-./build_game.sh demo release
-./build_game.sh --list               # every game/<name>/ in the tree
+scripts/build_game.sh demo                 # debug build of game/demo/
+scripts/build_game.sh demo release
+scripts/build_game.sh --list               # every game/<name>/ in the tree
 ```
 
 ```bash
-./run.sh                                    # the engine's test scene, debug
-./run.sh demo                               # game/demo/, debug
-./run.sh demo release                       # either order; `./run.sh release demo` is the same
-./run.sh release -- --msaa 8 --frames 900 --trace bench/8x.json
-./run.sh -- path/to/other.gltf
+scripts/run.sh                                    # the engine's test scene, debug
+scripts/run.sh demo                               # game/demo/, debug
+scripts/run.sh demo release                       # either order; `scripts/run.sh release demo` is the same
+scripts/run.sh release -- --msaa 8 --frames 900 --trace bench/8x.json
+scripts/run.sh -- path/to/other.gltf
 ```
 
 `run.sh` selects the matching build directory, sets sanitizer options, and wraps the TSan
@@ -86,21 +86,21 @@ config in `setarch -R`. Both leading arguments are optional and may be given in 
 order: a name is a directory under `game/`, a configuration is one of the four.
 
 **Naming no game opens the engine's own test scene**, Sponza — the same scene the golden
-suite pins, so `./run.sh` on a fresh clone shows you the renderer rather than an
+suite pins, so `scripts/run.sh` on a fresh clone shows you the renderer rather than an
 instruction. Naming one runs that game and lets the scene its `configure` names decide. A scene given
 after `--` wins over both.
 
 Which game a build directory holds is still a property of the directory:
 `build_game.sh` writes the name into the CMake cache, and `scripts/golden.sh` and
-`scripts/baseline.py` read it back, which is why neither grew a game argument. What
+`substrate bench` read it back, which is why neither grew a game argument. What
 `run.sh` adds is that a mismatch is repaired rather than reported — ask for a game the
 configuration does not hold and it calls `build_game.sh` for you. That matters most right
-after `./build.sh`, which clears the name; before, every later `./run.sh` refused with a
-stale binary still sitting in the directory. `./test.sh` deliberately preserves it,
+after `scripts/build.sh`, which clears the name; before, every later `scripts/run.sh` refused with a
+stale binary still sitting in the directory. `scripts/test.sh` deliberately preserves it,
 because running the tests must not silently un-configure your game.
 
 The engine's object files survive the toggle, so alternating between two games -- or
-back to `./build.sh` -- costs a reconfigure rather than a rebuild.
+back to `scripts/build.sh` -- costs a reconfigure rather than a rebuild.
 
 <details><summary>Equivalent manual commands</summary>
 
@@ -117,7 +117,7 @@ and nothing else, so defining one leaves it unreached.
 </details>
 
 Every configuration builds into its own subdirectory of `build/` — `build/debug`,
-`build/release`, `build/asan`, `build/tsan` — so `./build.sh clean` is a single
+`build/release`, `build/asan`, `build/tsan` — so `scripts/build.sh clean` is a single
 `rm -rf build`.
 
 The **first configure requires network access**: fastgltf downloads the simdjson
@@ -134,7 +134,7 @@ cmake --build build/release
 ## Assets
 
 ```bash
-scripts/fetch_assets.sh
+substrate fetch-assets
 ```
 
 Blobless sparse clone of Khronos Sponza into `engine/assets/Sponza` (~41 MB, 73 files).
@@ -211,17 +211,17 @@ the reliable path).
 
 ## Releases
 
-`./build_game.sh <name>` produces a program that runs out of the build tree it was
+`scripts/build_game.sh <name>` produces a program that runs out of the build tree it was
 built in: the shader and asset roots are absolute paths baked in at compile time, which is
-what lets it be launched from any working directory. `./build_release.sh` produces the other
+what lets it be launched from any working directory. `scripts/build_release.sh` produces the other
 thing -- a directory that carries everything it needs and can be moved to a machine that has
 never seen this source tree.
 
 ```bash
-./build_release.sh demo                    # Linux AppImage into releases/
-./build_release.sh demo all --docker       # both platforms, in containers
-./build_release.sh demo --strict           # fail if anything in it cannot be redistributed
-./build_release.sh --list                  # every game in the tree
+scripts/build_release.sh demo                    # Linux AppImage into releases/
+scripts/build_release.sh demo all --docker       # both platforms, in containers
+scripts/build_release.sh demo --strict           # fail if anything in it cannot be redistributed
+scripts/build_release.sh --list                  # every game in the tree
 ```
 
 The difference is one CMake flag. `SUBSTRATE_PORTABLE=ON` swaps all four runtime roots for
@@ -230,7 +230,7 @@ off because its paths are this machine's shader sources and its glslang. All fou
 together or none do; a package with relative shaders and an absolute asset root looks like
 it works right up until it runs somewhere else.
 
-**What goes in the package is not a list kept anywhere.** `scripts/manifest.py` works it out
+**What goes in the package is not a list kept anywhere.** `substrate manifest` works it out
 by following what the engine would actually load -- the config, then every glTF it reaches,
 then their buffers, images, `.ktx2` sidecars and audio -- and fails naming anything it
 cannot find. That runs *before* the build, so a missing asset costs seconds rather than a
@@ -246,9 +246,9 @@ document it exists to avoid opening, and baking the textures first is what stops
 arising. A scene that cannot be baked is a warning, not a failure: the package still runs,
 it just parses at launch.
 
-**The baker is `scripts/bake.sh`, and it needs no GPU.** It builds `substrate-bake` and runs
+**The baker is `substrate bake`, and it needs no GPU.** It builds `substrate-bake` and runs
 it over every scene named, which is one invocation for the whole package. Until D9 this was
-the engine -- `./run.sh release -- --headless --locked --frames 3 --bake-scene <scene>` --
+the engine -- `scripts/run.sh release -- --headless --locked --frames 3 --bake-scene <scene>` --
 which meant a Vulkan device, a swapchain and every texture upload had to come up to produce
 a CPU-side artifact that touches none of them, so the one step of a package with no use for
 a GPU was the step that could not run without one. `substrate-bake` links neither Vulkan nor

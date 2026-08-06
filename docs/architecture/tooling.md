@@ -7,19 +7,76 @@ corresponding claim is not reliable without it.
 
 ## Build and run
 
-**Always through the scripts.** They encode environment fixes that are invisible when
+**Always through the tooling.** It encodes environment fixes that are invisible when
 missing and produce results that look correct but are worthless.
 
 ```bash
-./setup.sh         [--no-assets]                     # submodules, dependencies, assets
-./new_game.sh      <name>                            # scaffold game/<name>/
-./build.sh         [debug|release|asan|tsan|clean]   # the engine and the unit suite
-./build_game.sh    <name> [debug|release|asan|tsan]  # the engine, plus one game
-./run.sh           [<name>] [debug|release|asan|tsan] -- [scene.gltf] [options]
-./test.sh          [debug|release|asan|tsan] -- [--gtest_filter=...]
-scripts/bake.sh    [config] <scene.gltf> ...         # the scene sidecar; see below
-./build_release.sh <name>                            # a movable package; see guides/building.md
+scripts/setup.sh         [--no-assets]                     # submodules, dependencies, assets
+scripts/new_game.sh      <name>                            # scaffold game/<name>/
+scripts/build.sh         [debug|release|asan|tsan|clean]   # the engine and the unit suite
+scripts/build_game.sh    <name> [debug|release|asan|tsan]  # the engine, plus one game
+scripts/run.sh           [<name>] [debug|release|asan|tsan] -- [scene.gltf] [options]
+scripts/test.sh          [debug|release|asan|tsan] -- [--gtest_filter=...]
+scripts/bake.sh          [config] <scene.gltf> ...         # the scene sidecar; see below
+scripts/build_release.sh <name>                            # a movable package; see guides/building.md
 ```
+
+### The tooling is a program, not a pile of scripts
+
+Every line above is a three-line stub over `substrate <command>`, a C++ program built from
+`tools/cli/`. Each has a `.cmd` sibling, so `scripts\build.cmd` and `scripts/build.sh` are
+the same command on the two platforms this project builds for.
+
+**Only one script is not a stub.** `scripts/substrate.sh` (and `scripts/substrate.cmd`)
+configures and builds the CLI and then hands off, because something has to run cmake before
+any C++ tool exists. That is the irreducible floor, and it is why `scripts/` still exists at
+all. It is cheap: `tools/` carries its own `CMakeLists.txt` and configures standalone, with
+no submodule download, no simdjson, no Jolt and no GLFW, so a fresh clone reaches a working
+`substrate` in about three seconds rather than a minute.
+
+This is the same move `substrate-bake` and `substrate-sim` are, one layer out — see "The
+scene bake is a tool, not a flag" below. The argument `tools/bake.cpp` makes for itself is
+the general one: a script that re-encodes something the engine already knows has no compiler
+keeping the two in step. The tooling was full of that. The locomotion harness recomputed the
+demo's constants in `awk`; the manifest re-encoded the `res:/` search order that
+`Resources::Resources` defines; the golden harness parsed durations out of log lines the
+profiler had already written as a trace.
+
+**The two build guards are a separate program on purpose.** `substrate-guard` links nothing
+but the standard library, because `ascii_guard` and `layer_guard` are `ALL` targets that
+every engine target depends on — a guard built out of the tree it guards could not run
+before that tree builds. Cross-compiling skips both: the guard is compiled for the target
+like everything else, so in the MinGW container it is a `.exe` the build machine cannot
+execute, and the container build is always downstream of a native one that ran them.
+
+### What is still a script, and why
+
+**Python is a build dependency**, and the scripts that are Python stay Python. They run
+unchanged on both platforms, so rewriting them would buy portability the project already
+has. `substrate` finds the interpreter as `python3` and then `python`, because the versioned
+name is usually absent on Windows.
+
+| Script | Why it is not C++ |
+|---|---|
+| `scripts/ktx2.py` | Drives the KTX-Software `ktx` CLI. The work is in that binary. |
+| `scripts/make_composite_scene.py` | Generates the grafted scenes at fetch time, before a build exists. |
+| `scripts/check_pins.py` | Content validation over an exported glTF, run by hand. |
+| `scripts/make_icon.py` | A hand-rolled PNG writer, so packaging takes no image dependency. |
+| `scripts/rdoc/analyse.py` | An XML walk over a format RenderDoc owns; nothing here shares a definition with it. |
+| `scripts/kanban.py` | Documentation tooling. It never runs on a build machine. |
+
+Three shell scripts have no `.cmd` sibling, and will not get one: `build_release.sh` builds
+an AppImage, `release_windows.sh` runs *inside* the MinGW container, and `docker/release.sh`
+drives Docker. **Packaging is a Linux operation** — the Windows artifact is cross-compiled,
+which `guides/building.md` argues for at length — so a Windows checkout builds, runs, tests
+and profiles, and does not package.
+
+The one duplication the port could not close is in `substrate locomotion` and
+`substrate arena`. Both assert against constants that live in `game/demo/DemoGame.cpp` and
+`game/battle_arena/ArenaWorld.cpp`, and the CLI links nothing under `game/` — that boundary
+is what makes a game dependency reaching the engine a link error. Each copied constant names
+the symbol it mirrors. Closing it properly means the game logging its own tuning values and
+the harness reading them back.
 
 `setup.sh` is a wrapper over three commands the README already listed, and it exists so
 the first instruction a new developer reads is one line rather than four. It deliberately
@@ -55,8 +112,8 @@ tests cannot silently un-configure a game.
 | `asan` | yes, **with `--no-ray-query`** | yes | yes | Requesting the acceleration-structure extensions makes the proprietary NVIDIA driver fail `vkCreateDevice` under ASan |
 | `tsan` | **no** | yes | yes | The same driver segfaults inside `vkCreateDevice` under TSan. `run.sh tsan` wraps in `setarch -R`; without it TSan aborts with `unexpected memory mapping` before `main()`, which is indistinguishable from a clean run if you only grep for race warnings |
 
-**TSan is for CPU-only paths**, which in practice means `./test.sh tsan` — and, since C27,
-`scripts/sim.sh tsan`. The unit suite links only `SUBSTRATE_HOSTED_SOURCES`, so it runs under
+**TSan is for CPU-only paths**, which in practice means `scripts/test.sh tsan` — and, since C27,
+`substrate sim tsan`. The unit suite links only `SUBSTRATE_HOSTED_SOURCES`, so it runs under
 every sanitizer, and it is the only place the profiler's and the logger's threading gets
 checked.
 
@@ -70,7 +127,7 @@ engine because of it. See [the simulation without a device](#the-simulation-with
 `--no-ray-query` exists because losing ray tracing under a sanitizer beats losing the
 sanitizer.
 
-**The validation layers want it too, on a scene that ray-traces.** `./run.sh debug --
+**The validation layers want it too, on a scene that ray-traces.** `scripts/run.sh debug --
 --validation ... engine/assets/mirror.gltf` does not finish thirty headless frames inside 90
 seconds with the ray-query extensions on, and finishes in a couple of seconds with
 `--no-ray-query`. The same scene without validation completes either way, so this is the
@@ -124,7 +181,7 @@ not what DWARF says about it, and `--gc-sections` only removes sections nothing 
 so every backtrace a `Debug` build could ever produce is a backtrace through live code.
 `addr2line` on the flagged `Debug` binary still resolves an arbitrary text address to
 function, file and line, in the engine and in every dependency. The sanitizers are in for
-the same reason and were verified rather than assumed: `./test.sh asan` and `./test.sh
+the same reason and were verified rather than assumed: `scripts/test.sh asan` and `scripts/test.sh
 tsan` both pass with the flags on. A configuration built differently from the one the
 golden set runs is a worse thing to have than a slightly larger `Debug` binary.
 
@@ -201,10 +258,10 @@ same CMake-side problem and not this one.
 
 ### The scene bake is a tool, not a flag
 
-`scripts/bake.sh [config] <scene.gltf> ...` builds `substrate-bake` and runs it, writing
+`substrate bake [config] <scene.gltf> ...` builds `substrate-bake` and runs it, writing
 `<scene>.gltf.scene` beside each document: C15's parsed scene and C17's LOD chains, in the
 form `scene::readSceneCache` takes. `build_release.sh` is the one caller, once per scene the
-manifest resolves, after `scripts/ktx2.py` and before `manifest.py --require-cache`.
+manifest resolves, after `scripts/ktx2.py` and before `substrate manifest --require-cache`.
 
 **`substrate-bake` links no Vulkan and opens no window.** It is the second binary built from
 `SUBSTRATE_HOSTED_SOURCES` -- the first is the unit suite -- plus the two translation units
@@ -218,7 +275,7 @@ It used to be `--bake-scene`, handled inside `GltfScene::loadCpu`. Two things fo
 D9 exists to end both. **A packaged game shipped the writer**, and the flag that reached it,
 so a player who typed it wrote a `.scene` into the install directory -- `SUBSTRATE_PORTABLE`
 had nothing to compile out, because unlike hot reload the bake had no gate at all. And
-**the baker was the renderer**: `build_release.sh` ran `./run.sh release -- --headless
+**the baker was the renderer**: `build_release.sh` ran `scripts/run.sh release -- --headless
 --locked --frames 3 --bake-scene`, standing up a device, a swapchain and every texture
 upload to produce a CPU-side artifact that touches none of them, so the one step of a
 package with no use for a GPU was the step that could not run without one.
@@ -248,7 +305,7 @@ an error, is not logged and is not rebuilt.
 
 ### The simulation without a device
 
-`scripts/sim.sh <scene.gltf> [--steps N] [--gravity G] [--quiet]` builds a physics world from
+`substrate sim <scene.gltf> [--steps N] [--gravity G] [--quiet]` builds a physics world from
 the colliders a document authored, advances it N fixed steps and prints where everything ended
 up, plus a checksum a CI run can diff. `substrate-sim` is the binary, and like `substrate-bake`
 it links `SUBSTRATE_HOSTED_SOURCES` with **no volk and no glfw** — so it runs in a container,
@@ -284,12 +341,12 @@ binary is launched.
 
 ### The ASCII guard
 
-`scripts/check_ascii.sh` runs every build over `engine/`, `game/` and `tests/`, skipping `assets/` in each. It exists
+`substrate-guard ascii` runs every build over `engine/`, `game/` and `tests/`, skipping `assets/` in each. It exists
 because a stray non-English word reached a source comment and was only caught by eye.
 
 ### The layer guard
 
-`scripts/check_layers.sh` runs every build beside the ASCII guard, walks every quoted
+`substrate-guard layers` runs every build beside the ASCII guard, walks every quoted
 `#include` under `engine/`, and fails on one running the wrong way. It exists because
 `core/Config.h` grew an include of `gfx/` and another of `scene/`, two layers above it, and
 nothing said so for as long as it compiled — the rule was written in `principles.md` and
@@ -347,7 +404,7 @@ without its mesh data-block. Reading the bytes also means this needs no `bpy`, r
 no Blender is installed, and is covered by `tests/check_pins_test.py` — none of which
 would be true of an add-on this repository shipped and could not run.
 
-A missing input file is fatal here rather than skipped. `scripts/fetch_assets.sh` skips a
+A missing input file is fatal here rather than skipped. `substrate fetch-assets` skips a
 generator whose source is absent because there the source is optional content; a validator's
 argument is a path a person typed, and saying nothing about a name that does not exist is
 the failure the check exists to prevent.
@@ -751,7 +808,7 @@ override it.
 Every setting, its type, its value and **where that value came from**:
 
 ```
-$ ./run.sh demo release -- --dump-settings
+$ scripts/run.sh demo release -- --dump-settings
 render.msaaSamples        uint32  8                   cli      --msaa
 render.ssao               bool    true                default
 engine.current_scene_path string  res:/Sponza/glTF/Sponza.gltf  game
@@ -789,7 +846,7 @@ loading a scene is not assigning a string.
 **Every row of the settings table reaches the command line by its JSON key:**
 
 ```bash
-./run.sh demo release -- --set render.fogHeightFalloff=12 --set window.vsync=true
+scripts/run.sh demo release -- --set render.fogHeightFalloff=12 --set window.vsync=true
 ```
 
 `--set <key>=<value>`, split on the *first* `=` so a value may contain one, and it parses
@@ -1139,7 +1196,7 @@ attributable to nothing, which is why adding them without moving the boundary wo
 achieved nothing. It opens at the top of `init` and closes once `Game::init` has returned;
 it lives on the `Engine` rather than the stack because it has to span two calls.
 
-`scripts/baseline.py --startup` is what reads it — and until it existed the tool dropped
+`substrate bench --startup` is what reads it — and until it existed the tool dropped
 frame 0 outright, so *the instrumentation would have been invisible to the thing meant to
 report it*. That is the same discovery `--zones` made about CPU scopes, and it has the same
 consequence: the tooling half goes first. The mode prints one column and no medians, because
@@ -1235,7 +1292,7 @@ diffs.
 
 ### The commit gate: a regression is refused, not noticed later
 
-`scripts/perfgate.py`, installed as a `pre-commit` hook by `scripts/install_hooks.sh` (which
+`substrate perfgate`, installed as a `pre-commit` hook by `scripts/install_hooks.sh` (which
 `setup.sh` runs, because `.git/hooks` is not cloned and a hook nobody installs is a check nobody
 runs). It measures one 300-frame headless locked run and compares two zones against
 `perf-budget.json`, which is committed.
@@ -1273,7 +1330,7 @@ The `GPU @` log line prints `GpuProfiler::lastZoneMs` — the duration of **one 
 whichever the last collect happened to land on. Every "median of five runs" in this
 project's history before the harness existed was a median of five *arbitrary frames*.
 
-`scripts/baseline.py` reads the Chrome trace instead and emits the table below directly.
+`substrate bench` reads the Chrome trace instead and emits the table below directly.
 `scripts/bench.sh` is a fifteen-line front end for it, so there is one parser rather than
 two. A trace window is ~240 frames, so a three-run sweep is 717 samples a row instead of
 three.
@@ -1299,7 +1356,7 @@ can no longer cost the keyboard. `--windowed` is the opt-out, and `--record` is 
 
 ### `--zones` reports both sides, and for two years it reported one
 
-`scripts/baseline.py --zones` prints a **GPU block and a CPU block**. Until it did, the tool
+`substrate bench --zones` prints a **GPU block and a CPU block**. Until it did, the tool
 filed an event into its zone table only when `cat == "gpu"` — so every CPU scope in the trace
 landed in `wall`, in `CPU busy`, or nowhere at all. `CPU busy` could say the CPU had spent
 eight milliseconds and nothing in the harness could say on what. That is a benchmark that
@@ -1468,9 +1525,9 @@ until it does, this is a measurement looking for a problem.
 
 ### What Debug costs, and when it costs nothing
 
-`./run.sh` defaults to Debug, so Debug is the configuration the engine is looked at in, and
+`scripts/run.sh` defaults to Debug, so Debug is the configuration the engine is looked at in, and
 what it costs is a number rather than a feeling. Sponza, 1600x900, 4x, `--locked
---audio-null`, 717 frames an arm over three runs, `scripts/baseline.py --zones`:
+--audio-null`, 717 frames an arm over three runs, `substrate bench --zones`:
 
 | | `debug` | `release` |
 |---|---|---|
@@ -1573,7 +1630,7 @@ somebody reads.
 
 Sponza, 1600x900, release, every feature on. **A claim about this machine**, which is why
 the tool that produces it is committed: a number nobody can re-run is an anecdote with a
-border around it. Regenerate with `scripts/baseline.py`.
+border around it. Regenerate with `substrate bench`.
 
 | MSAA | Cull | Shadows | PunctualShadows | GBuffer | SSAO | Lighting | SSR | Bloom | Tonemap | GPU frame | wall | CPU busy | FPS | VRAM |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
@@ -1729,7 +1786,7 @@ rate and not as hitching.
 `comparePng` plus `scripts/golden.sh`: per-channel tolerance, a count of pixels allowed to
 exceed it, a difference image, and a non-zero exit code. **Thirteen cases**: `lit`, `albedo`,
 `normal`, `depth`, `ssao`, `msaa1`, `no-rt`, `emissive`, the cascade scene, `particles`,
-`skin`, `physics`, and `mirror` with `mirror-no-rt`. It runs through `./run.sh` and names no
+`skin`, `physics`, and `mirror` with `mirror-no-rt`. It runs through `scripts/run.sh` and names no
 game, which since C41 means `game/viewer` -- a game that opens the scene it was given and
 composes nothing.
 
@@ -1780,7 +1837,7 @@ and asks for, not one the engine imposes on everyone who runs it.
 
 Goldens live in gitignored `debug_frames/golden/` on purpose: Sponza is not in the
 repository either, and a regression suite nobody can reproduce fails for reasons nobody
-can attribute. `scripts/fetch_assets.sh` generates the test scenes.
+can attribute. `substrate fetch-assets` generates the test scenes.
 
 **Every case names its scene.** Eight of them used to rely on `scene.path` from
 `substrate.json`, so changing the default scene would have failed eight baselines for a
@@ -1904,31 +1961,28 @@ golden image showed any of them.
 
 ### Temporal stability is a sequence, and no image can hold one
 
-`scripts/ssr_stability.py` orbits a camera over `mirror.gltf` and reports the mean absolute
-difference between consecutive frames, restricted to the reflection band, for a given
-`render.ssrScale`. It exists because a golden image structurally cannot answer whether an
-artefact crawls: a golden is one frame, and a staircase that sits still is invisible while one
-that swims a pixel per frame is the classic half-resolution tell.
+Whether a reflection *crawls* was measured once, by a harness that no longer exists. A golden
+image structurally cannot answer the question: a golden is one frame, and a staircase that sits
+still is invisible while one that swims a pixel per frame is the classic half-resolution tell.
 
-Three properties the golden suite already rests on are what let a *sequence* be assembled from
-independent runs rather than needing a new capture path: frame N is a function of N under
-`--locked`, `--camera-spin` is per frame and not scaled by `dt`, and the renderer is bit-identical
-run to run. So the harness is N invocations of `./run.sh` with `--capture-frame`, and it reuses
-`--no-ssr`, `--no-bloom`, `--taa`, `--set render.ssrScale` and `golden.sh`'s software-device
-refusal rather than adding a flag.
+The finding is in `rendering.md`, "Does it crawl?", and the number to carry away is that
+**the tail matters and the mean does not**: on the same pixels in the same frames,
+half-resolution SSR read 0.97x full resolution on the mean and 1.85x at p99. A mean cannot
+distinguish an edge sliding smoothly across four pixels from one that waits three frames and
+jumps four.
 
-**The band is measured, not located.** It is the set of pixels that change when `--no-ssr` is
-passed — the pass's own definition of where it acts — dilated by 4 px, because a quarter-res
-texel reaches four full-res pixels past the scale-1.0 band. A scanline constant stops being true
-the moment the camera turns. Its complement is the control, and the control being *bit-identical*
-across scales is what makes the band number mean anything.
+Two pieces of method are worth keeping, because anything asking this question again needs both.
+A *sequence* can be assembled from independent runs with no new capture path, because frame N is
+a function of N under `--locked`, `--camera-spin` is per frame and not scaled by `dt`, and the
+renderer is bit-identical run to run — so N invocations of `scripts/run.sh --capture-frame` are a
+sequence. And **the band is measured, not located**: it is the set of pixels that change when
+`--no-ssr` is passed, the pass's own definition of where it acts, dilated by 4 px because a
+quarter-res texel reaches four full-res pixels past the scale-1.0 band. A scanline constant
+stops being true the moment the camera turns; the complement of a measured band is a control,
+and that control being bit-identical across scales is what makes the band number mean anything.
 
-It takes numpy and Pillow, which nothing else here does, and it is a hand-run measurement tool
-rather than a gate — it is not on `fetch_assets.sh`'s path and no card's `verification:` runs it
-automatically. **Quote the tail as well as the mean.** The finding that justified building it is
-that on the same pixels in the same frames, half-resolution SSR reads 0.97x full resolution on
-the mean and 1.85x at p99: a mean cannot distinguish an edge sliding smoothly across four pixels
-from one that waits three frames and jumps four.
+The harness was deleted with the tooling port: it took numpy and Pillow, which nothing else in
+the tree does, it was never a gate, and no card's `verification:` ran it.
 
 ### The readback test
 
@@ -2074,7 +2128,7 @@ validation, because a capture is worth naming whether or not layers are on.
 
 ## The unit suite
 
-`tests/`, googletest, run by `./test.sh`. **869 tests** across forty files.
+`tests/`, googletest, run by `scripts/test.sh`. **869 tests** across forty files.
 
 **It links only the hosted sources**, which is what lets it run under TSan where the
 renderer cannot — and TSan over the profiler's per-thread slots and the logger's writer
@@ -2099,7 +2153,7 @@ be the Rule of Threes broken at two.
 ### The three suites beside it
 
 `tests/manifest_test.py`, `tests/make_composite_scene_test.py` and
-`tests/check_pins_test.py` are Python because the things they test are, and `./test.sh`
+`tests/check_pins_test.py` are Python because the things they test are, and `scripts/test.sh`
 builds and runs a C++ binary. Run each directly; CI runs all three in one job that checks
 out without submodules and never builds, since each writes the tree it needs into a temp
 directory. That is deliberate — a generator or a validator has to work on a fresh clone,
@@ -2182,8 +2236,8 @@ additions:
 - **D6 changes bounds behaviour**, so it needs the unit suite in four configurations rather
   than the golden set alone. Both affected subsystems are in `SUBSTRATE_HOSTED_SOURCES`, so
   ASan and TSan both have something to say.
-- **D7 is verified by its own failure modes**, not by a passing build: `./test.sh releas` must
-  exit non-zero the way `./run.sh releas` already does, and a Windows build must show the
+- **D7 is verified by its own failure modes**, not by a passing build: `scripts/test.sh releas` must
+  exit non-zero the way `scripts/run.sh releas` already does, and a Windows build must show the
   suite compiled with the flags the engine was. A green build proves nothing here, because a
   green build is what the defect produces.
 - **D8 is the row where byte-identical output is not merely required but provable in advance.**
@@ -2219,7 +2273,7 @@ moves its card to `done/` **and updates the reference**:
 
 **That last row is there because it failed.** The README quoted 632 FPS for long enough to
 outlast shadows, SSAO, IBL, bloom, SSR, TAA and fog, against a committed baseline in the same
-repository reading 265. The number is `scripts/baseline.py`'s output and never the `GPU @` log
+repository reading 265. The number is `substrate bench`'s output and never the `GPU @` log
 line, for the reason [CLAUDE.md](../../CLAUDE.md) gives — that line is one arbitrary frame, so a
 median over runs of it is a median over arbitrary frames.
 
@@ -2250,7 +2304,7 @@ run as its **own** invocation, never chained.
 - **For G9, one subsystem that was previously unexercised, per slice** — and the two stated
   numbers: a particle pool of 2 048 with `droppedSpawns()` at zero, and `decodedCount` going
   from 0 to 1 the first time a scene here holds an asset short enough to decode.
-- **For G9, `./run.sh demo -- engine/assets/physics.gltf` still runs**, which is the check
+- **For G9, `scripts/run.sh demo -- engine/assets/physics.gltf` still runs**, which is the check
   that content authored in code stayed conditional on the scene it was handed.
 - **For anything driven from input, `scripts/locomotion.sh`** — described above. G12 is the
   row that needed it, and the general rule it stands for is that a capability reached through
@@ -2393,7 +2447,7 @@ about where a soft edge landed.
   P1 moves it somewhere a hosted test can reach the slot arithmetic even though the descriptor
   write still needs a device.
 - ~~**P4** and **P8** need~~ **a number, not an impression** — a sprite count and a tile count
-  against `Frame` and `Lighting` medians from `scripts/baseline.py`, never the `GPU @` log
+  against `Frame` and `Lighting` medians from `substrate bench`, never the `GPU @` log
   line, for the reason [CLAUDE.md](../../CLAUDE.md) gives. **P4 paid this** with
   `--sprites <N>`, a run mode rather than a game somebody has to write: at 10,000 sprites
   `Sprites` is 0.053 ms and `Frame` moves 0.202 -> 0.256, with `Lighting` unmoved at 0.019,

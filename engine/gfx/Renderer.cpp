@@ -4433,7 +4433,7 @@ void Renderer::destroyCullPipeline() {
 
 void Renderer::recordCull(VkCommandBuffer cmd, uint32_t slot, uint32_t phase, CullViews which) {
     // `CullView` is a second view's list-0 pass and is never recorded in a one-view frame,
-    // so `Cull` in the trace and in `scripts/baseline.py`'s table still means what it did
+    // so `Cull` in the trace and in `substrate bench`'s table still means what it did
     // before views existed. Merging the two names moves a published number.
     const char* zoneName = phase != 0 ? "CullHiZ" : (which == CullViews::Scene ? "Cull" : "CullView");
     auto cpuZone = core::Profiler::scope(zoneName);
@@ -5035,7 +5035,7 @@ void Renderer::recordPunctualShadows(VkCommandBuffer cmd, uint32_t slot) {
 
     // No barriers and no render passes: the image is already in DEPTH_READ_ONLY_OPTIMAL
     // from whichever frame last wrote it, which is what the descriptor declares. The zone
-    // is still opened -- a pass that vanishes from the trace reads to scripts/baseline.py
+    // is still opened -- a pass that vanishes from the trace reads to substrate bench
     // as a broken capture.
     if (dirtyCount == 0 && !punctualCacheCold) {
         GpuScope zone(gpuProfiler, cmd, slot, "PunctualShadows");
@@ -6818,7 +6818,7 @@ FrameResult Renderer::drawFrame(const scene::Camera& camera) {
     gpuProfiler.beginFrame(f.cmd, frameSlot, core::Profiler::frameNumber());
 
     {
-        // The naming rule every pass below follows, because `scripts/baseline.py --zones`
+        // The naming rule every pass below follows, because `substrate bench --zones`
         // reads it: a pass with a GPU zone takes that zone's name spelled identically
         // ("SSR", not "Ssr"), and a step without one takes its own function's name. The
         // scope goes above the early-outs, so a pass that records nothing still costs a

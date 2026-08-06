@@ -308,7 +308,7 @@ That leaves three homes, and which one a value gets is decided once:
 
 The third exists because a benchmark harness is not "the person running the program", and
 because a tool that depends on determinism must **pin** it rather than inherit it —
-`scripts/golden.sh` and `scripts/baseline.py` pass `--locked` for exactly that reason.
+`scripts/golden.sh` and `substrate bench` pass `--locked` for exactly that reason.
 
 **The third home is the one that grows without a rule, so the rule is stated for it:**
 
@@ -578,7 +578,7 @@ somebody made and did not.
 ### Namespaces
 
 **A namespace names a directory under `engine/`**, and the directories fall into three
-tiers that `scripts/check_layers.sh` holds and the build enforces:
+tiers that `substrate-guard layers` holds and the build enforces:
 
 ```
 core                                 -> (nothing)
@@ -735,7 +735,7 @@ runtime -- but nothing is *missing*, because nothing that a run needs was produc
 
 The corollary is that offline artifacts must be reproducible, since that is the only way to
 check the rule is holding. `scripts/ktx2.py` was the first: nothing under `engine/` writes a
-`.ktx2`, and `manifest.py --require-cache` turns a cold image into a release-build failure.
+`.ktx2`, and `substrate manifest --require-cache` turns a cold image into a release-build failure.
 `substrate-bake` is the second, and making it true cost two small fixes -- the durations a
 bake measured are zeroed before they are written, and the padding inside a struct written as
 a byte range is zeroed before it is written -- without which the same scene baked twice
@@ -787,7 +787,7 @@ are the easiest thing to put a boundary around.
 ### What the boundary is, and what checks it
 
 `engine/` is the engine and builds to a static library. `game/<name>/` is a game and builds
-to an executable. `./build.sh` builds only the first, and **produces no runnable binary**
+to an executable. `scripts/build.sh` builds only the first, and **produces no runnable binary**
 — which is the whole check: the engine has to build, test and sanitize with nothing under
 `game/` in the tree, so a dependency leaking from a game into `engine/` is a link error
 rather than a code review.
@@ -818,7 +818,7 @@ Two rules keep `Engine` from becoming a facade over the engine:
 
 > **The engine acts on its own config. The engine binds no keys.** `--capture`,
 > `--frames` and the resize drive are run *modes* that `scripts/golden.sh` and
-> `scripts/baseline.py` depend on, so they stay engine-side. ~~Not one key is bound and not
+> `substrate bench` depend on, so they stay engine-side. ~~Not one key is bound and not
 > one panel is drawn in `engine/`~~; the engine exposes capabilities and a game decides how, or
 > whether, to reach them. That is what keeps exactly one owner of the keyboard.
 
@@ -1063,10 +1063,10 @@ tests/              the unit suite. Links the hosted sources only; never touches
 ```
 
 ```bash
-./build.sh      [debug|release|asan|tsan|clean]   # the engine and the unit suite
-./build_game.sh <name> [debug|release|asan|tsan]  # the engine, plus one game
-./run.sh        [debug|release|asan|tsan] -- ...  # runs the configured game
-./test.sh       [debug|release|asan|tsan] -- ...  # unchanged
+scripts/build.sh      [debug|release|asan|tsan|clean]   # the engine and the unit suite
+scripts/build_game.sh <name> [debug|release|asan|tsan]  # the engine, plus one game
+scripts/run.sh        [debug|release|asan|tsan] -- ...  # runs the configured game
+scripts/test.sh       [debug|release|asan|tsan] -- ...  # unchanged
 ```
 
 **`build.sh` does not build a game, and therefore produces no runnable binary** — a
@@ -1081,10 +1081,10 @@ survive the toggle, so alternating between the two costs a reconfigure rather th
 rebuild.
 
 That choice is what keeps the tooling intact. `run.sh` hardcoded
-`BIN="$BUILD_DIR/substrate"` on **one line**, and `scripts/baseline.py` mirrored it on one
+`BIN="$BUILD_DIR/substrate"` on **one line**, and `substrate bench` mirrored it on one
 more; both became a lookup of the configured game's name, and every script signature
-stayed exactly as it was. `scripts/golden.sh` invokes `./run.sh` and needs no change at all. The
-golden suite therefore keeps working with one added prerequisite — `./build_game.sh demo` —
+stayed exactly as it was. `scripts/golden.sh` invokes `scripts/run.sh` and needs no change at all. The
+golden suite therefore keeps working with one added prerequisite — `scripts/build_game.sh demo` —
 rather than a rewrite.
 
 **`test.sh` is untouched by any of this**, which is worth stating because it is the property

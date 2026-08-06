@@ -33,7 +33,7 @@ set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
 #             than a slightly smaller Debug binary is good.
 #   asan/tsan Both sanitizers place their own metadata in sections the linker already knows
 #             to keep, and their runtimes are linked in whole. Verified rather than assumed:
-#             ./test.sh asan and ./test.sh tsan pass with these on.
+#             scripts/test.sh asan and scripts/test.sh tsan pass with these on.
 #
 # Not -flto, and not by oversight. INTERPROCEDURAL_OPTIMIZATION is forced OFF below with
 # its own argument; section GC is a link-time deletion of what is already compiled, which
@@ -59,16 +59,22 @@ set(SUBSTRATE_GAME "" CACHE STRING "Name of a directory under game/ to build, or
 
 # ---------------------------------------------------------------- system deps
 #
-# Headers only when cross-compiling, and this is not a concession -- it is what the project
-# already needed. FindVulkan insists on the loader's import library, which no MinGW sysroot
-# has, and would fail configure on this line before anything else was attempted. But nothing
-# here links the loader: volk resolves every entry point out of vulkan-1.dll at runtime, and
-# `Vulkan_INCLUDE_DIRS` is read exactly once below, in a status message.
+# Headers only under MinGW, and this is not a concession -- it is what the project already
+# needed. FindVulkan insists on the loader's import library, and the one the Vulkan SDK ships
+# is an MSVC `.lib` that no MinGW toolchain can link, so configure would fail on this line
+# before anything else was attempted. But nothing here links the loader: volk resolves every
+# entry point out of vulkan-1.dll at runtime, and `Vulkan_INCLUDE_DIRS` is read exactly once
+# below, in a status message.
+#
+# Keyed on MINGW rather than CMAKE_CROSSCOMPILING because both cross-compiling from Linux and
+# building natively on Windows with MSYS2 reach it, and only the first of those is a cross
+# build. Keying it on the wrong one is what made a native Windows checkout fail configure
+# while the container that targets the same triple succeeded.
 #
 # Keeping the loader unlinked is also what makes a packaged .exe start on a machine with no
 # Vulkan at all and print its own error, rather than dying in the Windows loader with a
 # missing-DLL dialog before main().
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND CMAKE_CROSSCOMPILING)
+if(MINGW)
     find_path(Vulkan_INCLUDE_DIRS vulkan/vulkan.h REQUIRED)
     # volk does its own find_package(Vulkan QUIET) otherwise, and hits the same wall.
     set(VULKAN_HEADERS_INSTALL_DIR "${Vulkan_INCLUDE_DIRS}/.." CACHE PATH "" FORCE)
@@ -358,26 +364,72 @@ add_custom_target(shaders DEPENDS ${SHADER_BINARIES})
 # unconditionally and a game that grows a shaders/ directory needs no CMake edit.
 add_custom_target(game_shaders DEPENDS ${GAME_SHADER_BINARIES})
 
-# ---------------------------------------------------------------- ASCII guard
-# Runs on every build, not just a clean one: the point is to catch a stray
-# non-English word in a comment on the build that introduces it, not weeks later.
-# It is a whole-tree grep over ~6k lines and costs single-digit milliseconds.
-add_custom_target(ascii_guard ALL
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_ascii.sh
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "ASCII guard (engine/ game/ tests/ tools/)"
-    VERBATIM)
+# ------------------------------------------------------------------ warnings
+# The warning set every target in this project is held to, applied to games as well by
+# substrate_game() below. One list, because a game compiled to a laxer standard than the
+# engine is a game that finds the engine's bugs later than the engine does.
+#
+# Declared here rather than beside the engine because the build guards below are compiled
+# too, and a list defined after its first reader expands to nothing without saying so.
+set(SUBSTRATE_WARNINGS
+    -Wall -Wextra -Wpedantic
+    # `VkFooCreateInfo info{VK_STRUCTURE_TYPE_FOO}` is the idiomatic Vulkan pattern:
+    # set sType, zero the rest, assign what matters. This warning fires on every one.
+    -Wno-missing-field-initializers
+    $<$<CONFIG:Debug>:-g3>
+    $<$<CONFIG:Release>:-O3>
+)
 
-# ---------------------------------------------------------------- layer guard
-# The module graph, checked every build for the reason the ASCII guard is: an include
-# that runs the wrong way is cheapest to remove on the build that introduces it. It
-# carries a list of the edges that predate it, so the count can fall and cannot rise --
-# see ACCEPTED in the script, and architecture/README.md for what a module is.
-add_custom_target(layer_guard ALL
-    COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_layers.sh
-    WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
-    COMMENT "layer guard (engine/)"
-    VERBATIM)
+# Every flag above is valid verbatim under MinGW, because MinGW *is* GCC -- that is the
+# single largest payoff of choosing it over MSVC, and the reason there is no `if(MSVC)`
+# branch in this file. These two are additions, not replacements.
+if(WIN32)
+    list(APPEND SUBSTRATE_WARNINGS
+        # GetProcAddress returns FARPROC and every use casts it to something else. The
+        # cast goes through void* at the one call site; this covers the rest of the idiom.
+        -Wno-cast-function-type
+        # Renderer.cpp is ~5700 lines of heavy glm and Jolt template instantiation, and at
+        # -g3 its debug info exceeds COFF's 32768-section limit. The error is "too many
+        # sections", names no cause, and is reached only in a Debug Windows build.
+        $<$<CONFIG:Debug>:-Wa,-mbig-obj>
+    )
+endif()
+
+# ------------------------------------------------------- the tools, then the guards
+# `substrate-guard` and `substrate` are defined in tools/CMakeLists.txt, which is also
+# configurable on its own -- that is how scripts/build.sh bootstraps a CLI without first
+# configuring this file.
+add_subdirectory(tools)
+
+# Both run on every build, not just a clean one: a stray non-English word in a comment,
+# and an include that runs the wrong way, are cheapest to remove on the build that
+# introduces them. Together they cost single-digit milliseconds.
+#
+# Cross-compiling produces a guard that cannot run on the machine that built it, and the
+# container build is always downstream of a native one that ran both -- so they are
+# skipped rather than emulated. See architecture/README.md for what a module is, and
+# kAccepted in tools/guard/main.cpp for the edges that predate the layer guard.
+if(CMAKE_CROSSCOMPILING)
+    message(STATUS "Build guards: skipped (cross-compiling)")
+    add_custom_target(ascii_guard)
+    add_custom_target(layer_guard)
+else()
+    add_custom_target(ascii_guard ALL
+        COMMAND substrate-guard ascii
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "ASCII guard (engine/ game/ tests/ tools/)"
+        VERBATIM)
+
+    add_custom_target(layer_guard ALL
+        COMMAND substrate-guard layers
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        COMMENT "layer guard (engine/)"
+        VERBATIM)
+endif()
+
+add_dependencies(ascii_guard substrate-guard)
+add_dependencies(layer_guard substrate-guard)
+
 
 # --------------------------------------------------------------------- engine
 # Every .cpp under engine/ is compiled, and nothing here names one. A file that moves
@@ -399,7 +451,7 @@ file(GLOB_RECURSE SUBSTRATE_ENGINE_SOURCES CONFIGURE_DEPENDS
 # contain the library, and this is the rest of containing it.
 set_source_files_properties(engine/audio/miniaudio_impl.cpp PROPERTIES COMPILE_OPTIONS "-w")
 
-# A library, not an executable, and that is the point of G1: `./build.sh` produces no
+# A library, not an executable, and that is the point of G1: `scripts/build.sh` produces no
 # runnable binary at all. The engine has to build, test and sanitize with nothing under
 # game/ in the tree, which is the strongest available check that the boundary is real --
 # a dependency leaking from a game into the engine becomes a link error rather than a
@@ -480,7 +532,7 @@ endif()
 # found", naming the buffer and not the reason.
 #
 # A portable build with no game configured still leaves the game root empty: that is the
-# state ./build.sh alone produces, and it is not a package of anything.
+# state scripts/build.sh alone produces, and it is not a package of anything.
 if(SUBSTRATE_PORTABLE)
     set(RUNTIME_SHADER_DIR       "shaders")
     set(RUNTIME_GAME_SHADER_DIR  "shaders/game")
@@ -584,33 +636,6 @@ endif()
 # were standing in".
 set_source_files_properties(engine/core/Resources.cpp PROPERTIES
     COMPILE_DEFINITIONS "SUBSTRATE_GAME_ASSET_DIR=\"${RUNTIME_GAME_ASSET_DIR}\";SUBSTRATE_ENGINE_ASSET_DIR=\"${RUNTIME_ENGINE_ASSET_DIR}\"")
-
-# The warning set every target in this project is held to, applied to games as well by
-# substrate_game() below. One list, because a game compiled to a laxer standard than the
-# engine is a game that finds the engine's bugs later than the engine does.
-set(SUBSTRATE_WARNINGS
-    -Wall -Wextra -Wpedantic
-    # `VkFooCreateInfo info{VK_STRUCTURE_TYPE_FOO}` is the idiomatic Vulkan pattern:
-    # set sType, zero the rest, assign what matters. This warning fires on every one.
-    -Wno-missing-field-initializers
-    $<$<CONFIG:Debug>:-g3>
-    $<$<CONFIG:Release>:-O3>
-)
-
-# Every flag above is valid verbatim under MinGW, because MinGW *is* GCC -- that is the
-# single largest payoff of choosing it over MSVC, and the reason there is no `if(MSVC)`
-# branch in this file. These two are additions, not replacements.
-if(WIN32)
-    list(APPEND SUBSTRATE_WARNINGS
-        # GetProcAddress returns FARPROC and every use casts it to something else. The
-        # cast goes through void* at the one call site; this covers the rest of the idiom.
-        -Wno-cast-function-type
-        # Renderer.cpp is ~5700 lines of heavy glm and Jolt template instantiation, and at
-        # -g3 its debug info exceeds COFF's 32768-section limit. The error is "too many
-        # sections", names no cause, and is reached only in a Debug Windows build.
-        $<$<CONFIG:Debug>:-Wa,-mbig-obj>
-    )
-endif()
 
 target_compile_options(substrate PRIVATE ${SUBSTRATE_WARNINGS})
 
@@ -763,7 +788,7 @@ target_link_libraries(substrate-sim PRIVATE
 
 # ---------------------------------------------------------------------- tests
 # Built by default, and that is the point of 5.1: a suite nobody builds is a suite
-# nobody runs. `./test.sh` builds and runs it; `./build.sh <cfg> --target substrate`
+# nobody runs. `scripts/test.sh` builds and runs it; `scripts/build.sh <cfg> --target substrate`
 # is the escape hatch for a build that wants the renderer alone.
 #
 # It links the engine archive and names nothing that draws, so the linker hands it no
@@ -772,6 +797,11 @@ target_link_libraries(substrate-sim PRIVATE
 # is never pulled.
 add_executable(substrate_tests
     tests/main.cpp
+    # The packaging closure, compiled into the suite rather than driven through the CLI
+    # binary: what these cases check is which file lands where, and a test that had to
+    # spawn a process to ask would be checking the spawn as well.
+    tools/cli/Manifest.cpp
+    tests/ManifestTests.cpp
     tests/AveragingBufferTests.cpp
     tests/PathsTests.cpp
     tests/ProfilerTests.cpp
@@ -821,7 +851,9 @@ add_executable(substrate_tests
 
 add_dependencies(substrate_tests ascii_guard substrate)
 
-target_include_directories(substrate_tests PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/engine)
+target_include_directories(substrate_tests PRIVATE
+    ${CMAKE_CURRENT_SOURCE_DIR}/engine
+    ${CMAKE_CURRENT_SOURCE_DIR}/tools)
 
 target_compile_definitions(substrate_tests PRIVATE
     GLM_FORCE_DEPTH_ZERO_TO_ONE
@@ -866,5 +898,5 @@ message(STATUS "  shader output  : ${SHADER_OUT_DIR}")
 if(SUBSTRATE_GAME)
     message(STATUS "  game           : ${SUBSTRATE_GAME} -> ${CMAKE_BINARY_DIR}/${SUBSTRATE_GAME}")
 else()
-    message(STATUS "  game           : none (engine and tests only; ./build_game.sh <name>)")
+    message(STATUS "  game           : none (engine and tests only; scripts/build_game.sh <name>)")
 endif()

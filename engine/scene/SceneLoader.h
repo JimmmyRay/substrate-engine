@@ -18,7 +18,7 @@
  * needs those happens in `take`'s caller, on the frame thread, after `ready()`.
  *
  * The work is a `std::function` so this file stays in `SUBSTRATE_HOSTED_SOURCES`, which is
- * the only place `./test.sh tsan` reaches. Naming `scene::loadSceneCpu` here is a link
+ * the only place `scripts/test.sh tsan` reaches. Naming `scene::loadSceneCpu` here is a link
  * error in the unit suite, which links no glTF parser.
  */
 namespace scene {

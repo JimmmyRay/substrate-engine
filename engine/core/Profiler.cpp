@@ -544,10 +544,12 @@ struct Profiler::Impl {
 
 namespace {
 
-extern "C" void profilerSignalHandler(int sig) {
-    // Async-signal-safe only: atomics and a sleep, no mutexes, no allocation, no stdio.
-    // The writer thread does the work; this only waits for it. `Sleep` and `nanosleep` are
-    // both bare kernel calls that take no CRT lock.
+/// Ask the writer thread to flush, and wait up to half a second for it to say it did.
+///
+/// Async-signal-safe only: atomics and a sleep, no mutexes, no allocation, no stdio. The
+/// writer thread does the work; this only waits for it. `Sleep` and `nanosleep` are both
+/// bare kernel calls that take no CRT lock.
+void waitForSignalFlush() {
     if (!g_fileClosed.load(std::memory_order_relaxed) && !g_signalFlushRequested.exchange(true)) {
         for (int i = 0; i < 500 && !g_signalFlushDone.load(std::memory_order_acquire); ++i) {
 #ifdef _WIN32
@@ -558,10 +560,36 @@ extern "C" void profilerSignalHandler(int sig) {
 #endif
         }
     }
+}
 
+extern "C" void profilerSignalHandler(int sig) {
+    waitForSignalFlush();
     std::signal(sig, SIG_DFL);
     std::raise(sig);
 }
+
+#ifdef _WIN32
+/// Windows never raises SIGTERM, so a harness that stops a run the way every one of them
+/// does -- ask, then wait -- would get a truncated trace and no way to tell it apart from a
+/// fast frame. This is the same wait, reached through the mechanism Windows does have.
+///
+/// Returning FALSE hands the event on to the default handler, which ends the process. The
+/// flush has already happened by then, and the OS allows several seconds before it stops
+/// waiting for this function to return.
+extern "C" BOOL WINAPI profilerConsoleHandler(DWORD event) {
+    switch (event) {
+    case CTRL_C_EVENT:
+    case CTRL_BREAK_EVENT:
+    case CTRL_CLOSE_EVENT:
+    case CTRL_SHUTDOWN_EVENT:
+        waitForSignalFlush();
+        break;
+    default:
+        break;
+    }
+    return FALSE;
+}
+#endif
 
 } // namespace
 
@@ -599,6 +627,9 @@ void Profiler::init(const ProfilerConfig& config) {
             std::atexit(Profiler::closeOutputFile);
             std::signal(SIGTERM, profilerSignalHandler);
             std::signal(SIGINT, profilerSignalHandler);
+#ifdef _WIN32
+            SetConsoleCtrlHandler(profilerConsoleHandler, TRUE);
+#endif
             g_handlersRegistered = true;
         }
 

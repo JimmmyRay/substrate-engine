@@ -35,7 +35,7 @@ Nothing below this line is large. All of it is cheaper now than at any later poi
 
 1. ~~**D7 first, and the reason is not its size.**~~ **Done.** It is the row that makes every
    other row's verification mean something: a suite compiled to different flags than the
-   engine, and a `./test.sh releas` that runs debug while reporting nothing, both produce
+   engine, and a `scripts/test.sh releas` that runs debug while reporting nothing, both produce
    results that look exactly like results. `substrate_tests` now takes `${SUBSTRATE_WARNINGS}`
    rather than a retyped subset; `test.sh` has the catch-all `build.sh` always had; `run.sh`
    checks for Sponza only on the path that opens it, so a game with its own scene runs without

@@ -2,7 +2,7 @@
 #
 #   cmake -B build/win-release -DCMAKE_TOOLCHAIN_FILE=cmake/toolchains/mingw-w64-x86_64.cmake
 #
-# `./build_release.sh <name> windows --docker` is what actually uses this; the container is
+# `scripts/build_release.sh <name> windows --docker` is what actually uses this; the container is
 # where the cross-compiler lives. Nothing here is specific to the container, though, so a
 # machine with the Debian mingw-w64 packages installed can use it directly.
 #
@@ -28,10 +28,14 @@ set(CMAKE_RC_COMPILER  ${TOOLCHAIN_PREFIX}-windres)
 
 set(CMAKE_FIND_ROOT_PATH /usr/${TOOLCHAIN_PREFIX})
 
-# Programs come from the host, libraries and headers from the sysroot. glslangValidator,
-# spirv-val and check_ascii.sh all run on the build machine during the build, and SPIR-V is
-# target-independent -- a Windows game's shaders are correctly compiled by a Linux glslang,
-# because the output is the same bytes either way.
+# Programs come from the host, libraries and headers from the sysroot. glslangValidator and
+# spirv-val run on the build machine during the build, and SPIR-V is target-independent -- a
+# Windows game's shaders are correctly compiled by a Linux glslang, because the output is the
+# same bytes either way.
+#
+# `substrate-guard` is the exception, and is why the root CMakeLists.txt skips both build
+# guards when CMAKE_CROSSCOMPILING: it is compiled for the target like everything else, so
+# here it is a .exe the build machine cannot execute.
 set(CMAKE_FIND_ROOT_PATH_MODE_PROGRAM NEVER)
 set(CMAKE_FIND_ROOT_PATH_MODE_LIBRARY ONLY)
 set(CMAKE_FIND_ROOT_PATH_MODE_INCLUDE ONLY)

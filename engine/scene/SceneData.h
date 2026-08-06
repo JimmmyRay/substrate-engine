@@ -146,7 +146,7 @@ void placeSceneData(SceneData& data, const glm::mat4& transform);
 /// the same bytes *mean* invalidates every sidecar in existence, and neither the digest nor
 /// `SourceStamp` can see that. Not bumping leaves an old sidecar read as though the missing
 /// fields were zero. Every `.scene` is then re-baked on its next load, once, by
-/// `scripts/bake.sh` or the load itself.
+/// `substrate bake` or the load itself.
 inline constexpr uint32_t kSceneCacheVersion = 6;
 
 } // namespace scene

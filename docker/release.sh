@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Build a release inside a container. Called by `./build_release.sh <name> ... --docker`;
+# Build a release inside a container. Called by `scripts/build_release.sh <name> ... --docker`;
 # not meant to be run directly, which is why it takes positional arguments in a fixed
 # order rather than parsing flags.
 #
@@ -33,7 +33,7 @@ build_image() {
 #
 # HOME has to be a directory the caller owns: --user makes the container's uid one with no
 # passwd entry and no home, so any tool that wants to write a dotfile lands on a path it
-# cannot create. Under build/ so it is already gitignored and `./build.sh clean` takes it
+# cannot create. Under build/ so it is already gitignored and `scripts/build.sh clean` takes it
 # with everything else.
 #
 # Nothing may create a symlink out of the tree here. This directory sits inside the
@@ -60,7 +60,7 @@ case "$TARGETS" in
 linux | all)
     build_image substrate-linux docker/linux.Dockerfile
     echo "==> linux release in a container"
-    run_in substrate-linux "./build_release.sh '$GAME' linux $STRICT"
+    run_in substrate-linux "scripts/build_release.sh '$GAME' linux $STRICT"
     ;;
 esac
 

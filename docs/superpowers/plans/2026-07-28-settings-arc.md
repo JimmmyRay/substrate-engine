@@ -29,13 +29,13 @@ accessors.
 
 ## Global Constraints
 
-- Never invoke `cmake` directly and never launch a binary directly — `./build.sh`,
-  `./build_game.sh`, `./run.sh`, `./test.sh` only.
+- Never invoke `cmake` directly and never launch a binary directly — `scripts/build.sh`,
+  `scripts/build_game.sh`, `scripts/run.sh`, `scripts/test.sh` only.
 - Each configuration is built and run as its **own** invocation, never chained in one shell
   command.
 - Any GUI launch is wrapped in `timeout -s TERM N`.
 - `engine/` must build with nothing under `game/` in the tree. `Settings.cpp` joins
-  `SUBSTRATE_HOSTED_SOURCES` (it pulls in neither Vulkan nor a window), so `./test.sh tsan`
+  `SUBSTRATE_HOSTED_SOURCES` (it pulls in neither Vulkan nor a window), so `scripts/test.sh tsan`
   covers it.
 - **The golden image set must be byte-identical.** This arc adds no capability; a moved
   pixel is a defect and a re-snap is not an available answer.
@@ -146,13 +146,13 @@ TEST(SettingsTest, AnEngineKeyHasNoJsonSpellingAndIsSnakeCase) {
 }
 ```
 
-- [ ] **Step 2:** `./test.sh debug -- --gtest_filter=SettingsTest.*` — expect a compile failure.
+- [ ] **Step 2:** `scripts/test.sh debug -- --gtest_filter=SettingsTest.*` — expect a compile failure.
 - [ ] **Step 3:** Write `Settings.h` / `Settings.cpp`. The list covers exactly S1's *"stays
       configuration"* set plus the `render.*` quality toggles that never appeared in the
       shipped `substrate.json` (they are properties of the machine, not of the game), plus
       one `engine.` row.
-- [ ] **Step 4:** `./test.sh debug -- --gtest_filter=SettingsTest.*` — expect PASS.
-- [ ] **Step 5:** `./build.sh debug` and `./test.sh debug` — the whole suite still passes.
+- [ ] **Step 4:** `scripts/test.sh debug -- --gtest_filter=SettingsTest.*` — expect PASS.
+- [ ] **Step 5:** `scripts/build.sh debug` and `scripts/test.sh debug` — the whole suite still passes.
 
 ## Task 2 — JSON in, through the table (S4 step 1)
 
@@ -165,7 +165,7 @@ TEST(SettingsTest, AnEngineKeyHasNoJsonSpellingAndIsSnakeCase) {
       `{key, message}` and `loadJson` reports each one it finds.
 - [ ] **Step 3:** Implement; `Config::loadFromFile` calls it for every scalar section and
       keeps its hand-written parse only for the aggregates.
-- [ ] **Step 4:** `./test.sh debug` — PASS.
+- [ ] **Step 4:** `scripts/test.sh debug` — PASS.
 
 ## Task 3 — Export the map (S3)
 
@@ -179,8 +179,8 @@ TEST(SettingsTest, AnEngineKeyHasNoJsonSpellingAndIsSnakeCase) {
       `applyCommandLine`, which records the request; `Engine::init` services it after the
       config and the command line have both been applied and exits, because a dump taken
       before the CLI would report the wrong provenance for the thing being debugged.
-- [ ] **Step 4:** `./test.sh debug` — PASS. Then `./build_game.sh demo debug` and
-      `timeout -s TERM 60 ./run.sh demo debug -- --dump-settings` — eyeball the four sources.
+- [ ] **Step 4:** `scripts/test.sh debug` — PASS. Then `scripts/build_game.sh demo debug` and
+      `timeout -s TERM 60 scripts/run.sh demo debug -- --dump-settings` — eyeball the four sources.
 
 ## Task 4 — Live binding, and the 34 assignments (S4 step 2)
 
@@ -200,7 +200,7 @@ void* bindRender(Id id, gfx::Renderer& r) { switch (id) { case Id::render_ssao: 
       call `bindLive` in their place. The three that are not plain fields —
       `setSampleCount`, `setDebugView`, `lightBudget` — stay explicit; `lightBudget` becomes
       an `initOnly` row that `set()` refuses *with a reason* after init.
-- [ ] **Step 3:** `./build_game.sh demo release` then `scripts/golden.sh` — **byte-identical,
+- [ ] **Step 3:** `scripts/build_game.sh demo release` then `scripts/golden.sh` — **byte-identical,
       all cases.**
 
 ## Task 5 — Move the authored settings into game code (S4 step 3)
@@ -221,7 +221,7 @@ does nothing:
 - [ ] **Step 5:** `physics.gravity`, `physics.step` → game code.
 - [ ] **Step 6:** `physics.clock` and `render.debugView` leave `substrate.json` and keep their
       CLI flags — `--locked`, `--realtime`, `--debug-view`. **Do not remove the flags.**
-- [ ] **Step 7:** After each group: `./build_game.sh demo release` + `scripts/golden.sh`.
+- [ ] **Step 7:** After each group: `scripts/build_game.sh demo release` + `scripts/golden.sh`.
 
 ## Task 6 — Delete what has no key, and the three cleanups (S4 step 4)
 
@@ -237,7 +237,7 @@ does nothing:
 - [ ] **Step 4:** The ~20 bool-assigning command-line branches become one table; the six
       numeric flags that re-state their default fall back to the current value like the
       other nine.
-- [ ] **Step 5:** `./test.sh debug` and `./test.sh tsan`, separate invocations.
+- [ ] **Step 5:** `scripts/test.sh debug` and `scripts/test.sh tsan`, separate invocations.
 
 ## Task 7 — The documentation a landed stage owes
 
@@ -259,10 +259,10 @@ moved key
 
 Each its own invocation, never chained:
 
-- [ ] `./build.sh debug` / `./test.sh debug`
-- [ ] `./test.sh asan`
-- [ ] `./test.sh tsan`
-- [ ] `./build_game.sh demo release` / `scripts/golden.sh` — byte-identical, all cases
-- [ ] `timeout -s TERM 120 ./run.sh demo release -- --frames 300 --validation on` — zero
+- [ ] `scripts/build.sh debug` / `scripts/test.sh debug`
+- [ ] `scripts/test.sh asan`
+- [ ] `scripts/test.sh tsan`
+- [ ] `scripts/build_game.sh demo release` / `scripts/golden.sh` — byte-identical, all cases
+- [ ] `timeout -s TERM 120 scripts/run.sh demo release -- --frames 300 --validation on` — zero
       validation errors
-- [ ] `scripts/baseline.py` — `Lighting` and `Frame` medians unchanged
+- [ ] `substrate bench` — `Lighting` and `Frame` medians unchanged

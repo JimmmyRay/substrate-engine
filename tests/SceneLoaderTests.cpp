@@ -14,7 +14,7 @@ using namespace scene;
  * @brief The worker handshake, under ThreadSanitizer.
  *
  * These exist because of where they run rather than what they assert. `SceneLoader` is the
- * only threaded thing C10 adds, and the unit suite is the only place `./test.sh tsan` is
+ * only threaded thing C10 adds, and the unit suite is the only place `scripts/test.sh tsan` is
  * able to look at it -- a loader wired directly to `GltfScene` could not be linked here at
  * all, which is the entire reason its work is a `std::function`.
  *

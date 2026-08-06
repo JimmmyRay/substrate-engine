@@ -5,8 +5,8 @@ Tests for scripts/check_pins.py.
     ./tests/check_pins_test.py
 
 Python rather than gtest because the thing under test is a Python script, following
-`tests/manifest_test.py`. It is not part of `./test.sh`, which builds and runs a C++
-binary; run it directly, or through the CI workflow, which runs all three.
+`tests/manifest_test.py`. `scripts/test.sh` runs it alongside the C++
+suite; run it directly, or through the CI workflow, which runs all three.
 
 Every case here is a *failure* case bar one, and that is the point of the row: the
 validator is worth exactly what it refuses. The last case is the correct export, and it

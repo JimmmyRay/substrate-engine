@@ -59,10 +59,10 @@ is what the format says, and resolving the file is enough to anchor them.
 ## Starting one
 
 ```bash
-./setup.sh                 # submodules, a dependency check, the sample assets
-./new_game.sh mygame       # game/mygame/ -- a Game subclass, a CMakeLists, a README
-./build_game.sh mygame
-./run.sh                   # the build directory remembers which game it holds
+scripts/setup.sh                 # submodules, a dependency check, the sample assets
+scripts/new_game.sh mygame       # game/mygame/ -- a Game subclass, a CMakeLists, a README
+scripts/build_game.sh mygame
+scripts/run.sh                   # the build directory remembers which game it holds
 ```
 
 What lands is a game that names itself, takes two keys and draws one generated settings
@@ -77,19 +77,19 @@ those buffers exactly as a loaded file's goes into them. A game that authors eve
 code never names a scene at all.
 
 ```bash
-./build.sh                 # the engine and the unit suite. No runnable binary.
-./build_game.sh demo       # the engine, plus one game -> build/debug/demo
-./run.sh demo              # runs it -- and builds it first if it has to
-./run.sh                   # no game named: game/viewer on the engine's own test scene
+scripts/build.sh                 # the engine and the unit suite. No runnable binary.
+scripts/build_game.sh demo       # the engine, plus one game -> build/debug/demo
+scripts/run.sh demo              # runs it -- and builds it first if it has to
+scripts/run.sh                   # no game named: game/viewer on the engine's own test scene
 ```
 
-`./build.sh` deliberately produces nothing you can run. The engine has to build, test and
+`scripts/build.sh` deliberately produces nothing you can run. The engine has to build, test and
 sanitize with nothing under `game/` in the tree, so a dependency leaking from a game into
 `engine/` is a link error rather than something a reviewer has to notice.
 
 Which game a build directory holds is a property of the **build directory**:
 `build_game.sh` writes it into the CMake cache, and `run.sh`, `scripts/golden.sh` and
-`scripts/baseline.py` read it back. That is why none of them grew a `--game` flag.
+`substrate bench` read it back. That is why none of them grew a `--game` flag.
 `run.sh` takes a game *name* as an ordinary argument rather than a flag, and where the
 name and the directory disagree it reconfigures instead of refusing — so the two ways of
 saying which game you mean cannot leave you stuck.
@@ -136,7 +136,7 @@ SUBSTRATE_GAME(MyGame)
 ```
 
 ```bash
-./build_game.sh mygame && ./run.sh
+scripts/build_game.sh mygame && scripts/run.sh
 ```
 
 `SUBSTRATE_GAME(T)` defines the one function the engine's `main()` calls. There is no
@@ -210,9 +210,9 @@ That is the whole of it. Afterwards the rows are ordinary:
 { "mygame": { "difficulty": 3 } }                 // substrate.json, loaded and saved
 ```
 ```bash
-./run.sh mygame -- --set mygame.difficulty=3      # every row reaches the command line
-./run.sh mygame -- --dump-settings                # and every row is in the dump
-./run.sh mygame -- --write-default-config out.json  # with a "mygame" section
+scripts/run.sh mygame -- --set mygame.difficulty=3      # every row reaches the command line
+scripts/run.sh mygame -- --dump-settings                # and every row is in the dump
+scripts/run.sh mygame -- --write-default-config out.json  # with a "mygame" section
 ```
 ```cpp
 ui::drawSettings(ui, e.settingsTable(), "mygame"); // and a generated panel, in drawUi
@@ -332,7 +332,7 @@ Both land as `Source::Game` and **both lose to the command line**, which is appl
 happens, so an opinion a game holds is visible rather than mysterious.
 
 **A scene named on the command line loads into the world before `init` runs**, which is how
-`./run.sh mygame -- other.gltf` opens one asset without the game's own content on top of it.
+`scripts/run.sh mygame -- other.gltf` opens one asset without the game's own content on top of it.
 
 ### Presentation: a fixed resolution, if the game has one
 
@@ -431,7 +431,7 @@ and a switch hides.
 
 **One carve-out.** The engine acts on its own *config*. `--capture`, `--frames`,
 `benchmark.captureFrame` and the resize drive are run modes rather than bindings, and
-`scripts/golden.sh` and `scripts/baseline.py` depend on them working with no game
+`scripts/golden.sh` and `substrate bench` depend on them working with no game
 involvement at all.
 
 ### Picking: what the mouse is over
@@ -672,7 +672,7 @@ as `Game::fixedUpdate/DemoGame::driveLocomotion` without a game arranging anythi
 must be a string literal — it is stored by pointer — and the scope goes **above** the
 function's early-outs, so a step that decides to do nothing still costs a named zero rather
 than vanishing from the table. `fixedUpdate` runs zero to four times a frame, which is why
-`scripts/baseline.py --zones` reports `total/frame` beside the median: the median is one
+`substrate bench --zones` reports `total/frame` beside the median: the median is one
 step's cost and the total is the frame's.
 
 A scope costs 0.1-0.2 us in release, so this is worth doing at the granularity of a system
@@ -723,8 +723,8 @@ Stated plainly, because the alternative is discovering it:
 - **Naming a setting.** Built — `e.settingsTable().set(options::render::ssao, false)`, and
   `ui::drawSettings(ui, e.settingsTable(), "render")` draws the whole module. What is *not*
   a setting still is not: an exposure and a sun are authored, so they stay yours.
-- **Scaffolding a new game with one command.** Built — `./new_game.sh mygame`, then
-  `./build_game.sh mygame`. What it writes is the two files above and a one-line
+- **Scaffolding a new game with one command.** Built — `scripts/new_game.sh mygame`, then
+  `scripts/build_game.sh mygame`. What it writes is the two files above and a one-line
   `CMakeLists.txt`.
 
 ---
@@ -996,7 +996,7 @@ int main(int argc, char** argv) {
 ```
 
 With it **off**, the game writes its own `main()`. The hand-driven loop stays public
-because three existing things need it — `scripts/baseline.py`, `scripts/golden.sh`, and any
+because three existing things need it — `substrate bench`, `scripts/golden.sh`, and any
 tool wanting to interleave work between phases:
 
 ```cpp
@@ -1458,7 +1458,7 @@ it. The four consequences worth knowing before you author one:
 - **Model it flat.** A sheet modelled hanging is already in its equilibrium pose and will
   visibly do nothing; a sheet modelled flat swings into its hang, which is both the more
   useful starting state and the easier one to UV. `game/demo/assets/cloth.gltf` is two of
-  them — run `./run.sh demo -- game/demo/assets/cloth.gltf`
+  them — run `scripts/run.sh demo -- game/demo/assets/cloth.gltf`
   to see a curtain drape over a crate and a flag fold.
 - **The placement is baked in and the node stops mattering.** Where the node puts the mesh is
   where the cloth starts, and after that the node's transform is ignored — animating a

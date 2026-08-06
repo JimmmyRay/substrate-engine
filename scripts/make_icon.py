@@ -6,7 +6,7 @@ Write a 256x256 PNG icon for a packaged game.
 
 appimagetool will not build without an icon and the .desktop entry needs one, so a package
 cannot be produced at all until one exists. Generating a placeholder keeps that from being
-a dependency on an artist, and keeps `build_release.sh` from failing on a machine where
+a dependency on an artist, and keeps `scripts/build_release.sh` from failing on a machine where
 nobody has drawn anything yet. A game that ships its own art puts it at
 `game/<name>/icon.png` and this is never called.
 

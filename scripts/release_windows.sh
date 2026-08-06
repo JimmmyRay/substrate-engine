@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 #
 # Cross-compile, stage and package a game for Windows. Runs *inside* the container built
-# from docker/windows.Dockerfile; `./build_release.sh <name> windows --docker` is the entry
+# from docker/windows.Dockerfile; `scripts/build_release.sh <name> windows --docker` is the entry
 # point, and running this on a host without the mingw toolchain will simply fail to
 # configure.
 #
@@ -28,7 +28,7 @@ STAGE="$BUILD_DIR/stage/$GAME"
 echo "==> resolving what $GAME needs"
 MANIFEST="$(mktemp)"
 trap 'rm -f "$MANIFEST"' EXIT
-if ! ./scripts/manifest.py "$GAME" $STRICT >"$MANIFEST"; then
+if ! scripts/substrate.sh manifest "$GAME" $STRICT >"$MANIFEST"; then
     echo "error: the package is incomplete; nothing was built." >&2
     exit 1
 fi

@@ -148,7 +148,7 @@ bool Engine::init(int argc, char** argv, Game& game) {
     // to where you are standing.
     //
     // Reads only. Log, trace and capture paths stay relative to the working directory --
-    // scripts/golden.sh, scripts/baseline.py and scripts/rdoc.sh all expect debug_frames/ at
+    // scripts/golden.sh, substrate bench and scripts/rdoc.sh all expect debug_frames/ at
     // the repo root.
     if (std::error_code ec; configPath.is_relative() && !std::filesystem::exists(configPath, ec)) {
         if (std::filesystem::path beside = core::executableDir() / configPath; std::filesystem::exists(beside, ec)) {
@@ -1844,7 +1844,7 @@ int Engine::run(Game& game) {
     applyCameraConfig();
     applyBindings();
 
-    // Startup ends here: everything above is frame 0, which `scripts/baseline.py --startup`
+    // Startup ends here: everything above is frame 0, which `substrate bench --startup`
     // reads.
     startupFrameScope.reset();
 

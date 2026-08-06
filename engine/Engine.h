@@ -38,7 +38,7 @@ struct GLFWwindow;
  * @brief Everything a game does not want to own, and the loop that drives it.
  *
  * Moving the run modes -- `--capture`, `--frames`, `--overlay`, the resize drive -- into the
- * game layer breaks `scripts/baseline.py` and `scripts/golden.sh`, which drive them with no
+ * game layer breaks `substrate bench` and `scripts/golden.sh`, which drive them with no
  * game loaded.
  */
 namespace nav {

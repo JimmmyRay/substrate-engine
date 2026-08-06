@@ -6,7 +6,7 @@
     scripts/rdoc/analyse.py barriers  <frame.xml>
     scripts/rdoc/analyse.py resources <frame.xml>
 
-Driven by `scripts/rdoc.sh`, which does the conversion first. Run it directly only
+Driven by `substrate rdoc`, which does the conversion first. Run it directly only
 when you already have the XML.
 
 ## Why XML and not RenderDoc's replay API
@@ -22,7 +22,7 @@ So this reads the *record* side rather than the *replay* side. That is a real
 limitation and worth stating plainly: it can show every command the engine submitted
 and every piece of state bound when it did, but it cannot show what any of it
 *produced*. For pixels, use `--capture-target` (any named render target, read straight
-out of the engine) and `--debug-view`. For per-pass GPU cost, use `scripts/bench.sh`.
+out of the engine) and `--debug-view`. For per-pass GPU cost, use `substrate bench`.
 
 The `duration` attribute on each chunk is the CPU time RenderDoc spent recording that
 call. It is reported where it is useful for spotting an outlier, and it is never GPU

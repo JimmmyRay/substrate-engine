@@ -263,7 +263,7 @@ the dense-grid regime and the design changes shape. **Nothing downstream is wort
 this number exists.**
 
 **Stage B1: the probe cubes.** Bake shader, sidecar, runtime load, the march and the two lookups.
-Answers the second open question — the march cost — against `scripts/baseline.py`.
+Answers the second open question — the march cost — against `substrate bench`.
 
 **Stage C: wire it into the build.** `manifest.py` learns the sidecars so they ship in a package and
 `--require-cache` can demand them; `build_release.sh` runs `--bake` before it stages, per C14's
@@ -360,7 +360,7 @@ conclusion rather than the argument.
   buffer, so an unlit region is diagnosable as "no probe sees this" rather than mysterious.
 - `scripts/golden.sh snap` before, `check` after — shadowed-bay pixels are what should move; nothing
   in `albedo`/`normal`/`depth` should.
-- `scripts/baseline.py` on `Lighting` and `Frame`, several runs per arm. Two separate claims: the
+- `substrate bench` on `Lighting` and `Frame`, several runs per arm. Two separate claims: the
   indirect march is per pixel, and `probeOcclusion` is per overflow light per pixel. Neither is
   assumed free.
 - Re-run the bake twice and diff the sidecars byte-for-byte: it must be deterministic, or the golden

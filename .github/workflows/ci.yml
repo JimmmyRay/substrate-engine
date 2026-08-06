@@ -46,7 +46,7 @@ jobs:
 
       # setarch -R is not optional under tsan and its absence is invisible: without it
       # ThreadSanitizer aborts with "unexpected memory mapping" before main(), which a job
-      # that only greps for race warnings reads as a clean run. ./test.sh already wraps it;
+      # that only greps for race warnings reads as a clean run. scripts/test.sh already wraps it;
       # this checks the runner will permit the personality change at all, so the failure is
       # named here rather than mistaken for a pass later.
       - name: Check setarch is permitted
@@ -54,7 +54,7 @@ jobs:
         run: setarch -R true
 
       - name: Test
-        run: ./test.sh ${{ matrix.config }}
+        run: scripts/test.sh ${{ matrix.config }}
 
   manifest:
     runs-on: ubuntu-latest

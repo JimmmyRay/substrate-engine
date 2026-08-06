@@ -28,7 +28,7 @@ class Resources {
     explicit Resources(std::string_view uri);
 
     /// Explicit roots. An empty `gameRoot` means no game is configured, which is the
-    /// state `./build.sh` alone leaves the library in.
+    /// state `scripts/build.sh` alone leaves the library in.
     Resources(std::string_view uri, const std::filesystem::path& gameRoot,
               const std::filesystem::path& engineRoot);
 

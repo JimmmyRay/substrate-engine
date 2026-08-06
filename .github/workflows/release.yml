@@ -1,6 +1,6 @@
 # Build both platforms' artifacts and attach them to a GitHub Release.
 #
-# A thin wrapper on purpose: every step below is `./build_release.sh`, which is the same
+# A thin wrapper on purpose: every step below is `scripts/build_release.sh`, which is the same
 # command a developer runs locally. A workflow that reimplemented the packaging would be a
 # second definition of what a release is, and the one that drifts is always the one nobody
 # runs by hand.
@@ -60,11 +60,11 @@ jobs:
       - name: Generate the asset trees
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends python3
-          python3 scripts/make_test_scene.py
+          sudo apt-get install -y --no-install-recommends python3 ffmpeg
+          ./substrate fetch-assets
 
       - name: Build both platforms
-        run: ./build_release.sh ${{ steps.meta.outputs.game }} all --docker
+        run: scripts/build_release.sh ${{ steps.meta.outputs.game }} all --docker
 
       - name: Attach the artifacts
         uses: softprops/action-gh-release@v2

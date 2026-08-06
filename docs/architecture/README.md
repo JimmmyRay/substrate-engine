@@ -76,7 +76,7 @@ tests/              the unit suite. Links the hosted sources only; never touches
 
 Three properties of that layout are load-bearing rather than tidy:
 
-**A module is what `root` cannot reach, and the build says so.** `scripts/check_layers.sh`
+**A module is what `root` cannot reach, and the build says so.** `substrate-guard layers`
 holds three tiers — `core`, then the engine cluster `gfx scene ui sim root`, then the
 modules — and fails the build on an include running the wrong way. The cluster is one node
 rather than four layers because anything `Engine.h` reaches is bidirectionally coupled with
@@ -105,7 +105,7 @@ device dependency, never by wrapping one and never by editing a list. Nothing un
 **`build.sh` produces no runnable binary, and that is the check on `game/`.** The engine
 must build, test and sanitize with nothing under `game/` in the tree, so a dependency
 leaking from a game into `engine/` becomes a link error rather than a code review.
-`./build_game.sh <name>` is what produces a program; it records the name in the build
+`scripts/build_game.sh <name>` is what produces a program; it records the name in the build
 directory's CMake cache, which is why `run.sh`, `golden.sh` and `baseline.py` all kept
 the signatures they had when the binary moved.
 
@@ -161,15 +161,15 @@ Always through the scripts. They encode environment fixes that are invisible whe
 and produce results that look correct but are worthless:
 
 ```bash
-./setup.sh      [--no-assets]                     # submodules, dependencies, assets
-./new_game.sh   <name>                            # scaffold game/<name>/
-./build.sh      [debug|release|asan|tsan|clean]   # the engine and the unit suite
-./build_game.sh <name> [debug|release|asan|tsan]  # the engine, plus one game
-./run.sh        [debug|release|asan|tsan] -- [scene.gltf] [options]
-./test.sh       [debug|release|asan|tsan] -- [--gtest_filter=...]
+scripts/setup.sh      [--no-assets]                     # submodules, dependencies, assets
+scripts/new_game.sh   <name>                            # scaffold game/<name>/
+scripts/build.sh      [debug|release|asan|tsan|clean]   # the engine and the unit suite
+scripts/build_game.sh <name> [debug|release|asan|tsan]  # the engine, plus one game
+scripts/run.sh        [debug|release|asan|tsan] -- [scene.gltf] [options]
+scripts/test.sh       [debug|release|asan|tsan] -- [--gtest_filter=...]
 ```
 
-A first build is `./setup.sh && ./build_game.sh demo && ./run.sh`. `run.sh` takes no game
+A first build is `scripts/setup.sh && scripts/build_game.sh demo && scripts/run.sh`. `run.sh` takes no game
 argument: the choice lives in the build directory.
 
 See [tooling.md](tooling.md) for what each configuration can and cannot do, and

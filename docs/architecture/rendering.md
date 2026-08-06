@@ -1088,8 +1088,8 @@ pixels above y=415 move by 1-2/255. The claim is about visible change, not about
 #### Does it crawl? Measured: no, and the mean is blind to the question
 
 Every figure above is a still frame, and a staircase that sits still is invisible while one that
-swims a pixel per frame is the classic half-resolution tell. `scripts/ssr_stability.py` orbits a
-camera over `mirror.gltf` and takes the mean absolute difference between consecutive frames,
+swims a pixel per frame is the classic half-resolution tell. The measurement orbited a
+camera over `mirror.gltf` and took the mean absolute difference between consecutive frames,
 restricted to the reflection band — where the band is **measured per frame** as the pixels that
 change when `--no-ssr` is passed, dilated by 4 px, rather than located by a scanline that stops
 being true the moment the camera turns.

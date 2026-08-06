@@ -252,7 +252,7 @@ TEST(SceneCache, EveryContainerSurvivesTheRoundTrip) {
     // **The names, and this is not a formality.** They are the only way a game can reach
     // `SceneAnimator::setRootNode`, and a baked scene is the *fast* path -- so a writer that
     // dropped them would leave root motion working from a glTF and silently unheld from every
-    // cache, which is a character that walks correctly until somebody runs `scripts/bake.sh`.
+    // cache, which is a character that walks correctly until somebody runs `substrate bake`.
     // That is exactly what happened before this was written.
     EXPECT_EQ(out.rig.nodeNames, in.rig.nodeNames);
 

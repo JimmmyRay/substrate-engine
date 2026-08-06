@@ -565,7 +565,7 @@ bool Config::applyCommandLine(int argc, char** argv, int& exitCode) {
                 "  --readback-sheet-frame <n> the cell the animation must have reached by the\n"
                 "                           capture frame -- stated, never derived (P5)\n"
                 "  --sprites <N>            draw N sprites through an orthographic camera,\n"
-                "                           for scripts/baseline.py's before/after (P4)\n"
+                "                           for substrate bench's before/after (P4)\n"
                 "  --sprite-image <res:/i>  what --sprites draws (default res:/readback.png)\n"
                 "  --sprites-move           move every one of them every frame, which is the\n"
                 "                           arm the upload's revision gate is measured against\n"

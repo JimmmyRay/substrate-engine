@@ -5,7 +5,7 @@ Tests for scripts/make_composite_scene.py.
     ./tests/make_composite_scene_test.py
 
 Python rather than gtest because the thing under test is a Python script, and the same
-arrangement as tests/manifest_test.py for the same reason: it is not part of `./test.sh`,
+arrangement the packaging suite used before it became gtest: `scripts/test.sh` runs it,
 which builds and runs a C++ binary. Run it directly, or through the CI workflow.
 
 Everything here is about `aim_quat`, because a light's orientation is the one thing this

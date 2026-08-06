@@ -490,7 +490,7 @@ class Settings {
 ///
 /// Defined in `engine/gfx/SettingsBind.cpp`, and a free function rather than a method:
 /// `Settings.cpp` is in `SUBSTRATE_HOSTED_SOURCES`, so a member touching `gfx::Renderer`
-/// would drag Vulkan into it and drop it out of `./test.sh tsan`.
+/// would drag Vulkan into it and drop it out of `scripts/test.sh tsan`.
 void bindRenderer(Settings& settings, gfx::Renderer& renderer);
 
 } // namespace settings

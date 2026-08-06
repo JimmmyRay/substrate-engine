@@ -54,7 +54,7 @@ the export is still correct for the engine. Tethered's exporter wrote the attrib
 all twenty-nine accessors in its Sponza when one mesh needed it and nobody noticed,
 because nothing looked.
 
-**A missing input file is fatal, not a skip.** `scripts/fetch_assets.sh` deliberately
+**A missing input file is fatal, not a skip.** `scripts/substrate.sh fetch-assets` deliberately
 skips a generator whose source is absent, because there the source is optional content.
 Here the argument is a path a person typed, and a validator that says nothing when handed
 a name that does not exist is the exact failure this script exists to prevent.

@@ -1046,7 +1046,7 @@ hundred FPS and the whole simulation runs at roughly ten times real time — vis
 character sprinting through an idle clip, and as physics that settles impossibly fast. It
 was the default because eleven golden cases and every per-pass measurement need frame 60
 to be the same frame 60, which was a reasonable trade only while `main.cpp` was both the
-engine and the game. It is not one now: `scripts/golden.sh` and `scripts/baseline.py` pass
+engine and the game. It is not one now: `scripts/golden.sh` and `substrate bench` pass
 `--locked` and pin what they depend on, exactly as every golden case already names its own
 scene rather than inheriting the game's. The clock has had no JSON key since S1 for the
 same reason: it is a developer control, and a benchmark harness is not "the person running
@@ -1684,7 +1684,7 @@ a player can still see and rebind for a camera that is not running.
 
 `scene::FlyCamera` in `engine/scene/CameraControllers.h` keeps the behaviour unchanged, and stays
 in `engine/` because it is the only one of the four camera kinds that already exists as debugged
-engine code: `./run.sh` with no game opens Sponza and flying is how you look at it, and `--camera`
+engine code: `scripts/run.sh` with no game opens Sponza and flying is how you look at it, and `--camera`
 reproduction assumes somebody flew somewhere first. The objection — that the engine has WASD
 opinions again — does not survive declare-on-activate. **The defect was unconditional
 installation, not existence.**
@@ -1746,7 +1746,7 @@ updates it in `frameUpdate` with whatever map it likes.
 **A third-person character walks where the camera points, and that is a game's arithmetic
 rather than an engine capability** (G13). Every piece of it is already public — `Camera`'s
 pose, the node the game holds for its player, `setCharacterInput` — so the demo joins them up in about six
-lines and the engine keeps the free-fly orbit `./run.sh` with no game uses to look at Sponza.
+lines and the engine keeps the free-fly orbit `scripts/run.sh` with no game uses to look at Sponza.
 What the engine contributes is one ordering guarantee and one property of the scene tree.
 
 **The basis is `Camera::forward()`, flattened, and there is exactly one expression of it.**
@@ -2004,7 +2004,7 @@ identically with a device and without one. The game stays audible while it recor
 The producer is the audio thread, which is filling a device period; anything it does that
 can block is a glitch you can hear. So `write` takes no lock, allocates nothing and never
 waits — and because there is exactly one writer and one reader, two atomics are enough.
-`./test.sh tsan` is what says so, which is why the ring is in the hosted sources.
+`scripts/test.sh tsan` is what says so, which is why the ring is in the hosted sources.
 
 **The newest frames are dropped and counted**, which is the opposite of what a live
 monitor would do. It feeds a file: a file wants the audio in order with any gap *stated*,

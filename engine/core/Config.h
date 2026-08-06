@@ -180,7 +180,7 @@ struct Config {
         std::vector<std::string> categories{"all"};      ///< `--log-categories a,b,c`
     } logging;
 
-    /// Driven by `scripts/golden.sh`, `scripts/baseline.py` and `scripts/rdoc.sh`. No JSON
+    /// Driven by `scripts/golden.sh`, `substrate bench` and `scripts/rdoc.sh`. No JSON
     /// keys; flags only.
     struct Benchmark {
         /// `--frames N`. Exit after N frames, or 0 to run until closed.

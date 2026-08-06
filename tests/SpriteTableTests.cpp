@@ -351,7 +351,7 @@ TEST_F(SpriteTableTest, AUvRectStaysInTexels) {
 
 TEST_F(SpriteTableTest, TenThousandSpritesSortOnceAndKeepTheirOrder) {
     // The stated target, at the size the trace arm measures. What is being checked is not
-    // speed -- that is `scripts/baseline.py`'s job -- but that the order is total and
+    // speed -- that is `substrate bench`'s job -- but that the order is total and
     // reproducible at that count, which is what one draw over four layers depends on.
     SpriteLayerId layers[4];
     for (int i = 0; i < 4; ++i) layers[i] = sprites.createLayer({.order = i});

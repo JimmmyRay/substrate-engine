@@ -10,7 +10,7 @@
  *
  * Kept out of `Renderer.h` so the config parser can turn `--debug-view ssao` into a value:
  * `engine/core/Config.cpp` is one of `SUBSTRATE_HOSTED_SOURCES`, which pull in neither
- * Vulkan nor a window and are what `./test.sh tsan` can run.
+ * Vulkan nor a window and are what `scripts/test.sh tsan` can run.
  *
  * Each enum below has one name list, in the `.cpp` beside it, and both directions come out
  * of it -- see [core/Names.h](Names.h).

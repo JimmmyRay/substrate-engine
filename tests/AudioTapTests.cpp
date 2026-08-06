@@ -16,7 +16,7 @@ using namespace core;
  * single call. The first is ordering: what comes out is exactly what went in, in order,
  * with nothing duplicated. The second is that the *producer never blocks* -- it runs on
  * miniaudio's audio thread, which is filling a device period, and a stall there is
- * audible. That second one is what `./test.sh tsan` is for; this file is in the hosted
+ * audible. That second one is what `scripts/test.sh tsan` is for; this file is in the hosted
  * sources precisely so it can run there.
  */
 
@@ -153,7 +153,7 @@ TEST(AudioTapTest, StoppingLeavesItInertRatherThanDangling) {
 
 TEST(AudioTapTest, OneWriterAndOneReaderAgreeOnEveryFrame) {
     // The property the whole design exists for, and the one only a sanitizer can really
-    // check. Run under `./test.sh tsan` this is the test that says the two atomics are
+    // check. Run under `scripts/test.sh tsan` this is the test that says the two atomics are
     // enough and that no lock is hiding in the audio thread's path.
     AudioTap tap;
     tap.start(2, 4000);

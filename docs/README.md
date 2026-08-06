@@ -91,14 +91,14 @@ for the rule that decides which, and
 | glTF | fastgltf | Fastest available, and `MappedGltfFile` already does real `mmap` |
 | Allocator | VMA | Sponza is ~70 images plus buffers; suballocation stops being optional |
 | Architecture | No abstraction layers | No RHI, no render graph, no material system. Two base classes in `engine/`: one Jolt's API demands, and `Game` at the outermost edge |
-| Engine / game split | `engine/` is a library, `game/<name>/` is an executable | `./build.sh` builds no game and produces no runnable binary, so a leak across the line is a link error rather than a code review |
+| Engine / game split | `engine/` is a library, `game/<name>/` is an executable | `scripts/build.sh` builds no game and produces no runnable binary, so a leak across the line is a link error rather than a code review |
 | Asset and shader ownership | `engine/{shaders,assets}/` and `game/<name>/{shaders,assets}/` | The engine keeps what its golden suite pins; everything else is the game's. A game shader is searched before the engine's, so it overrides by name |
 | Shader variants | Specialisation constants, rebuilt on change | A disabled feature is dead-stripped, not branched around. One live variant per pipeline — no cross-product, and no cache until something selects one per draw |
 | Descriptor layouts | Hand-written, reflection-*checked* | Generating them from SPIR-V would hide what is bound; asserting they agree catches a mismatch without the indirection |
 | Config | `substrate.json` (rapidjson) | Source of truth; CLI overrides only per-invocation values |
-| Build / run | `./build.sh`, `./run.sh`, `./test.sh` | Encode config-specific build dirs and the `setarch -R` TSan workaround |
+| Build / run | `scripts/build.sh`, `scripts/run.sh`, `scripts/test.sh` | Encode config-specific build dirs and the `setarch -R` TSan workaround |
 | Tests | googletest, over whatever of the engine the suite names | A test framework is a solved problem. Linking no Vulkan is what lets the suite run under TSan, where the renderer cannot |
-| Benchmarks | `scripts/baseline.py`, reading the trace | The `GPU @` log line is one frame; a table built from it is a median of arbitrary frames |
+| Benchmarks | `substrate bench`, reading the trace | The `GPU @` log line is one frame; a table built from it is a median of arbitrary frames |
 
 ## The MSAA problem, in one paragraph
 

@@ -39,7 +39,7 @@ and never touches the static one. This is the caller that is left.
 - `game/battle_arena` builds and runs with both `setFlags` calls deleted and the motion
   passed to `createMesh` instead, and no acceleration-structure warning appears over a run
   in which the player walks.
-- `./test.sh debug`, then `./test.sh asan`.
+- `scripts/test.sh debug`, then `scripts/test.sh asan`.
 - `scripts/golden.sh` — byte-identical. No golden case builds a mesh in code.
 
 ## Reference update

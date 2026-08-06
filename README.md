@@ -9,35 +9,35 @@ GPU) with cascaded and punctual shadows, SSAO, bloom, SSR, TAA and fog, alongsid
 Jolt physics, miniaudio, skeletal animation, a GPU particle system and an immediate-mode
 UI. That number is the 4x row of the
 [committed baseline](docs/architecture/tooling.md#the-current-baseline) and is regenerated
-by `scripts/baseline.py`, not read off the `GPU @` log line.
+by `substrate bench`, not read off the `GPU @` log line.
 
 ## Build and run
 
 ```bash
-./setup.sh                 # submodules, a dependency check, and Sponza (~41 MB, gitignored)
-./build.sh                 # engine + unit suite; also release | asan | tsan | clean
-./run.sh                   # the engine's test scene; also release | asan | tsan
-./run.sh demo              # game/demo/, built on demand
-./test.sh                  # unit suite; also release | asan | tsan
+scripts/setup.sh                 # submodules, a dependency check, and Sponza (~41 MB, gitignored)
+scripts/build.sh                 # engine + unit suite; also release | asan | tsan | clean
+scripts/run.sh                   # the engine's test scene; also release | asan | tsan
+scripts/run.sh demo              # game/demo/, built on demand
+scripts/test.sh                  # unit suite; also release | asan | tsan
 ```
 
 Starting your own instead:
 
 ```bash
-./new_game.sh mygame       # scaffolds game/mygame/ from the template
-./build_game.sh mygame
-./run.sh                   # the build directory remembers which game it holds
+scripts/new_game.sh mygame       # scaffolds game/mygame/ from the template
+scripts/build_game.sh mygame
+scripts/run.sh                   # the build directory remembers which game it holds
 ```
 
-**`./build.sh` produces no runnable binary** — a library and a test executable. The
+**`scripts/build.sh` produces no runnable binary** — a library and a test executable. The
 engine lives in `engine/` and games live in `game/`, and the engine has to build, test and
 sanitize with nothing under `game/` in the tree; that is what makes a dependency leaking
-from a game into the engine a link error rather than a code review. `./run.sh` with no
-game name opens the engine's test scene; `./run.sh demo` runs that game, and builds it
+from a game into the engine a link error rather than a code review. `scripts/run.sh` with no
+game name opens the engine's test scene; `scripts/run.sh demo` runs that game, and builds it
 first if the configuration does not already hold it.
 
-`./test.sh tsan` is where the threaded code actually gets checked: the suite links only
-the translation units that need neither Vulkan nor a window, and `./run.sh tsan` cannot
+`scripts/test.sh tsan` is where the threaded code actually gets checked: the suite links only
+the translation units that need neither Vulkan nor a window, and `scripts/run.sh tsan` cannot
 run the renderer at all — the proprietary NVIDIA driver segfaults inside `vkCreateDevice`
 under ThreadSanitizer.
 
@@ -102,7 +102,7 @@ Command-line flags override it for per-invocation values — `--msaa`, `--frames
 The simulation clock is `realtime` by default: animation, particles, physics and audio all
 step from wall-clock time. `--locked` takes exactly one fixed step per rendered frame
 instead, which makes frame N a function of N alone — that is what golden images and
-per-pass benchmarks need, and `scripts/golden.sh` and `scripts/baseline.py` pass it
+per-pass benchmarks need, and `scripts/golden.sh` and `substrate bench` pass it
 themselves. Running interactively with a locked clock simulates at the frame rate, which
 at several hundred FPS is roughly ten times too fast.
 
@@ -169,7 +169,7 @@ now and loads Sponza itself, which is what C21 and C22 made possible — a glTF 
 can be imported into a running world, so a composite document is no longer the only way to
 put a rig in a building. See [docs/architecture/](docs/architecture/).
 
-`scripts/fetch_assets.sh` writes these two after fetching Sponza, so a fresh clone gets a
+`substrate fetch-assets` writes these two after fetching Sponza, so a fresh clone gets a
 default scene rather than an error.
 
 `--characters N` places N copies of a scene's skinned mesh, each its own animator

@@ -58,7 +58,7 @@ called them; `game/demo/` carries four as the worked example, and a game adds no
 than by median.** `syncImages`, `ensureSpriteCapacity`, `ensureInstanceCapacity`,
 `pollShaderReload`, `pipelineRebuild` and `applyPendingScene` cost nothing on almost every
 frame and milliseconds on one — a device wait, a buffer realloc, a `glslc` run, a scene
-upload — so the `max` column `scripts/baseline.py --zones` prints is the number to look at
+upload — so the `max` column `substrate bench --zones` prints is the number to look at
 and the median says only how cheap the miss is. Measured on the demo in debug:
 
 | Zone | median | max |
@@ -92,7 +92,7 @@ GPU table and been wrong there invisibly.
 
 The scope goes **above the early-outs**, so a pass that records nothing costs a named zero
 instead of disappearing — which is what lets the children be summed against
-`Renderer::record` and a shortfall read as work no zone names. `scripts/baseline.py --zones`
+`Renderer::record` and a shortfall read as work no zone names. `substrate bench --zones`
 prints that sum as its `total/frame` column. This is a rule about the *call site* as much as
 the function: a system whose `update` is guarded by `if (!empty())` one frame further out has
 a zone that vanishes rather than one that reports nothing, and those two look identical in
@@ -185,7 +185,7 @@ is created by the driver, so there is no spawn site to name it at.
 The trace holds three event phases now, so anything reading it has to say which it wants:
 `ph:"X"` is a timed zone and carries `args.frame`; `ph:"M"` is metadata and carries neither a
 duration nor a frame; `ph:"C"` is a counter and carries a value rather than a span.
-`scripts/baseline.py` tables `X` and `C` separately and skips `M`.
+`substrate bench` tables `X` and `C` separately and skips `M`.
 
 ## Counters
 
@@ -204,7 +204,7 @@ dropped, not buffered: its whole meaning is "this was true during frame N".
 Eleven are recorded per frame today — `drawCalls`, `visibleInstances`, `visibleTriangles`,
 `liveInstances`, `vramMiB`, `vramAllocations`, `bodies`, `particles`, `audioSources`, `nodes`
 and `droppedSteps`. Perfetto renders them as track graphs above the zones they explain, and
-`scripts/baseline.py --zones` prints them as a block beside the GPU and CPU ones.
+`substrate bench --zones` prints them as a block beside the GPU and CPU ones.
 
 **The `ts` is the frame's, not the clock's**, and that is the one thing about this easy to get
 wrong. `writeTrace` emits no wall-clock time — it concatenates frames by `cumulativeUs` — so a
@@ -224,10 +224,10 @@ everything else and keeps startup. That was true before anything read it and is 
 ## Startup
 
 Frame 0 is the whole of `Engine::init` *and* `Game::init` — window, device, renderer, scene,
-every subsystem, and the world a game builds. `scripts/baseline.py --startup` prints it:
+every subsystem, and the world a game builds. `substrate bench --startup` prints it:
 
 ```
-scripts/baseline.py --config release --startup --samples 1 --runs 1
+substrate bench --config release --startup --samples 1 --runs 1
 ```
 
 One column and no medians, because there is one startup per run; a count column beside it,
@@ -270,8 +270,8 @@ Fixed frame count, fixed sample count, a separate trace per run — and through 
 which does all three and never launches the binary itself:
 
 ```bash
-scripts/baseline.py                              # the MSAA sweep, 1/2/4/8
-scripts/baseline.py --config debug --zones       # one config, every zone, GPU and CPU
+substrate bench                              # the MSAA sweep, 1/2/4/8
+substrate bench --config debug --zones       # one config, every zone, GPU and CPU
 ```
 
 Take **medians**, not means — the first frames after a pipeline rebuild are outliers — and
@@ -301,7 +301,7 @@ So a single figure labelled "CPU" that is really wall time will track the GPU fr
 matter what the CPU does, and the closer the two sit the more GPU-bound you are. Read
 the gap between `cpu` and `wall` as CPU headroom.
 
-`scripts/baseline.py` subtracts the same three zones for its `CPU busy` column, so the
+`substrate bench` subtracts the same three zones for its `CPU busy` column, so the
 HUD and the table can be checked against each other. In the trace itself the same
 subtraction is `Frame` minus those three paths, per frame number.
 

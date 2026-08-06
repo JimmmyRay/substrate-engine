@@ -23,7 +23,7 @@ disagreeing.
 
 What must be true before this may enter `done/`, spelled as commands rather than intentions:
 
-- `./test.sh debug`, then `./test.sh asan`, each its own invocation.
+- `scripts/test.sh debug`, then `scripts/test.sh asan`, each its own invocation.
 - `scripts/golden.sh` — eleven cases, byte-identical.
 - Zero validation errors with layers on.
 

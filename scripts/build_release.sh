@@ -2,13 +2,13 @@
 #
 # Package a game into a distributable artifact.
 #
-#   ./build_release.sh demo                  Linux AppImage into releases/
-#   ./build_release.sh demo linux
-#   ./build_release.sh demo --docker         build in a container instead of on this machine
-#   ./build_release.sh demo --strict         fail if the package holds anything unshippable
-#   ./build_release.sh --list                names every game/<name>/ in the tree
+#   scripts/build_release.sh demo                  Linux AppImage into releases/
+#   scripts/build_release.sh demo linux
+#   scripts/build_release.sh demo --docker         build in a container instead of on this machine
+#   scripts/build_release.sh demo --strict         fail if the package holds anything unshippable
+#   scripts/build_release.sh --list                names every game/<name>/ in the tree
 #
-# `./build_game.sh <name>` produces a program that runs out of the build tree it was built
+# `scripts/build_game.sh <name>` produces a program that runs out of the build tree it was built
 # in: the shader and asset roots are absolute paths baked in at compile time, which is what
 # lets it be launched from any working directory. This script produces the other thing -- a
 # directory that carries everything it needs and can be moved to a machine that has never
@@ -18,7 +18,7 @@
 # for relative names, which `executableDir()` then anchors to the binary, and turns shader
 # hot reload off because its paths are this machine's shader sources and its glslang.
 #
-# What goes in the package is not a list kept here. `scripts/manifest.py` works it out by
+# What goes in the package is not a list kept here. `substrate manifest` works it out by
 # following what the engine would actually load -- the config, then every glTF it reaches,
 # then their buffers, images, texture caches and audio -- and fails naming anything it
 # cannot find. That check runs *before* the build, so a missing asset costs seconds rather
@@ -26,14 +26,39 @@
 #
 set -euo pipefail
 
-# shellcheck source=scripts/common.sh
-source "$(dirname "${BASH_SOURCE[0]}")/scripts/common.sh"
-
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$REPO_ROOT"
 
+# The front half of `<script> <game> [...]`, inline because this is the last script that
+# needs it -- `substrate` owns the same checks for everything else, and a shared file for
+# one caller is a file you have to read before you can trust the one that sourced it.
+usage() {
+    awk 'NR>1 && /^#/ { sub(/^# ?/, ""); print; next } NR>1 { exit }' "${BASH_SOURCE[0]}"
+}
+
 GAME="${1:-}"
-check_game "./build_release.sh <name> [linux|windows|all]" "$GAME"
+case "$GAME" in
+-h | --help | help)
+    usage
+    echo "games:"
+    scripts/substrate.sh run --list
+    exit 0
+    ;;
+--list | list)
+    scripts/substrate.sh run --list
+    exit 0
+    ;;
+"")
+    echo "error: no game named. Usage: scripts/build_release.sh <name> [linux|windows|all]" >&2
+    scripts/substrate.sh run --list >&2
+    exit 1
+    ;;
+esac
+if [ ! -f "game/$GAME/CMakeLists.txt" ]; then
+    echo "error: game/$GAME/CMakeLists.txt does not exist" >&2
+    scripts/substrate.sh run --list >&2
+    exit 1
+fi
 shift
 
 TARGETS="linux"
@@ -92,7 +117,7 @@ MANIFEST="$(mktemp)"
 trap 'rm -f "$MANIFEST"' EXIT
 
 # The texture cache is built before the manifest is taken, not after, and the ordering is
-# the whole of C14's package half. `manifest.py` treats a missing `.ktx2` as normal --
+# the whole of C14's package half. `substrate manifest` treats a missing `.ktx2` as normal --
 # correct in a source tree, where the loader simply decodes the source image -- so a
 # release taken without this step ships the decode path to someone who has no `ktx` on
 # their PATH and no way to rebuild the cache. Baking first and then demanding the result
@@ -101,7 +126,7 @@ trap 'rm -f "$MANIFEST"' EXIT
 # Which scenes to bake is not a list kept here either: the same resolver decides it, run
 # once without the requirement to find out what would be staged.
 echo "==> baking the texture cache"
-SCENES="$(./scripts/manifest.py "$GAME" | awk '{ print $1 }' | grep -Ei '\.(gltf|glb)$' || true)"
+SCENES="$(scripts/substrate.sh manifest "$GAME" | awk '{ print $1 }' | grep -Ei '\.(gltf|glb)$' || true)"
 if [ -z "$SCENES" ]; then
     echo "error: no scene resolved for $GAME, so there is nothing to bake or package." >&2
     exit 1
@@ -130,13 +155,13 @@ done
 # layout with no compiler to make the two agree.
 echo "==> baking the scene cache"
 # shellcheck disable=SC2086
-if ! ./scripts/bake.sh release $SCENES; then
+if ! scripts/substrate.sh bake release $SCENES; then
     echo "warning: not every scene could be baked; the package will parse those at launch" >&2
 fi
 
 # Deliberately not inside `$( )`: the whole point of running this first is that its
 # diagnostics reach the terminal, and a command substitution would swallow them.
-if ! ./scripts/manifest.py "$GAME" $STRICT --require-cache >"$MANIFEST"; then
+if ! scripts/substrate.sh manifest "$GAME" $STRICT --require-cache >"$MANIFEST"; then
     echo "error: the package is incomplete; nothing was built." >&2
     exit 1
 fi
@@ -178,7 +203,7 @@ while IFS= read -r line; do
 done <"$MANIFEST"
 
 # The engine resolves relative log and trace paths against the working directory, not the
-# executable, so that scripts/golden.sh and scripts/baseline.py keep finding debug_frames/
+# executable, so that scripts/golden.sh and substrate bench keep finding debug_frames/
 # at the repo root. A packaged game is launched with a working directory nobody chose, so
 # the launcher below is what makes that directory writable and predictable.
 mkdir -p "$STAGE/debug_frames"

@@ -23,7 +23,7 @@ namespace audio {
  *
  * A module: `Engine.h` forward-declares `AudioEngine` and includes nothing from here, so
  * an include of this header from `core/` or from the engine cluster is what
- * `scripts/check_layers.sh` fails on. What the engine and the mixer both have to name --
+ * `substrate-guard layers` fails on. What the engine and the mixer both have to name --
  * `AudioSourceDesc`, `AudioConfig`, `SoundId` -- is in `scene/AudioSource.h` for that
  * reason.
  *

@@ -452,7 +452,7 @@ not.
 startup:
 golden images and per-pass measurements taken that way are not comparable with locked
 ones. Anything that needs frame 60 to be the same frame 60 passes `--locked` and does not
-inherit the value — `scripts/golden.sh` and `scripts/baseline.py` both do.
+inherit the value — `scripts/golden.sh` and `substrate bench` both do.
 
 The default used to be `locked`, which made every capture reproducible and made the engine
 simulate at the *frame rate*: several hundred FPS with vsync off is roughly ten times real
@@ -557,7 +557,7 @@ narrowest place to draw it.
 
 Neither is downloaded. `audio/impact.wav` is synthesised and committed;
 `audio/fire_crackle.wav` is cut from the recording beside it by
-`scripts/fetch_assets.sh`, so it stays out of the repository along with its
+`substrate fetch-assets`, so it stays out of the repository along with its
 source. `audio/impact.wav` is a quarter-second thud (G7) and `audio/fire_crackle.wav` is
 a four-second seamless loop (G9); between them the *decode* side of S5.2's crossover is
 taken by a one-shot and by a looping source without an author writing `"load": "decode"`
@@ -1084,7 +1084,7 @@ forgotten.
 |---|---|
 | **Terrain and water** | Content systems with their own authoring, LOD and simulation. No target scene needs them, and building either against an interior stone arcade would be shaped entirely by guesses |
 | **Networking** | The gate is a target, and none exists. Transport is the easy row; "what is authoritative, what is derived, what goes on the wire" is the design problem, and every answer is a property of a game. See the determinism table above for the one engine-side prerequisite that fails today |
-| **A game module boundary as a loadable `.so`** | **The in-tree boundary is built** — `engine/` is a library, `game/<name>/` is an executable, and `./build.sh` produces nothing runnable so a leak across the line is a link error. What is still declined is a *dynamically loaded* one: the only thing that justifies a frozen C ABI is a developer who cannot recompile the engine, and that has not happened. See [principles.md](principles.md#engine-and-game-separation) |
+| **A game module boundary as a loadable `.so`** | **The in-tree boundary is built** — `engine/` is a library, `game/<name>/` is an executable, and `scripts/build.sh` produces nothing runnable so a leak across the line is a link error. What is still declined is a *dynamically loaded* one: the only thing that justifies a frozen C ABI is a developer who cannot recompile the engine, and that has not happened. See [principles.md](principles.md#engine-and-game-separation) |
 | **A second in-tree game** | `game/` holds one. A boundary with one consumer is a guess rather than a boundary, which is why a scaffolded second is a row in the G arc rather than a claim here |
 | **A material / pipeline registry** | Seven named `VkPipeline` members. A registry earns its place when pipelines are created from *data*; the trigger is a variant selected per **draw**, not per keypress |
 | **A shader variant cache** | Comparing a feature key each frame and rebuilding is stricter than a map — one live variant per pipeline. Enumerating a cross-product of nine constants is 512 pipelines |
@@ -1304,7 +1304,7 @@ duplicating it.
 **This section records a refusal that has since been reversed, and it is kept because the
 measurements in it are still true and still the reason to be sceptical of the next version
 of the idea.** G10 was opened to make a game link only the subsystems it names and closed by
-declining the mechanism; `engine/Modules.h` and `scripts/check_layers.sh` did it anyway, and
+declining the mechanism; `engine/Modules.h` and `substrate-guard layers` did it anyway, and
 the four measurements below are what the design had to answer rather than ignore. What
 changed is not the arithmetic — a game that draws one settings panel still carries most of
 what the demo carries, because the linker flag in measurement 2 had already taken the large
@@ -1347,7 +1347,7 @@ The premise is true, and worth stating before the refusal so that nobody re-deri
 | | Stripped `Release` binary |
 |---|---|
 | `game/demo` — loads Sponza, simulates, plays sound, animates, navigates | 6,054,400 B |
-| A game straight out of `./new_game.sh` — loads nothing, plays nothing, simulates nothing | 5,923,328 B |
+| A game straight out of `scripts/new_game.sh` — loads nothing, plays nothing, simulates nothing | 5,923,328 B |
 | **What the whole demo game costs** | **131,072 B, 2.2%** |
 
 So a game that draws one settings panel carries **97.8%** of what the full demo carries,
